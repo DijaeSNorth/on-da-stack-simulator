@@ -1,6 +1,7 @@
 // ─── Deck Import Engine ───────────────────────────────────────────────────────
 import type { Deck } from '../types/game';
 import { fetchCardsByNames } from '../data/cardDatabase';
+import { deckCache } from './deckCache';
 
 export interface ImportResult {
   deck: Deck;
@@ -118,12 +119,18 @@ function detectCommanders(entries: ParsedEntry[]): string[] {
 }
 
 /**
- * Main import function — parses raw text and fetches card data
+ * Main import function — parses raw text and fetches card data.
+ * Pass `playerId` to populate the DeckCache for that player so the NLP
+ * command bar gets O(1) card-name lookups and trie-backed autocomplete.
+ * Pass `customRulesText` if the player uploaded a house rules file —
+ * keywords are parsed and stored in the cache immediately.
  */
 export async function importDecklist(
   raw: string,
   deckName: string = 'Imported Deck',
-  source?: string
+  source?: string,
+  playerId?: string,
+  customRulesText?: string
 ): Promise<ImportResult> {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -177,6 +184,16 @@ export async function importDecklist(
   } catch {
     warnings.push('Could not reach Scryfall — card validation skipped. Cards will load as placeholders.');
     fetchedDefs = new Map();
+  }
+
+  // ── Populate DeckCache for this player ─────────────────────────────────────────
+  // Card names + keywords are indexed into the cache immediately so the
+  // NLP command bar has full autocomplete without scanning game state.
+  if (playerId && fetchedDefs.size > 0) {
+    deckCache.ingest(playerId, fetchedDefs);
+  }
+  if (customRulesText) {
+    deckCache.addCustomRules(customRulesText);
   }
 
   // Validate color identity
