@@ -1,6 +1,7 @@
 import { useGameStore } from '../../store/gameStore';
 import { PlayerBattlefield } from './PlayerBattlefield';
 import { DragCombatProvider, useDragCombatContext } from '../../hooks/DragCombatContext';
+import { TriggerQueuePanel } from '../triggers/TriggerQueuePanel';
 import type { Player } from '../../types/game';
 
 // Commander table layouts — local player (seatIndex 0) always at bottom
@@ -224,6 +225,8 @@ export function CommanderTable() {
     <DragCombatProvider>
       <div style={{ position: 'relative', width: '100%', height: '100%' }}>
         <CommanderTableInner />
+        {/* Floating trigger queue — renders as a fixed overlay when triggers are pending */}
+        <TriggerQueuePanel />
       </div>
     </DragCombatProvider>
   );

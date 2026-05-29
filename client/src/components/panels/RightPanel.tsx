@@ -218,52 +218,106 @@ function TriggersTab() {
   const store = useGameStore();
   const { game } = store;
   const pending = game.triggerQueue.filter(t => !t.acknowledged);
-  const acknowledged = game.triggerQueue.filter(t => t.acknowledged);
+  const missed   = game.triggerQueue.filter(t => t.missed);
+  const acknowledged = game.triggerQueue.filter(t => t.acknowledged && !t.missed);
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: 8 }}>
+
+      {/* Active overlay note */}
+      {pending.length > 0 && (
+        <div style={{
+          fontSize: 9, color: '#f59e0b', background: 'rgba(245,158,11,0.08)',
+          border: '1px solid #78350f', borderRadius: 4, padding: '4px 8px',
+          marginBottom: 6, textAlign: 'center',
+        }}>
+          ⚡ Trigger Queue Panel is active on the battlefield — use it to manage ordering &amp; resolution
+        </div>
+      )}
+
+      {/* Pending list (mirror of floating panel) */}
       {pending.length > 0 && (
         <div>
           <div style={{ fontSize: 9, color: '#f59e0b', fontWeight: 700, marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
             Pending ({pending.length})
           </div>
-          {pending.map((t: TriggerItem) => (
-            <div
-              key={t.id}
-              style={{
-                background: 'rgba(245,158,11,0.08)',
-                border: '1px solid #78350f',
-                borderRadius: 5,
-                padding: '6px 8px',
-                marginBottom: 4,
-              }}
-            >
-              <div style={{ fontSize: 11, fontWeight: 700, color: '#fcd34d', marginBottom: 2 }}>
-                {t.sourceName}
-              </div>
-              <div style={{ fontSize: 10, color: '#94a3b8', marginBottom: 6 }}>{t.text}</div>
-              <button
-                data-testid={`btn-ack-trigger-${t.id}`}
-                onClick={() => store.ackTrigger(t.id)}
+          {pending.map((t: TriggerItem, i: number) => {
+            const player = game.players.find(p => p.id === t.controllerId);
+            return (
+              <div
+                key={t.id}
                 style={{
-                  fontSize: 9, padding: '2px 8px',
-                  background: '#78350f', color: '#fcd34d',
-                  border: 'none', borderRadius: 3, cursor: 'pointer', fontWeight: 700,
+                  background: i === 0 ? 'rgba(245,158,11,0.12)' : 'rgba(255,255,255,0.03)',
+                  border: `1px solid ${i === 0 ? '#92400e' : '#1e293b'}`,
+                  borderRadius: 5,
+                  padding: '6px 8px',
+                  marginBottom: 4,
                 }}
-              >Acknowledge</button>
-            </div>
-          ))}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 5, marginBottom: 2 }}>
+                  <span style={{ fontSize: 9, color: '#475569', fontWeight: 700 }}>{i + 1}.</span>
+                  {player && (
+                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: player.color, display: 'inline-block' }} />
+                  )}
+                  <span style={{ fontSize: 11, fontWeight: 700, color: '#fcd34d', flex: 1 }}>
+                    {t.sourceName}
+                  </span>
+                  <span style={{ fontSize: 8, color: '#64748b', background: '#1e293b', padding: '1px 4px', borderRadius: 3 }}>
+                    {t.triggerType}
+                  </span>
+                </div>
+                <div style={{ fontSize: 10, color: '#94a3b8', marginBottom: 5, paddingLeft: 14 }}>{t.text}</div>
+                <div style={{ display: 'flex', gap: 3, paddingLeft: 14 }}>
+                  <button
+                    data-testid={`btn-ack-trigger-${t.id}`}
+                    onClick={() => store.ackTrigger(t.id)}
+                    style={{ fontSize: 9, padding: '2px 8px', background: '#78350f', color: '#fcd34d', border: 'none', borderRadius: 3, cursor: 'pointer', fontWeight: 700 }}
+                  >{i === 0 ? 'Resolve ↵' : 'Resolve'}</button>
+                  <button onClick={() => store.moveTriggerUp(t.id)} disabled={i === 0}
+                    style={{ fontSize: 9, padding: '2px 5px', background: 'transparent', color: i === 0 ? '#334155' : '#64748b', border: '1px solid #334155', borderRadius: 3, cursor: i === 0 ? 'default' : 'pointer' }}>↑</button>
+                  <button onClick={() => store.moveTriggerDown(t.id)} disabled={i === pending.length - 1}
+                    style={{ fontSize: 9, padding: '2px 5px', background: 'transparent', color: i === pending.length - 1 ? '#334155' : '#64748b', border: '1px solid #334155', borderRadius: 3, cursor: i === pending.length - 1 ? 'default' : 'pointer' }}>↓</button>
+                  <button onClick={() => store.markTriggerMissed(t.id)}
+                    style={{ fontSize: 8, padding: '2px 5px', background: 'transparent', color: '#475569', border: '1px solid #334155', borderRadius: 3, cursor: 'pointer', marginLeft: 'auto' }}>Missed</button>
+                </div>
+              </div>
+            );
+          })}
+          {pending.length >= 2 && (
+            <button
+              data-testid="btn-resolve-all-triggers-panel"
+              onClick={() => pending.forEach(t => store.ackTrigger(t.id))}
+              style={{ width: '100%', padding: '4px 0', fontSize: 9, background: '#1e293b', color: '#64748b', border: '1px solid #334155', borderRadius: 4, cursor: 'pointer', marginTop: 4 }}
+            >Resolve All ({pending.length})</button>
+          )}
         </div>
       )}
+
       {pending.length === 0 && (
         <div style={{ color: '#334155', fontSize: 12, textAlign: 'center', padding: 16, fontStyle: 'italic' }}>
           No pending triggers
         </div>
       )}
+
+      {/* Missed triggers */}
+      {missed.length > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 9, color: '#ef4444', fontWeight: 700, marginBottom: 4, textTransform: 'uppercase' }}>
+            Missed ({missed.length})
+          </div>
+          {missed.map(t => (
+            <div key={t.id} style={{ fontSize: 10, color: '#7f1d1d', padding: '2px 0' }}>
+              ✕ {t.sourceName}: {t.text.slice(0, 50)}…
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Acknowledged history */}
       {acknowledged.length > 0 && (
         <div style={{ marginTop: 8 }}>
           <div style={{ fontSize: 9, color: '#475569', marginBottom: 4, textTransform: 'uppercase' }}>
-            Acknowledged
+            Resolved (last {Math.min(acknowledged.length, 10)})
           </div>
           {acknowledged.slice(-10).map(t => (
             <div key={t.id} style={{ fontSize: 10, color: '#334155', padding: '2px 0' }}>

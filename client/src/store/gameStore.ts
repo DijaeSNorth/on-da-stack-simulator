@@ -122,6 +122,12 @@ export interface GameStore {
 
   addTriggerToQueue: (trigger: Omit<TriggerItem, 'id' | 'timestamp' | 'acknowledged' | 'missed'>) => void;
   ackTrigger: (triggerId: string) => void;
+  /** Move a trigger up (toward index 0) in the queue — for APNAP ordering. */
+  moveTriggerUp: (triggerId: string) => void;
+  /** Move a trigger down in the queue. */
+  moveTriggerDown: (triggerId: string) => void;
+  /** Mark a trigger as missed (CR 702.19 — judge mode only, still logs). */
+  markTriggerMissed: (triggerId: string) => void;
 
   enterCombat: () => void;
   declareAttack: (attackerInstanceId: string, targetPlayerId: string) => void;
@@ -569,6 +575,34 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
   ackTrigger: (triggerId) => {
     set({ game: acknowledgeTrigger(get().game, triggerId) });
+  },
+
+  moveTriggerUp: (triggerId) => {
+    const g = get().game;
+    const queue = [...g.triggerQueue];
+    const idx = queue.findIndex(t => t.id === triggerId);
+    if (idx <= 0) return;
+    [queue[idx - 1], queue[idx]] = [queue[idx], queue[idx - 1]];
+    set({ game: { ...g, triggerQueue: queue, lastUpdatedAt: Date.now() } });
+  },
+
+  moveTriggerDown: (triggerId) => {
+    const g = get().game;
+    const queue = [...g.triggerQueue];
+    const idx = queue.findIndex(t => t.id === triggerId);
+    if (idx < 0 || idx >= queue.length - 1) return;
+    [queue[idx], queue[idx + 1]] = [queue[idx + 1], queue[idx]];
+    set({ game: { ...g, triggerQueue: queue, lastUpdatedAt: Date.now() } });
+  },
+
+  markTriggerMissed: (triggerId) => {
+    const g = get().game;
+    const queue = g.triggerQueue.map(t =>
+      t.id === triggerId ? { ...t, missed: true, acknowledged: true } : t
+    );
+    const action = createAction(g, g.activePlayerId, 'OTHER',
+      `Trigger missed: ${g.triggerQueue.find(t => t.id === triggerId)?.sourceName ?? triggerId}`);
+    set({ game: { ...g, triggerQueue: queue, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
   },
 
   // ── Combat ────────────────────────────────────────────────────────────────
