@@ -37,6 +37,7 @@ export interface UIState {
   cardPreview: string | null;
   searchQuery: string;
   showTokenEditor: boolean;
+  cardSearchOpen: boolean;
   judgeMode: boolean;
   battlefieldView: 'normal' | 'overview';
   assistantMessages: AssistantMessage[];
@@ -70,6 +71,7 @@ const DEFAULT_UI: UIState = {
   cardPreview: null,
   searchQuery: '',
   showTokenEditor: false,
+  cardSearchOpen: false,
   judgeMode: false,
   battlefieldView: 'normal',
   assistantMessages: [],
@@ -155,6 +157,7 @@ export interface GameStore {
   openCardContextMenu: (instanceId: string, x: number, y: number) => void;
   closeCardContextMenu: () => void;
   setCardPreview: (instanceId: string | null) => void;
+  setCardSearchOpen: (open: boolean) => void;
   setJudgeMode: (on: boolean) => void;
   toggleBattlefieldView: () => void;
   toggleCombatMode: () => void;
@@ -864,6 +867,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   openCardContextMenu: (instanceId, x, y) => set(s => ({ ui: { ...s.ui, cardContextMenu: { instanceId, x, y } } })),
   closeCardContextMenu: () => set(s => ({ ui: { ...s.ui, cardContextMenu: null } })),
   setCardPreview: (id) => set(s => ({ ui: { ...s.ui, cardPreview: id } })),
+  setCardSearchOpen: (open) => set(s => ({ ui: { ...s.ui, cardSearchOpen: open } })),
   setJudgeMode: (on) => set(s => ({ ui: { ...s.ui, judgeMode: on } })),
   toggleBattlefieldView: () => set(s => ({ ui: { ...s.ui, battlefieldView: s.ui.battlefieldView === 'normal' ? 'overview' : 'normal' } })),
   toggleCombatMode: () => set(s => ({ ui: { ...s.ui, combatMode: !s.ui.combatMode } })),

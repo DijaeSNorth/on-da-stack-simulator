@@ -10,6 +10,7 @@ import { CardContextMenu } from './components/cards/CardContextMenu';
 import { ZoneDrawer } from './components/zones/ZoneDrawer';
 import { LobbyScreen } from './components/lobby/LobbyScreen';
 import { CommandInput } from './components/command/CommandInput';
+import { CardSearchPanel } from './components/panels/CardSearchPanel';
 
 export default function App() {
   const ui = useGameStore(s => s.ui);
@@ -81,6 +82,7 @@ export default function App() {
       <FloatingCardPreview />
       <CardContextMenu />
       <ZoneDrawer />
+      <CardSearchPanel />
     </div>
   );
 }

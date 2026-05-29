@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useGameStore } from '../store/gameStore';
 
 const PHASE_LABELS: Record<string, string> = {
@@ -18,6 +19,22 @@ const PHASE_LABELS: Record<string, string> = {
 export function TopBar() {
   const store = useGameStore();
   const { game, ui } = store;
+
+  // Global keyboard shortcut: / or Ctrl+F → open card search panel
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Don't intercept when typing in input/textarea
+      const tag = (document.activeElement as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+
+      if (e.key === '/' || (e.ctrlKey && e.key === 'f')) {
+        e.preventDefault();
+        store.setCardSearchOpen(true);
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [store]);
 
   const activePlayer = game.players.find(p => p.id === game.activePlayerId);
   const priorityPlayer = game.players.find(p => p.id === game.priorityPlayerId);
@@ -166,6 +183,12 @@ export function TopBar() {
           title={ui.judgeMode ? 'Exit Judge Mode' : 'Enter Judge Mode'}
           style={topBtnStyle(ui.judgeMode ? '#78350f' : 'none', ui.judgeMode ? '#fcd34d' : '#64748b')}
         >⚜</button>
+        <button
+          data-testid="btn-card-search"
+          onClick={() => store.setCardSearchOpen(true)}
+          title="Card Search (/ or Ctrl+F)"
+          style={topBtnStyle(ui.cardSearchOpen ? '#1e3a5f' : 'none', ui.cardSearchOpen ? '#60a5fa' : '#64748b')}
+        >🔍</button>
         <button
           data-testid="btn-open-lobby"
           onClick={() => store.setLobbyOpen(true)}
