@@ -12,6 +12,7 @@ import {
   addTrigger, acknowledgeTrigger, drawCards, discardCard, createToken,
   checkStateBasedActions, declareAttacker, declareBlocker, undoAction,
   loadDeckIntoPlayer, createDefaultGameConfig,
+  triggerMyriad, exileMyriadCopies,
 } from '../engine/gameEngine';
 import {
   checkCastLegality, checkTapLegality, checkAttackLegality, checkBlockLegality,
@@ -124,6 +125,12 @@ export interface GameStore {
 
   enterCombat: () => void;
   declareAttack: (attackerInstanceId: string, targetPlayerId: string) => void;
+  /** Trigger Myriad for an attacker: create token copies attacking each OTHER opponent. */
+  declareMyriadAttack: (
+    attackerInstanceId: string,
+    declaredDefenderId: string,
+    copiesPerOpponent: number,
+  ) => { copyInstanceId: string; targetPlayerId: string }[];
   declareBlock: (blockerInstanceId: string, attackerInstanceId: string) => void;
   resolveCombatDamage: () => void;
   endCombat: () => void;
@@ -589,6 +596,42 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     set({ game: g, ui: { ...get().ui, assistantMessages: [...get().ui.assistantMessages, ...newMsgs] } });
   },
 
+  declareMyriadAttack: (attackerInstanceId, declaredDefenderId, copiesPerOpponent) => {
+    let g = get().game;
+    const attackerCard = g.cards[attackerInstanceId];
+    if (!attackerCard) return [];
+
+    const { newState, copies } = triggerMyriad(g, attackerInstanceId, declaredDefenderId, copiesPerOpponent);
+    g = newState;
+
+    // Log myriad trigger
+    const opponentNames = copies
+      .map(c => g.players.find(p => p.id === c.targetPlayerId)?.name ?? c.targetPlayerId)
+      .filter((v, i, a) => a.indexOf(v) === i)
+      .join(', ');
+    const copyCount = copies.length;
+    const action = createAction(
+      g, g.activePlayerId, 'DECLARE_ATTACKER',
+      `Myriad — ${attackerCard.definition.name} creates ${copyCount} cop${copyCount === 1 ? 'y' : 'ies'} attacking ${opponentNames}`,
+      [attackerInstanceId],
+      { myriadCopies: copies },
+    );
+    g = { ...g, actionLog: [...g.actionLog, action] };
+
+    // Commander damage note: flag if attacker is a commander (copies track separately)
+    const isCommander = g.players.some(p => p.commanders.includes(attackerInstanceId));
+    const msgs = isCommander && g.config.useCommanderDamage
+      ? [makeMsg(g, {
+          id: uuid(), severity: 'info', label: 'Info',
+          text: `${attackerCard.definition.name} is a commander — each Myriad copy tracks commander damage to its target independently (CR 702.116, 903.17).`,
+          ruleRef: 'CR 702.116',
+        })]
+      : [];
+
+    set({ game: g, ui: { ...get().ui, assistantMessages: [...get().ui.assistantMessages, ...msgs] } });
+    return copies;
+  },
+
   declareBlock: (blockerInstanceId, attackerInstanceId) => {
     let g = get().game;
     const check = checkBlockLegality(g, blockerInstanceId, attackerInstanceId);
@@ -738,6 +781,19 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
   endCombat: () => {
     let g = get().game;
+
+    // CR 702.116d — Exile Myriad token copies at end of combat (before resetting combat state)
+    if (g.combat.hasMyriad && g.combat.myriadCopies.length > 0) {
+      const myriadLog = createAction(
+        g, g.activePlayerId, 'MOVE_CARD',
+        `Myriad copies exiled (${g.combat.myriadCopies.length} token${g.combat.myriadCopies.length !== 1 ? 's' : ''}) — CR 702.116d`,
+        g.combat.myriadCopies.map(m => m.copyId),
+      );
+      g = { ...g, actionLog: [...g.actionLog, myriadLog] };
+      g = exileMyriadCopies(g);
+    }
+
+    // Clear combat roles from remaining cards
     const newCards = { ...g.cards };
     for (const [id, card] of Object.entries(newCards)) {
       if (card.combatRole !== 'none') {

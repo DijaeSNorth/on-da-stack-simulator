@@ -793,3 +793,125 @@ export function undoAction(state: GameState): GameState {
   }
   return state; // Nothing to undo
 }
+
+// ─── Myriad ───────────────────────────────────────────────────────────────────
+
+/**
+ * CR 702.116 — Myriad
+ *
+ * When a Myriad creature attacks, for each OTHER opponent (not the declared
+ * defender) create a token copy of that creature attacking that opponent.
+ * The copies are exiled at end of combat.
+ *
+ * copyCount lets the controlling player declare how many copies to create per
+ * opponent (default 1; >1 models multiple Myriad triggers stacked via effects
+ * like Strionic Resonator, or simply a large-copy-stack sandbox).
+ *
+ * Returns the updated state AND a list of all created myriad copy instanceIds
+ * grouped by target player.
+ */
+export function triggerMyriad(
+  state: GameState,
+  attackerInstanceId: string,
+  /** Player who is being DIRECTLY attacked (declared defender). Copies attack everyone else. */
+  declaredDefenderId: string,
+  /** How many copies to create per opponent (default 1). */
+  copiesPerOpponent: number = 1,
+): {
+  newState: GameState;
+  copies: { copyInstanceId: string; targetPlayerId: string }[];
+} {
+  const attackerCard = state.cards[attackerInstanceId];
+  if (!attackerCard) return { newState: state, copies: [] };
+
+  const attackingPlayerId = attackerCard.controllerId;
+  const opponents = state.players.filter(
+    p => p.id !== attackingPlayerId && p.id !== declaredDefenderId,
+  );
+
+  let g = state;
+  const copies: { copyInstanceId: string; targetPlayerId: string }[] = [];
+
+  for (const opponent of opponents) {
+    for (let i = 0; i < copiesPerOpponent; i++) {
+      // Build token copy definition — mirrors original but flagged as copy
+      const origDef = attackerCard.definition;
+      const copyDefId = `copy-${origDef.id}-${uuid()}`;
+      const copyDef: CardDefinition = {
+        ...origDef,
+        id: copyDefId,
+        name: `${origDef.name} (Myriad copy)`,
+      };
+
+      const copyInstanceId = `myriad-${attackerInstanceId}-${opponent.id}-${i}-${uuid()}`;
+      const copyCard: CardState = {
+        ...attackerCard,
+        instanceId: copyInstanceId,
+        definitionId: copyDefId,
+        definition: copyDef,
+        zone: 'battlefield',
+        tapped: true,           // Attacking creatures are tapped
+        summoningSick: false,   // Tokens entering via Myriad are attacking — no SS check
+        combatRole: 'attacker',
+        attackTarget: opponent.id,
+        markedForDamage: 0,
+        token: true,
+        copy: true,
+      };
+
+      // Place copy on battlefield for attacking player
+      g = {
+        ...g,
+        definitions: { ...g.definitions, [copyDefId]: copyDef },
+        cards: { ...g.cards, [copyInstanceId]: copyCard },
+        players: g.players.map(p =>
+          p.id === attackingPlayerId
+            ? { ...p, battlefield: [...p.battlefield, copyInstanceId] }
+            : p,
+        ),
+        combat: {
+          ...g.combat,
+          hasMyriad: true,
+          attackers: [
+            ...g.combat.attackers,
+            { instanceId: copyInstanceId, targetPlayerId: opponent.id, targets: [] },
+          ],
+          myriadCopies: [
+            ...g.combat.myriadCopies,
+            { originalId: attackerInstanceId, copyId: copyInstanceId, targetId: opponent.id },
+          ],
+        },
+      };
+
+      copies.push({ copyInstanceId, targetPlayerId: opponent.id });
+    }
+  }
+
+  return { newState: g, copies };
+}
+
+/**
+ * Exile all myriad token copies at end of combat. (CR 702.116d)
+ * Removes them from battlefield + cards map + myriadCopies list.
+ */
+export function exileMyriadCopies(state: GameState): GameState {
+  if (!state.combat.hasMyriad || state.combat.myriadCopies.length === 0) return state;
+
+  let g = state;
+  const copyIds = new Set(state.combat.myriadCopies.map(m => m.copyId));
+
+  // Remove copies from player battlefields
+  g = {
+    ...g,
+    players: g.players.map(p => ({
+      ...p,
+      battlefield: p.battlefield.filter(id => !copyIds.has(id)),
+    })),
+  };
+
+  // Remove copy cards entirely (tokens cease to exist in exile — CR 702.116d)
+  const newCards = { ...g.cards };
+  for (const id of copyIds) delete newCards[id];
+
+  return { ...g, cards: newCards };
+}
