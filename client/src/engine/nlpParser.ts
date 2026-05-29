@@ -31,6 +31,8 @@ export type IntentType =
   | 'CAST'
   | 'PLAY_LAND'
   | 'ATTACK'
+  | 'MULTI_ATTACK'   // comma-separated attackers, optionally with targets
+  | 'MULTI_BLOCK'    // comma-separated blockers vs one attacker
   | 'BLOCK'
   | 'TAP'
   | 'UNTAP'
@@ -65,10 +67,18 @@ export interface ParsedIntent {
   raw: string;
   confidence: 'high' | 'medium' | 'low';
 
-  // Card targeting
+  // Card targeting — single
   cardName?: string;
   resolvedInstanceId?: string;   // filled after fuzzy match against game state
-  resolvedInstanceIds?: string[]; // for multi-card intents
+
+  // Card targeting — multi (MULTI_ATTACK, MULTI_BLOCK, etc.)
+  // Each entry is a raw card name parsed from the comma list.
+  cardNames?: string[];
+  resolvedInstanceIds?: string[]; // parallel array to cardNames, filled after resolution
+
+  // For MULTI_ATTACK — per-attacker target overrides (from "X attacks player 2, Y attacks player 3")
+  // Map of cardName → targetPlayerIndex. If absent, the CombatPanel lets the player pick.
+  attackAssignments?: Record<string, number>;  // cardName (normalized) → 1-based player index
 
   // Player targeting
   targetPlayerIndex?: number;    // 1-based player number from text
@@ -345,6 +355,77 @@ export function parseCommand(raw: string): ParsedIntent {
   }
 
   // ── Attack ──
+  // ── Multi-attack ──
+  // "attack with Goblin Guide, Mayhem Devil, Satya"
+  // "attack with Goblin Guide, Mayhem Devil targeting player 2"
+  // "attack player 2 with Goblin Guide, Mayhem Devil"
+  // "Goblin Guide, Mayhem Devil attack"
+  // Also handles optional per-creature target annotations in the list:
+  //   "Goblin Guide (player 2), Mayhem Devil (player 3) attack"
+  const multiAttackWith = lower.match(/^attack(?:\s+player\s+(\d))?\s+with\s+(.+)$/);
+  if (multiAttackWith) {
+    const raw = multiAttackWith[2];
+    const defaultTarget = multiAttackWith[1] ? parseInt(multiAttackWith[1]) : undefined;
+    // Check if it has commas (multi) or "and" joining multiple names
+    if (raw.includes(',') || /\band\b/.test(raw)) {
+      const { names, assignments } = parseAttackerList(raw, defaultTarget);
+      if (names.length > 1) {
+        return {
+          ...result,
+          intent: 'MULTI_ATTACK',
+          cardNames: names,
+          targetPlayerIndex: defaultTarget,
+          attackAssignments: Object.keys(assignments).length > 0 ? assignments : undefined,
+          confidence: 'high',
+        };
+      }
+    }
+  }
+
+  // "Goblin Guide, Mayhem Devil, Satya attack [player N]"
+  const multiCreatureAttack = lower.match(/^(.+?)\s+attacks?(?:\s+player\s+(\d))?$/);
+  if (multiCreatureAttack) {
+    const raw = multiCreatureAttack[1];
+    if (raw.includes(',') || (/\band\b/.test(raw) && raw.split(/\band\b/).length === 2)) {
+      const defaultTarget = multiCreatureAttack[2] ? parseInt(multiCreatureAttack[2]) : undefined;
+      const { names, assignments } = parseAttackerList(raw, defaultTarget);
+      if (names.length > 1) {
+        return {
+          ...result,
+          intent: 'MULTI_ATTACK',
+          cardNames: names,
+          targetPlayerIndex: defaultTarget,
+          attackAssignments: Object.keys(assignments).length > 0 ? assignments : undefined,
+          confidence: 'high',
+        };
+      }
+    }
+  }
+
+  // ── Multi-block ──
+  // "Goblin Guide, Wall of Blossoms block Mayhem Devil"
+  // "block Mayhem Devil with Goblin Guide, Wall of Blossoms"
+  const multiBlockWith = lower.match(/^block\s+(.+?)\s+with\s+(.+)$/);
+  if (multiBlockWith && (multiBlockWith[2].includes(',') || /\band\b/.test(multiBlockWith[2]))) {
+    const blockerNames = splitNameList(multiBlockWith[2]).map(normalizeName);
+    const attackerName = normalizeName(multiBlockWith[1]);
+    if (blockerNames.length > 1) {
+      return { ...result, intent: 'MULTI_BLOCK', cardName: attackerName, cardNames: blockerNames, confidence: 'high' };
+    }
+  }
+  const multiBlockAtk = lower.match(/^(.+?)\s+blocks?\s+(.+)$/);
+  if (multiBlockAtk) {
+    const rawBlockers = multiBlockAtk[1];
+    if (rawBlockers.includes(',') || /\band\b/.test(rawBlockers)) {
+      const blockerNames = splitNameList(rawBlockers).map(normalizeName);
+      const attackerName = normalizeName(multiBlockAtk[2]);
+      if (blockerNames.length > 1) {
+        return { ...result, intent: 'MULTI_BLOCK', cardName: attackerName, cardNames: blockerNames, confidence: 'high' };
+      }
+    }
+  }
+
+  // ── Single Attack ──
   // "attack player 2 with goblin guide"
   // "attack with goblin guide"
   // "goblin guide attacks"
@@ -499,7 +580,7 @@ export function resolveIntent(
     if (!p) r.error = `No player ${intent.targetPlayerIndex} in this game.`;
   }
 
-  // Resolve card name → instance ID
+  // Resolve card name → instance ID (single card intents)
   if (intent.cardName) {
     const matches = findCardsByName(intent.cardName, state, actingPlayerId, intent);
     if (matches.length === 0) {
@@ -510,6 +591,41 @@ export function resolveIntent(
       r.ambiguous = true;
       r.candidates = matches;
       r.resolvedInstanceId = matches[0]; // default to first
+    }
+  }
+
+  // Resolve multi-card name list → instance IDs (MULTI_ATTACK, MULTI_BLOCK)
+  if (intent.cardNames && intent.cardNames.length > 0) {
+    const fakeIntent: ParsedIntent = {
+      ...intent,
+      // For attackers/blockers, always search battlefield
+      intent: intent.intent === 'MULTI_BLOCK' ? 'BLOCK' : 'ATTACK',
+    };
+    const resolved: string[] = [];
+    const errors: string[] = [];
+    for (const name of intent.cardNames) {
+      const matches = findCardsByName(name, state, actingPlayerId, fakeIntent);
+      if (matches.length === 0) {
+        errors.push(`"${name}" not found on battlefield.`);
+      } else {
+        resolved.push(matches[0]); // take best match per card
+      }
+    }
+    r.resolvedInstanceIds = resolved;
+    if (errors.length > 0) {
+      r.error = errors.join(' ');
+    }
+
+    // Re-key attackAssignments from normalized name keys to resolvedInstanceId
+    // so consumers don't have to do name matching themselves
+    if (intent.attackAssignments && resolved.length > 0) {
+      const remapped: Record<string, number> = {};
+      intent.cardNames.forEach((name, i) => {
+        const id = resolved[i];
+        const playerIdx = intent.attackAssignments![name];
+        if (id && playerIdx !== undefined) remapped[id] = playerIdx;
+      });
+      r.attackAssignments = remapped;
     }
   }
 
@@ -639,6 +755,62 @@ function diceCoefficient(a: string, b: string): number {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+// ─── Multi-Card List Parsers ──────────────────────────────────────────────────
+
+/**
+ * Split a raw comma/and-separated list into individual card name strings.
+ * Handles: "Goblin Guide, Mayhem Devil, Satya"
+ *          "Goblin Guide and Mayhem Devil"
+ */
+export function splitNameList(raw: string): string[] {
+  return raw
+    .split(/,|\band\b/)
+    .map(s => s.trim())
+    .filter(s => s.length > 0);
+}
+
+/**
+ * Parse an attacker list that may contain optional inline target annotations:
+ *   "Goblin Guide (player 2), Mayhem Devil, Satya (player 3)"
+ * Returns normalized card names and a per-card assignment map.
+ * defaultTarget is applied to cards without an explicit annotation.
+ */
+export function parseAttackerList(
+  raw: string,
+  defaultTarget?: number
+): { names: string[]; assignments: Record<string, number> } {
+  const parts = splitNameList(raw);
+  const names: string[] = [];
+  const assignments: Record<string, number> = {};
+
+  for (const part of parts) {
+    // Inline target: "Goblin Guide (player 2)" or "-> player 2" or "targeting player 2"
+    const inlineTarget = part.match(/^(.+?)\s*(?:\(player\s*(\d)\)|->\s*player\s*(\d)|targeting\s+player\s*(\d))$/i);
+    if (inlineTarget) {
+      const n = normalizeNameHelper(inlineTarget[1]);
+      const t = parseInt(inlineTarget[2] || inlineTarget[3] || inlineTarget[4]);
+      names.push(n);
+      if (!isNaN(t)) assignments[n] = t;
+    } else {
+      const n = normalizeNameHelper(part);
+      names.push(n);
+      if (defaultTarget !== undefined) assignments[n] = defaultTarget;
+    }
+  }
+
+  return { names, assignments };
+}
+
+// Internal helper — same as normalizeName but extracted to avoid forward-reference
+function normalizeNameHelper(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^(the|a|an|my|your|their)\s+/i, '')
+    .replace(/\s+(it|that|this|card|permanent|creature|spell)$/i, '')
+    .trim()
+    .replace(/\b\w/g, c => c.toUpperCase());
+}
 
 function normalizeName(raw: string): string {
   return raw

@@ -8,6 +8,7 @@ import { FloatingCardPreview } from './components/cards/CardPreview';
 import { CardContextMenu } from './components/cards/CardContextMenu';
 import { ZoneDrawer } from './components/zones/ZoneDrawer';
 import { LobbyScreen } from './components/lobby/LobbyScreen';
+import { CommandInput } from './components/command/CommandInput';
 
 export default function App() {
   const ui = useGameStore(s => s.ui);
@@ -59,6 +60,9 @@ export default function App() {
 
           {/* Hand */}
           <PlayerHand />
+
+          {/* NLP Command bar — always visible above hand */}
+          <CommandInput />
         </div>
 
         {/* Right panel */}
