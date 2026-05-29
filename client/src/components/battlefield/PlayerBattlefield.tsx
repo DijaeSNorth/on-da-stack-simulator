@@ -1,6 +1,7 @@
-import { useState, useRef } from 'react';
+import { useState } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import { CardImage } from '../cards/CardImage';
+import { useDragCombatContext } from '../../hooks/DragCombatContext';
 import type { CardState, Player } from '../../types/game';
 
 interface TokenCloud {
@@ -65,21 +66,26 @@ interface PlayerBattlefieldProps {
 export function PlayerBattlefield({ player, isLocal, isActive, compact }: PlayerBattlefieldProps) {
   const store = useGameStore();
   const { game, ui } = store;
+  const drag = useDragCombatContext();
   const [expandedClouds, setExpandedClouds] = useState<Set<string>>(new Set());
 
   const cards = player.battlefield.map(id => game.cards[id]).filter(Boolean) as CardState[];
 
-  // Separate land, non-land permanents, tokens
-  const lands = cards.filter(c => c.definition.cardTypes.includes('Land'));
-  const nonLands = cards.filter(c =>
-    !c.definition.cardTypes.includes('Land') && !c.token
-  );
-  const tokens = cards.filter(c => c.token);
+  const lands    = cards.filter(c => c.definition.cardTypes.includes('Land'));
+  const nonLands = cards.filter(c => !c.definition.cardTypes.includes('Land') && !c.token);
+  const tokens   = cards.filter(c => c.token);
 
   const { singles: tokenSingles, clouds: tokenClouds } = groupTokenClouds(tokens);
 
-  const cardSize = compact ? 'compact' : cards.length > 30 ? 'compact' : cards.length > 20 ? 'normal' : 'normal';
+  const cardSize = compact ? 'compact' : cards.length > 20 ? 'compact' : 'normal';
   const gap = compact ? 2 : 4;
+
+  // ── Drag-combat visual state ───────────────────────────────────────────────
+  // During an attack drag, own creatures that are valid attackers should glow
+  // During a block drag, opponent's attacking creatures should show drop targets
+  const isDraggingAttack = drag.dragState?.mode === 'attack';
+  const isDraggingBlock  = drag.dragState?.mode === 'block';
+  const combatActive     = game.combat.active;
 
   function handleCardClick(e: React.MouseEvent, instanceId: string) {
     e.preventDefault();
@@ -93,42 +99,103 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
 
   function renderCard(card: CardState) {
     const isSelected = ui.selectedCardId === card.instanceId;
+    const isBeingDragged = drag.dragState?.instanceId === card.instanceId;
+    const isDropTarget   = drag.dropTarget?.id === card.instanceId && drag.dropTarget?.type === 'attacker';
+
+    // Determine if this card is a valid attacker to glow during drag
+    const def = card.definition;
+    const isValidAttacker = isLocal && isDraggingAttack
+      && def.cardTypes.includes('Creature')
+      && !card.tapped
+      && !def.keywords.includes('Defender')
+      && !(card.summoningSick && !def.keywords.includes('Haste') && !def.oracleText.toLowerCase().includes('haste'));
+
+    // Determine if this card is an active attacker (valid block target during block drag)
+    const isActiveAttacker = isDraggingBlock && combatActive
+      && game.combat.attackers.some(a => a.instanceId === card.instanceId);
+
+    // Drag handlers for own cards
+    const dragHandlers = isLocal ? drag.cardDragHandlers(card.instanceId) : {};
+    // Block drop handlers for opponent's active attackers
+    const blockDropHandlers = isActiveAttacker ? drag.attackerDropHandlers(card.instanceId) : {};
+
+    // Outline logic
+    let outlineColor: string | undefined;
+    let outlineWidth = 2;
+    if (isDropTarget)          { outlineColor = '#22c55e'; outlineWidth = 3; }
+    else if (isSelected)       { outlineColor = '#60a5fa'; }
+    else if (isValidAttacker)  { outlineColor = '#ef4444'; }
+    else if (isActiveAttacker) { outlineColor = '#f97316'; }
+
     return (
       <div
         key={card.instanceId}
         data-testid={`card-battlefield-${card.instanceId}`}
         style={{
           position: 'relative',
-          cursor: 'pointer',
-          outline: isSelected ? '2px solid #60a5fa' : 'none',
+          cursor: isLocal ? 'grab' : isActiveAttacker ? 'crosshair' : 'pointer',
+          outline: outlineColor ? `${outlineWidth}px solid ${outlineColor}` : 'none',
+          outlineOffset: isDropTarget ? 3 : 0,
           borderRadius: 4,
-          transition: 'transform 0.1s',
+          transition: 'transform 0.1s, outline 0.1s, opacity 0.1s',
+          opacity: isBeingDragged ? 0.35 : 1,
+          // Pulse glow for valid drag targets
+          boxShadow: isDropTarget
+            ? `0 0 12px 4px #22c55e88`
+            : isValidAttacker && isDraggingAttack
+              ? `0 0 8px 2px #ef444466`
+              : isActiveAttacker
+                ? `0 0 8px 2px #f9731666`
+                : 'none',
         }}
         onClick={(e) => handleCardClick(e, card.instanceId)}
         onContextMenu={(e) => { e.preventDefault(); handleCardClick(e, card.instanceId); }}
         onMouseEnter={() => store.setHoveredCard(card.instanceId)}
         onMouseLeave={() => store.setHoveredCard(null)}
-        title={card.definition.name}
+        title={
+          isValidAttacker  ? `Drag to attack — ${card.definition.name}` :
+          isActiveAttacker ? `Drop a creature here to block ${card.definition.name}` :
+          card.definition.name
+        }
+        {...dragHandlers}
+        {...blockDropHandlers}
       >
         <CardImage card={card} size={cardSize} />
-        {/* Attack arrow indicator */}
+
+        {/* Combat role badge */}
         {card.combatRole === 'attacker' && (
           <div style={{
             position: 'absolute', top: -4, right: -4,
             background: '#ef4444', borderRadius: '50%',
-            width: 12, height: 12,
+            width: 14, height: 14,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 8, color: '#fff', fontWeight: 700,
+            fontSize: 9, color: '#fff', fontWeight: 700,
+            boxShadow: '0 0 6px #ef4444',
           }}>⚔</div>
         )}
         {card.combatRole === 'blocker' && (
           <div style={{
             position: 'absolute', top: -4, right: -4,
             background: '#3b82f6', borderRadius: '50%',
-            width: 12, height: 12,
+            width: 14, height: 14,
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 8, color: '#fff', fontWeight: 700,
+            fontSize: 9, color: '#fff', fontWeight: 700,
+            boxShadow: '0 0 6px #3b82f6',
           }}>🛡</div>
+        )}
+
+        {/* Drag hint tooltip (only shows when actively dragging own card) */}
+        {isBeingDragged && (
+          <div style={{
+            position: 'absolute', bottom: '110%', left: '50%',
+            transform: 'translateX(-50%)',
+            background: '#0f172a', color: '#e2e8f0',
+            fontSize: 9, padding: '3px 7px', borderRadius: 4,
+            border: '1px solid #334155', whiteSpace: 'nowrap',
+            pointerEvents: 'none', zIndex: 100,
+          }}>
+            Drop on opponent to attack
+          </div>
         )}
       </div>
     );
@@ -140,15 +207,11 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
       <div
         key={cloud.key}
         style={{
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
+          display: 'flex', flexDirection: 'column', alignItems: 'center',
           cursor: 'pointer',
           background: 'rgba(255,255,255,0.04)',
           border: '1px solid rgba(255,255,255,0.1)',
-          borderRadius: 6,
-          padding: '4px 6px',
-          minWidth: 54,
+          borderRadius: 6, padding: '4px 6px', minWidth: 54,
           transition: 'background 0.15s',
         }}
         onClick={() => setExpandedClouds(prev => {
@@ -158,74 +221,50 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
           return next;
         })}
         title={`${cloud.cards.length}× ${cloud.name} — click to expand`}
-        onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.08)'; }}
-        onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.04)'; }}
       >
         <div style={{ fontSize: 18, lineHeight: 1 }}>🪙</div>
-        <div style={{ fontSize: 10, fontWeight: 700, color: '#e2e8f0', marginTop: 2 }}>
-          ×{cloud.cards.length}
-        </div>
-        <div style={{ fontSize: 9, color: '#94a3b8' }}>
-          {cloud.power}/{cloud.toughness}
-        </div>
-        {cloud.tappedCount > 0 && (
-          <div style={{ fontSize: 9, color: '#f59e0b' }}>
-            ↻{cloud.tappedCount}
-          </div>
-        )}
+        <div style={{ fontSize: 10, fontWeight: 700, color: '#e2e8f0', marginTop: 2 }}>×{cloud.cards.length}</div>
+        <div style={{ fontSize: 9, color: '#94a3b8' }}>{cloud.power}/{cloud.toughness}</div>
+        {cloud.tappedCount > 0 && <div style={{ fontSize: 9, color: '#f59e0b' }}>↻{cloud.tappedCount}</div>}
         {cloud.counters.map(c => (
-          <div key={c.type} style={{ fontSize: 8, color: '#6ee7b7' }}>
-            {c.type}:{c.total}
-          </div>
+          <div key={c.type} style={{ fontSize: 8, color: '#6ee7b7' }}>{c.type}:{c.total}</div>
         ))}
       </div>
     );
   }
 
   const labelStyle: React.CSSProperties = {
-    fontSize: 9,
-    color: '#475569',
-    textTransform: 'uppercase',
-    letterSpacing: '0.08em',
-    marginBottom: 3,
-    fontWeight: 600,
+    fontSize: 9, color: '#475569', textTransform: 'uppercase',
+    letterSpacing: '0.08em', marginBottom: 3, fontWeight: 600,
   };
 
   return (
     <div
       data-testid={`battlefield-${player.id}`}
       style={{
-        display: 'flex',
-        flexDirection: 'column',
+        display: 'flex', flexDirection: 'column',
         gap: compact ? 4 : 6,
         padding: compact ? '4px 6px' : '6px 10px',
         width: '100%',
         minHeight: compact ? 80 : 120,
-        position: 'relative',
-        boxSizing: 'border-box',
+        position: 'relative', boxSizing: 'border-box',
       }}
     >
       {/* Player name strip */}
       <div style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 6,
+        display: 'flex', alignItems: 'center', gap: 6,
         borderBottom: `1px solid ${player.color}44`,
         paddingBottom: compact ? 2 : 4,
         marginBottom: compact ? 2 : 4,
       }}>
         <div style={{
           width: compact ? 8 : 10, height: compact ? 8 : 10,
-          borderRadius: '50%',
-          background: player.color,
-          flexShrink: 0,
+          borderRadius: '50%', background: player.color, flexShrink: 0,
           boxShadow: isActive ? `0 0 8px ${player.color}` : 'none',
         }} />
         <span style={{
-          fontSize: compact ? 9 : 11,
-          fontWeight: 600,
-          color: isActive ? '#e2e8f0' : '#94a3b8',
-          letterSpacing: '0.03em',
+          fontSize: compact ? 9 : 11, fontWeight: 600,
+          color: isActive ? '#e2e8f0' : '#94a3b8', letterSpacing: '0.03em',
         }}>
           {player.name}
         </span>
@@ -240,15 +279,24 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
             {cards.length} permanent{cards.length !== 1 ? 's' : ''}
           </span>
         )}
+
+        {/* Drag hint — show when dragging an attack toward this player */}
+        {isDraggingAttack && !isLocal && (
+          <span style={{
+            marginLeft: 'auto', fontSize: 9, color: '#ef4444',
+            animation: 'pulse 1s infinite',
+            fontWeight: 700,
+          }}>
+            Drop to attack →
+          </span>
+        )}
       </div>
 
-      {/* Lands row */}
+      {/* Lands */}
       {lands.length > 0 && (
         <div>
           {!compact && <div style={labelStyle}>Lands ({lands.length})</div>}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap }}>
-            {lands.map(renderCard)}
-          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap }}>{lands.map(renderCard)}</div>
         </div>
       )}
 
@@ -256,9 +304,7 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
       {nonLands.length > 0 && (
         <div>
           {!compact && <div style={labelStyle}>Permanents ({nonLands.length})</div>}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap }}>
-            {nonLands.map(renderCard)}
-          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap }}>{nonLands.map(renderCard)}</div>
         </div>
       )}
 
@@ -268,11 +314,7 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
           {!compact && <div style={labelStyle}>Tokens ({tokens.length})</div>}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap, alignItems: 'flex-end' }}>
             {tokenClouds.map(renderTokenCloud)}
-            {/* Expanded cloud cards */}
-            {tokenClouds
-              .filter(c => expandedClouds.has(c.key))
-              .flatMap(c => c.cards.map(renderCard))
-            }
+            {tokenClouds.filter(c => expandedClouds.has(c.key)).flatMap(c => c.cards.map(renderCard))}
             {tokenSingles.map(renderCard)}
           </div>
         </div>
@@ -284,7 +326,10 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           flex: 1, color: '#334155', fontSize: 12, fontStyle: 'italic',
         }}>
-          No permanents
+          {isDraggingAttack && !isLocal
+            ? <span style={{ color: '#ef444466' }}>Drop here to attack {player.name}</span>
+            : 'No permanents'
+          }
         </div>
       )}
     </div>

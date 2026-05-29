@@ -720,12 +720,22 @@ export function declareAttacker(
     ],
   };
 
+  // CR 702.20: Vigilance — attacking doesn't cause creature to tap
+  const hasVigilance =
+    card.definition.keywords.some(k => k.toLowerCase() === 'vigilance') ||
+    card.definition.oracleText.toLowerCase().includes('vigilance');
+
   return {
     ...state,
     combat: newCombat,
     cards: {
       ...state.cards,
-      [attackerInstanceId]: { ...card, tapped: true, combatRole: 'attacker', attackTarget: targetPlayerId },
+      [attackerInstanceId]: {
+        ...card,
+        tapped: hasVigilance ? card.tapped : true,
+        combatRole: 'attacker',
+        attackTarget: targetPlayerId,
+      },
     },
     lastUpdatedAt: Date.now(),
   };
