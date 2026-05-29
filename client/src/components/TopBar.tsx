@@ -140,30 +140,6 @@ export function TopBar() {
       {/* Spacer */}
       <div style={{ flex: 1 }} />
 
-      {/* Phase navigation */}
-      <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexShrink: 0 }}>
-        <button
-          data-testid="btn-pass-priority"
-          onClick={store.passPriority}
-          style={topBtnStyle('#1e293b', '#94a3b8')}
-          title="Pass Priority"
-        >Pass</button>
-        <button
-          data-testid="btn-advance-phase-top"
-          onClick={store.advancePhase}
-          style={topBtnStyle('#1e3a5f', '#93c5fd')}
-          title="Next Phase"
-        >→ Phase</button>
-        <button
-          data-testid="btn-advance-turn-top"
-          onClick={store.advanceTurn}
-          style={topBtnStyle('#2e1065', '#c4b5fd')}
-          title="End Turn"
-        >End Turn</button>
-      </div>
-
-      <div style={{ width: 1, height: 20, background: '#1e293b' }} />
-
       {/* View toggles */}
       <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
         <button

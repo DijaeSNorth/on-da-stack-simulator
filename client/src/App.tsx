@@ -1,5 +1,6 @@
 import { useGameStore } from './store/gameStore';
 import { TopBar } from './components/TopBar';
+import { PhaseGuideBar } from './components/PhaseGuideBar';
 import { LeftPanel } from './components/panels/LeftPanel';
 import { RightPanel } from './components/panels/RightPanel';
 import { CommanderTable } from './components/battlefield/CommanderTable';
@@ -28,6 +29,8 @@ export default function App() {
 
       {/* Top bar */}
       <TopBar />
+      {/* Phase guide bar — player-driven, never auto-advances */}
+      <PhaseGuideBar />
 
       {/* Main area: left panel + battlefield + right panel */}
       <div style={{
