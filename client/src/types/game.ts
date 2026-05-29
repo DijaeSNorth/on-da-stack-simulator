@@ -188,7 +188,7 @@ export type FlagSeverity = 'info' | 'warning' | 'error' | 'legal' | 'flagged' | 
 export interface AssistantFlag {
   id: string;
   severity: FlagSeverity;
-  label: 'Legal' | 'Flagged' | 'Needs Review' | 'Why Is This Legal' | 'Info' | 'Missed Trigger' | 'State-Based';
+  label: 'Legal' | 'Flagged' | 'Needs Review' | 'Why Is This Legal' | 'Info' | 'Missed Trigger' | 'State-Based' | 'Tax';
   text: string;
   ruleRef?: string;
   cardRef?: string;

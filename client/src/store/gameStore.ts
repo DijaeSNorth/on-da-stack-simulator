@@ -234,6 +234,25 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
     g = moveCard(g, cardInstanceId, 'stack', castingPlayerId);
     g = pushToStack(g, stackObj);
+
+    // Track commander cast count for tax purposes (CR 903.8)
+    const castingPlayer = g.players.find(p => p.id === castingPlayerId);
+    const isCommanderBeingCast = castingPlayer?.commanders.includes(cardInstanceId) ||
+      card.zone === 'command';
+    if (isCommanderBeingCast && g.config.commanderTaxEnabled) {
+      g = {
+        ...g,
+        players: g.players.map(p => {
+          if (p.id !== castingPlayerId) return p;
+          const prevCount = p.commanderCastCount[cardInstanceId] || 0;
+          return {
+            ...p,
+            commanderCastCount: { ...p.commanderCastCount, [cardInstanceId]: prevCount + 1 },
+          };
+        }),
+      };
+    }
+
     const action = createAction(g, castingPlayerId, 'CAST_SPELL',
       `${card.definition.name} cast by ${castingPlayerId}`, [cardInstanceId], {}, check.flags);
     g = { ...g, actionLog: [...g.actionLog, action] };
@@ -581,38 +600,133 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
   resolveCombatDamage: () => {
     let g = get().game;
-    for (const attacker of g.combat.attackers) {
-      const attackerCard = g.cards[attacker.instanceId];
-      if (!attackerCard) continue;
-      const blockers = g.combat.blockers
-        .filter(b => b.blockedAttacker === attacker.instanceId)
-        .map(b => g.cards[b.instanceId]).filter(Boolean) as typeof attackerCard[];
 
-      if (blockers.length === 0) {
-        const power = parseInt(attackerCard.definition.power || '0', 10) || 0;
-        const hasInfect = attackerCard.definition.oracleText.toLowerCase().includes('infect');
-        if (hasInfect) {
-          g = { ...g, players: g.players.map(p =>
-            p.id === attacker.targetPlayerId ? { ...p, poisonCounters: p.poisonCounters + power } : p
-          )};
-        } else {
-          g = modifyLife(g, attacker.targetPlayerId, -power);
+    // Helper: does a card have a keyword (checks keywords array + oracle text)
+    const hasKw = (card: (typeof g.cards)[string], kw: string) => {
+      const lc = kw.toLowerCase();
+      return card.definition.keywords.some(k => k.toLowerCase() === lc) ||
+        card.definition.oracleText.toLowerCase().includes(lc);
+    };
+
+    // CR 510.1–510.4: First Strike / Double Strike create a separate damage step
+    // Step 1 — First-strike & double-strike creatures deal damage
+    // Step 2 — Normal + double-strike creatures deal damage
+    const applyDamageForAttackers = (attackers: typeof g.combat.attackers, firstStrikeStep: boolean) => {
+      for (const attacker of attackers) {
+        const attackerCard = g.cards[attacker.instanceId];
+        if (!attackerCard) continue;
+        const hasFirstStrike = hasKw(attackerCard, 'First Strike');
+        const hasDoubleStrike = hasKw(attackerCard, 'Double Strike');
+
+        // Which steps this attacker deals damage in
+        const dealsInFirstStep = hasFirstStrike || hasDoubleStrike;
+        const dealsInSecondStep = !hasFirstStrike || hasDoubleStrike;
+        // CR 510: attackerDealsNow — whether THIS attacker deals damage in this step
+        const attackerDealsNow = firstStrikeStep ? dealsInFirstStep : dealsInSecondStep;
+
+        const blockers = g.combat.blockers
+          .filter(b => b.blockedAttacker === attacker.instanceId)
+          .map(b => g.cards[b.instanceId]).filter(Boolean) as typeof attackerCard[];
+
+        // Unblocked — skip if attacker doesn't deal in this step
+        if (blockers.length === 0) {
+          if (!attackerDealsNow) continue;
+          // Unblocked — deal damage to target player
+          const power = parseInt(attackerCard.definition.power || '0', 10) || 0;
+          const hasInfect = hasKw(attackerCard, 'Infect');
+          const hasPoison = hasKw(attackerCard, 'Poisonous');
+          const hasLifelink = hasKw(attackerCard, 'Lifelink');
+          if (hasInfect) {
+            g = { ...g, players: g.players.map(p =>
+              p.id === attacker.targetPlayerId ? { ...p, poisonCounters: p.poisonCounters + power } : p
+            )};
+          } else {
+            g = modifyLife(g, attacker.targetPlayerId, -power);
+          }
+          // Lifelink — controller gains life equal to damage dealt
+          if (hasLifelink && power > 0) {
+            g = modifyLife(g, attackerCard.controllerId, power);
+          }
+          // Commander damage tracking
           const isCommander = g.players.some(p => p.commanders.includes(attacker.instanceId));
-          if (isCommander && g.config.useCommanderDamage) {
+          if (isCommander && g.config.useCommanderDamage && !hasInfect && power > 0) {
             g = addCommanderDamage(g, attacker.targetPlayerId, attacker.instanceId, power);
           }
-        }
-      } else {
-        const attackerPower = parseInt(attackerCard.definition.power || '0', 10) || 0;
-        for (const blocker of blockers) {
-          g = { ...g, cards: { ...g.cards,
-            [blocker.instanceId]: { ...blocker, markedForDamage: blocker.markedForDamage + attackerPower },
-            [attacker.instanceId]: { ...g.cards[attacker.instanceId],
-              markedForDamage: (g.cards[attacker.instanceId].markedForDamage || 0) + (parseInt(blocker.definition.power || '0', 10) || 0) },
-          }};
+        } else {
+          // Blocked — assign damage to/from blockers
+          // CR 510: Attacker and blocker damage is INDEPENDENT.
+          // A blocker without FS deals in the normal step even if its attacker has FS.
+          const attackerPower = parseInt(attackerCard.definition.power || '0', 10) || 0;
+          const hasDeathtouch = hasKw(attackerCard, 'Deathtouch');
+          const hasLifelink = hasKw(attackerCard, 'Lifelink');
+          let totalDamageDealt = 0;
+
+          for (const blocker of blockers) {
+            const blkDealsInFirstStep = hasKw(blocker, 'First Strike') || hasKw(blocker, 'Double Strike');
+            const blkDealsInSecondStep = !hasKw(blocker, 'First Strike') || hasKw(blocker, 'Double Strike');
+            const blockerDealsNow = firstStrikeStep ? blkDealsInFirstStep : blkDealsInSecondStep;
+
+            // Attacker marks damage on blocker (only when attacker deals in this step)
+            if (attackerDealsNow) {
+              const dmgToBlocker = hasDeathtouch ? 1 : attackerPower;
+              g = { ...g, cards: { ...g.cards,
+                [blocker.instanceId]: {
+                  ...g.cards[blocker.instanceId],
+                  markedForDamage: (g.cards[blocker.instanceId].markedForDamage || 0) + dmgToBlocker,
+                },
+              }};
+              totalDamageDealt += dmgToBlocker;
+            }
+
+            // Blocker marks damage on attacker (independently per CR 510)
+            if (blockerDealsNow) {
+              const blockerPower = parseInt(blocker.definition.power || '0', 10) || 0;
+              const blockerDeathtouch = hasKw(blocker, 'Deathtouch');
+              const dmgToAttacker = blockerDeathtouch ? 1 : blockerPower;
+              g = { ...g, cards: { ...g.cards,
+                [attacker.instanceId]: {
+                  ...g.cards[attacker.instanceId],
+                  markedForDamage: (g.cards[attacker.instanceId].markedForDamage || 0) + dmgToAttacker,
+                },
+              }};
+              // Blocker lifelink
+              if (hasKw(blocker, 'Lifelink') && blockerPower > 0) {
+                g = modifyLife(g, blocker.controllerId, blockerPower);
+              }
+            }
+          }
+
+          // Attacker lifelink — gains life for damage it dealt to blockers
+          if (hasLifelink && totalDamageDealt > 0) {
+            g = modifyLife(g, attackerCard.controllerId, totalDamageDealt);
+          }
         }
       }
+    };
+
+    // Determine if any first/double strike creatures are in combat
+    const anyFirstStrike = g.combat.attackers.some(a => {
+      const c = g.cards[a.instanceId];
+      return c && (hasKw(c, 'First Strike') || hasKw(c, 'Double Strike'));
+    }) || g.combat.blockers.some(b => {
+      const c = g.cards[b.instanceId];
+      return c && (hasKw(c, 'First Strike') || hasKw(c, 'Double Strike'));
+    });
+
+    if (anyFirstStrike) {
+      // First-strike damage step
+      applyDamageForAttackers(g.combat.attackers, true);
+      const { newState: afterFirstStrike, flags: fs1Flags } = checkStateBasedActions(g);
+      g = afterFirstStrike;
+      const firstStrikeAction = createAction(g, g.activePlayerId, 'CHANGE_PHASE', 'First strike damage step resolved');
+      g = { ...g, actionLog: [...g.actionLog, firstStrikeAction] };
+      const fs1Msgs = fs1Flags.map(f => makeMsg(g, f));
+      set({ game: g, ui: { ...get().ui, assistantMessages: [...get().ui.assistantMessages, ...fs1Msgs] } });
+      g = get().game; // re-read after state-based actions may have removed creatures
     }
+
+    // Regular (or double-strike second) damage step
+    applyDamageForAttackers(g.combat.attackers, false);
 
     const { newState, flags } = checkStateBasedActions(g);
     g = newState;

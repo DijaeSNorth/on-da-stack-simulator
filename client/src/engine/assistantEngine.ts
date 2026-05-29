@@ -75,6 +75,19 @@ export function checkCastLegality(
     }
   }
 
+  // Commander tax (CR 903.8) — surface how much extra mana is owed
+  if (state.config.commanderTaxEnabled && (card.zone === 'command' || card.zone === 'hand')) {
+    const castingPlayer = state.players.find(p => p.id === castingPlayerId);
+    const isCommanderOfPlayer = castingPlayer?.commanders.includes(cardInstanceId);
+    if (isCommanderOfPlayer && castingPlayer) {
+      const castCount = castingPlayer.commanderCastCount[cardInstanceId] || 0;
+      if (castCount > 0) {
+        const taxAmount = castCount * 2;
+        flags.push(makeFlag('info', 'Tax', `${def.name} has been cast ${castCount} time${castCount !== 1 ? 's' : ''} this game — you must pay an additional {${taxAmount}} mana (commander tax).`, 'CR 903.8'));
+      }
+    }
+  }
+
   if (legal && flags.length === 0) {
     flags.push(makeFlag('legal', 'Legal', `${def.name} may be cast at this time.`));
   }

@@ -682,7 +682,7 @@ function findCardsByName(
     if (!searchZones.includes(card.zone)) continue;
     const cardName = card.definition.name.toLowerCase();
     const score = fuzzyScore(normalizedQuery, cardName);
-    if (score > 0.4) candidates.push({ instanceId: card.instanceId, score });
+    if (score >= 0.4) candidates.push({ instanceId: card.instanceId, score });
   }
 
   candidates.sort((a, b) => b.score - a.score);

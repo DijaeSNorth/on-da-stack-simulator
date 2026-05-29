@@ -235,14 +235,14 @@ class DeckCache {
 
     for (const card of source.values()) {
       const score = this.scoreMatch(q, card);
-      if (score > 0.35) scored.push({ card, score });
+      if (score >= 0.35) scored.push({ card, score });
     }
 
     // If scoped to player and no results, fall back to all cards
     if (scored.length === 0 && playerId) {
       for (const card of this.allCards.values()) {
         const score = this.scoreMatch(q, card);
-        if (score > 0.35) scored.push({ card, score });
+        if (score >= 0.35) scored.push({ card, score });
       }
     }
 
