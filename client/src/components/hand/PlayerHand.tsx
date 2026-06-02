@@ -3,10 +3,79 @@ import { useGameStore } from '../../store/gameStore';
 import { CardImage } from '../cards/CardImage';
 import type { CardState } from '../../types/game';
 
+// ─── SpectatorHandViewer ──────────────────────────────────────────────────────────
+// Spectators see ALL players' hands via tabbed panel, face-up, read-only.
+function SpectatorHandViewer() {
+  const store = useGameStore();
+  const { game } = store;
+  const [activeTab, setActiveTab] = useState(0);
+
+  const players = game.players;
+  if (players.length === 0) return null;
+  const activePlayer = players[activeTab] ?? players[0];
+  const handCards = activePlayer.hand.map(id => game.cards[id]).filter(Boolean) as CardState[];
+
+  return (
+    <div style={{
+      background: '#0d1117',
+      borderTop: '1px solid #1e293b',
+    }}>
+      {/* Spectator banner */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8,
+        padding: '4px 12px',
+        background: '#1a0a2e', borderBottom: '1px solid #2d1b69',
+      }}>
+        <span style={{ fontSize: 9, color: '#a78bfa', fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase' }}>
+          👁 Spectating — All Hands
+        </span>
+        <div style={{ flex: 1 }} />
+        {players.map((p, i) => (
+          <button
+            key={p.id}
+            onClick={() => setActiveTab(i)}
+            style={{
+              padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 600,
+              cursor: 'pointer', border: '1px solid',
+              borderColor: activeTab === i ? p.color : '#334155',
+              background: activeTab === i ? `${p.color}22` : 'transparent',
+              color: activeTab === i ? p.color : '#475569',
+              transition: 'all 0.1s',
+            }}
+          >
+            {p.name}
+          </button>
+        ))}
+      </div>
+      {/* Cards */}
+      <div style={{
+        height: 110,
+        display: 'flex', alignItems: 'center',
+        padding: '8px 16px', gap: 6, overflowX: 'auto',
+      }}>
+        {handCards.length === 0 ? (
+          <div style={{ color: '#334155', fontSize: 12, fontStyle: 'italic' }}>Empty hand</div>
+        ) : handCards.map(card => (
+          <div key={card.instanceId} style={{ flexShrink: 0 }}>
+            <CardImage
+              card={card}
+              size="compact"
+            />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ─── PlayerHand ───────────────────────────────────────────────────────────────────
 export function PlayerHand() {
   const store = useGameStore();
-  const { game, ui, localPlayerId } = store;
+  const { game, ui, localPlayerId, multiplayer } = store;
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
+
+  // Spectators see all players' hands in a tabbed viewer
+  if (multiplayer.isSpectator) return <SpectatorHandViewer />;
 
   const player = game.players.find(p => p.id === localPlayerId);
   if (!player) return null;

@@ -72,8 +72,9 @@ export interface MultiplayerState {
   roomCode: string | null;
   peerId: string | null;
   isHost: boolean;
+  isSpectator: boolean;                 // true when lobby was full on join
   peers: Record<string, RoomPresence>; // all players in room by peerId
-  configured: boolean;                  // Firebase env vars present
+  configured: boolean;                  // always true for P2P (no env vars needed)
 }
 
 const DEFAULT_MULTIPLAYER: MultiplayerState = {
@@ -81,6 +82,7 @@ const DEFAULT_MULTIPLAYER: MultiplayerState = {
   roomCode: null,
   peerId: null,
   isHost: false,
+  isSpectator: false,
   peers: {},
   configured: false,
 };
@@ -308,15 +310,23 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
   joinMultiplayerRoom: async (code, peerName, peerColor, seatIndex) => {
     const peerId = crypto.randomUUID();
-    const { game: remoteGame, hostId } = await joinRoom(code, {
+    const { game: remoteGame, isSpectator } = await joinRoom(code, {
       peerId,
       name: peerName,
       color: peerColor,
       seatIndex,
+      isSpectator: false, // host decides; we send intent
     });
-    const playerId = remoteGame.players[seatIndex]?.id ?? remoteGame.players[0]?.id ?? '';
+    // P2P: joinRoom returns null game — joiner keeps existing local state
+    // until host broadcasts the authoritative state on next game action.
+    const currentGame = get().game;
+    const resolvedGame = remoteGame ?? currentGame;
+    // Spectators get no local player id — they observe only
+    const playerId = isSpectator
+      ? ''
+      : (resolvedGame.players[seatIndex]?.id ?? resolvedGame.players[0]?.id ?? '');
     set(s => ({
-      game: remoteGame,
+      game: resolvedGame,
       localPlayerId: playerId,
       multiplayer: {
         ...s.multiplayer,
@@ -324,6 +334,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         roomCode: code.toUpperCase(),
         peerId,
         isHost: false,
+        isSpectator,
         configured: true,
       },
     }));

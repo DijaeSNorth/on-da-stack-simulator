@@ -18,18 +18,23 @@ export function MultiplayerBadge() {
   const peers = Object.values(multiplayer.peers);
   const onlineCount = peers.filter(p => p.online).length;
   const isHost = multiplayer.status === 'host';
+  const isSpectator = multiplayer.isSpectator;
+
+  const borderColor = isSpectator ? '#4c1d95' : isHost ? '#166534' : '#1e3a5f';
+  const bgColor     = isSpectator ? '#1a0a2e' : isHost ? '#0f2d1a' : '#0f1a2d';
+  const textColor   = isSpectator ? '#a78bfa' : isHost ? '#4ade80' : '#60a5fa';
 
   return (
     <button
       data-testid="multiplayer-badge"
       onClick={() => store.setLobbyOpen(true)}
-      title={`Room ${multiplayer.roomCode} — ${onlineCount} player${onlineCount !== 1 ? 's' : ''} online`}
+      title={`Room ${multiplayer.roomCode} — ${onlineCount} peer${onlineCount !== 1 ? 's' : ''} online${isSpectator ? ' (spectating)' : ''}`}
       style={{
         display: 'flex', alignItems: 'center', gap: 5,
         padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
-        border: `1px solid ${isHost ? '#166534' : '#1e3a5f'}`,
-        background: isHost ? '#0f2d1a' : '#0f1a2d',
-        color: isHost ? '#4ade80' : '#60a5fa',
+        border: `1px solid ${borderColor}`,
+        background: bgColor,
+        color: textColor,
         fontSize: 11, fontWeight: 700,
         flexShrink: 0,
       }}
@@ -37,12 +42,13 @@ export function MultiplayerBadge() {
       {/* Pulse dot */}
       <span style={{
         width: 6, height: 6, borderRadius: '50%',
-        background: isHost ? '#4ade80' : '#60a5fa',
+        background: textColor,
         display: 'inline-block',
         animation: 'mpPulse 2s ease-in-out infinite',
       }} />
 
-      {/* Room code */}
+      {/* Spectator eye or room code */}
+      {isSpectator && <span style={{ fontSize: 10 }}>👁</span>}
       <span style={{ fontFamily: 'monospace', letterSpacing: 1 }}>
         {multiplayer.roomCode}
       </span>

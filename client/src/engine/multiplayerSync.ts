@@ -1,32 +1,32 @@
 /**
- * multiplayerSync.ts
- *
- * Thin Firebase Realtime Database transport layer for multiplayer testing.
+ * multiplayerSync.ts  —  WebRTC P2P transport via PeerJS
  *
  * Architecture:
- *  - Host creates a room → generates a 6-char room code → writes initial GameState
- *  - Joiners connect by code → receive state → pick a seat
- *  - Every GameState mutation is pushed via `broadcastState()`
- *  - All clients listen via `subscribeToRoom()` and call set({ game }) on change
+ *  HOST  — creates a PeerJS peer whose ID IS the room code.
+ *          Accepts incoming DataConnections from joiners.
+ *          Receives presence updates, broadcasts authoritative GameState back.
  *
- * AWS SWAP GUIDE (when ready):
- *  Replace initFirebase / broadcastState / subscribeToRoom / updatePresence
- *  with API Gateway WebSocket equivalents. The rest of the codebase is untouched.
+ *  JOINER — creates a PeerJS peer with a random ID.
+ *           Connects to the host peer (whose ID = room code).
+ *           Sends its own presence; receives game state + all peer presence.
  *
- * Room data shape in Firebase:
- *   /rooms/{roomCode}/
- *     game:      GameState (JSON)
- *     players:   { [peerId]: { name, color, seatIndex, online, lastSeen } }
- *     hostId:    string
- *     createdAt: number
+ * No server stores game state. PeerJS's free cloud broker only exchanges the
+ * WebRTC handshake (~200 bytes) then gets out of the way. All game data flows
+ * directly browser-to-browser over encrypted DataChannels.
+ *
+ * AWS SWAP GUIDE:
+ *  Replace `new Peer(id, PEER_CONFIG)` with a Peer pointed at your own
+ *  PeerServer (or SFU). The rest of the codebase is untouched.
+ *
+ * Message envelope shape:
+ *   { type: 'PRESENCE', payload: RoomPresence }
+ *   { type: 'GAME_STATE', payload: GameState }
+ *   { type: 'PRESENCE_BROADCAST', payload: Record<string, RoomPresence> }
+ *   { type: 'PING' }
+ *   { type: 'PONG' }
  */
 
-import { initializeApp, type FirebaseApp } from 'firebase/app';
-import {
-  getDatabase, ref, set as fbSet, get, onValue,
-  serverTimestamp, onDisconnect, update, off,
-  type Database, type Unsubscribe,
-} from 'firebase/database';
+import Peer, { type DataConnection } from 'peerjs';
 import type { GameState } from '../types/game';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -35,7 +35,8 @@ export interface RoomPresence {
   peerId: string;
   name: string;
   color: string;
-  seatIndex: number;      // which player seat this peer controls
+  seatIndex: number;   // -1 = spectator
+  isSpectator: boolean;
   online: boolean;
   lastSeen: number;
 }
@@ -55,37 +56,70 @@ export type SyncStatus =
   | 'joined'
   | 'error';
 
+// ─── PeerJS config ────────────────────────────────────────────────────────────
+// Uses the free PeerJS cloud broker for signaling only.
+// Replace host/port/path for self-hosted PeerServer or AWS.
+const PEER_CONFIG = {
+  debug: 0,  // 0 = silent, 1 = errors, 2 = warnings, 3 = all
+};
+
+// Room code prefix so host peer IDs don't collide with random peer IDs
+const ROOM_PREFIX = 'mtgsim-';
+
+// How long a joiner waits for the host to accept the connection (ms)
+const CONNECT_TIMEOUT_MS = 12000;
+
+// Heartbeat interval to keep DataChannels alive through NAT (ms)
+const HEARTBEAT_MS = 20000;
+
 // ─── Internal state ───────────────────────────────────────────────────────────
 
-let _app: FirebaseApp | null = null;
-let _db: Database | null = null;
+let _peer: Peer | null = null;
 let _roomCode: string | null = null;
 let _peerId: string | null = null;
 let _isHost = false;
-let _gameUnsubscribe: (() => void) | null = null;
-let _presenceUnsubscribe: (() => void) | null = null;
 let _status: SyncStatus = 'disconnected';
+let _heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+
+// Host-side: map of peerId → DataConnection for each joiner
+const _connections: Map<string, DataConnection> = new Map();
+
+// Joiner-side: single connection to host
+let _hostConn: DataConnection | null = null;
+
+// Presence table — host owns the authoritative copy; joiners mirror it
+const _peers: Map<string, RoomPresence> = new Map();
 
 // Callbacks registered by the store
 let _onGameUpdate: ((game: GameState) => void) | null = null;
 let _onPresenceUpdate: ((players: Record<string, RoomPresence>) => void) | null = null;
 let _onStatusChange: ((status: SyncStatus) => void) | null = null;
 
-// ─── Firebase config ──────────────────────────────────────────────────────────
-// These are public read/write credentials for a testing-only Firebase project.
-// They are intentionally client-side safe (Firebase Security Rules restrict
-// access to room paths only). Replace with your own project before production.
-// For AWS swap: replace this entire block with AWS config.
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-const FIREBASE_CONFIG = {
-  apiKey:            import.meta.env.VITE_FIREBASE_API_KEY            ?? '',
-  authDomain:        import.meta.env.VITE_FIREBASE_AUTH_DOMAIN        ?? '',
-  databaseURL:       import.meta.env.VITE_FIREBASE_DATABASE_URL       ?? '',
-  projectId:         import.meta.env.VITE_FIREBASE_PROJECT_ID         ?? '',
-  storageBucket:     import.meta.env.VITE_FIREBASE_STORAGE_BUCKET     ?? '',
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID ?? '',
-  appId:             import.meta.env.VITE_FIREBASE_APP_ID             ?? '',
-};
+function setStatus(s: SyncStatus) {
+  _status = s;
+  _onStatusChange?.(s);
+}
+
+function broadcastPresence() {
+  if (!_isHost) return;
+  const payload = Object.fromEntries(_peers);
+  for (const conn of _connections.values()) {
+    if (conn.open) {
+      conn.send({ type: 'PRESENCE_BROADCAST', payload });
+    }
+  }
+  _onPresenceUpdate?.(payload);
+}
+
+function generateRoomCode(): string {
+  return Math.random().toString(36).slice(2, 8).toUpperCase();
+}
+
+function hostPeerId(code: string): string {
+  return `${ROOM_PREFIX}${code}`;
+}
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
@@ -99,70 +133,124 @@ export function initMultiplayer(
   _onStatusChange = onStatusChange;
 }
 
-function setStatus(s: SyncStatus) {
-  _status = s;
-  _onStatusChange?.(s);
-}
-
-function getDb(): Database {
-  if (!_app) {
-    _app = initializeApp(FIREBASE_CONFIG);
-    _db = getDatabase(_app);
-  }
-  return _db!;
-}
-
-// ─── Room code helpers ────────────────────────────────────────────────────────
-
-function generateRoomCode(): string {
-  // 6 uppercase alphanumeric chars — easy to share verbally
-  return Math.random().toString(36).slice(2, 8).toUpperCase();
-}
+// ─── Accessors ────────────────────────────────────────────────────────────────
 
 export function getRoomCode(): string | null { return _roomCode; }
 export function getPeerId(): string | null   { return _peerId; }
-export function getIsHost(): boolean          { return _isHost; }
-export function getSyncStatus(): SyncStatus   { return _status; }
+export function getIsHost(): boolean         { return _isHost; }
+export function getSyncStatus(): SyncStatus  { return _status; }
 
-export function isConfigured(): boolean {
-  return !!(FIREBASE_CONFIG.databaseURL);
-}
+/** Always true — P2P needs no env vars or server config */
+export function isConfigured(): boolean { return true; }
 
 // ─── Create Room (host) ───────────────────────────────────────────────────────
 
 export async function createRoom(
-  initialGame: GameState,
+  _initialGame: GameState,
   hostPresence: Omit<RoomPresence, 'online' | 'lastSeen'>,
 ): Promise<string> {
   setStatus('connecting');
-  const db = getDb();
-  _peerId = hostPresence.peerId;
   _isHost = true;
+  _connections.clear();
+  _peers.clear();
 
-  let code = generateRoomCode();
-  // Ensure uniqueness (retry once on collision)
-  const existing = await get(ref(db, `rooms/${code}/hostId`));
-  if (existing.exists()) code = generateRoomCode();
-
+  const code = generateRoomCode();
   _roomCode = code;
+  _peerId = hostPresence.peerId;
 
-  // Write initial state
-  await fbSet(ref(db, `rooms/${code}`), {
-    game: sanitizeForFirebase(initialGame),
-    hostId: _peerId,
-    createdAt: Date.now(),
-    players: {
-      [_peerId!]: { ...hostPresence, online: true, lastSeen: Date.now() },
-    },
+  // Register our own presence
+  _peers.set(_peerId, {
+    ...hostPresence,
+    isSpectator: false,
+    online: true,
+    lastSeen: Date.now(),
   });
 
-  // Set up presence disconnect cleanup
-  const presenceRef = ref(db, `rooms/${code}/players/${_peerId}/online`);
-  onDisconnect(presenceRef).set(false);
+  return new Promise((resolve, reject) => {
+    // Host peer ID = room code so joiners can connect directly
+    const peer = new Peer(hostPeerId(code), PEER_CONFIG);
+    _peer = peer;
 
-  _subscribeToRoom(code);
-  setStatus('host');
-  return code;
+    peer.on('open', () => {
+      setStatus('host');
+      broadcastPresence();
+      _startHeartbeat();
+      resolve(code);
+    });
+
+    peer.on('error', (err: Error) => {
+      // ID taken = code collision, retry with a new one (rare)
+      if ((err as any).type === 'unavailable-id') {
+        peer.destroy();
+        createRoom(_initialGame, hostPresence).then(resolve).catch(reject);
+        return;
+      }
+      setStatus('error');
+      reject(err);
+    });
+
+    // Accept incoming connections from joiners
+    peer.on('connection', (conn: DataConnection) => {
+      _connections.set(conn.peer, conn);
+
+      conn.on('open', () => {
+        // Send current game state + full presence table to the new joiner
+        if (_onGameUpdate) {
+          // We don't store game state here — the store broadcasts it after
+          // every mutation via broadcastState(). On first connect we trigger
+          // the store to re-broadcast by firing a no-op presence update.
+          broadcastPresence();
+        }
+      });
+
+      conn.on('data', (raw: unknown) => {
+        const msg = raw as { type: string; payload: unknown };
+        if (msg.type === 'PRESENCE') {
+          const presence = msg.payload as RoomPresence;
+
+          // Spectator detection: is the requested seat already taken?
+          const takenSeats = new Set(
+            [..._peers.values()]
+              .filter(p => p.online && !p.isSpectator && p.peerId !== presence.peerId)
+              .map(p => p.seatIndex),
+          );
+          const totalSeats = _peers.size; // rough — host knows its own count
+          const isSpectator =
+            presence.isSpectator ||
+            takenSeats.has(presence.seatIndex);
+
+          _peers.set(presence.peerId, {
+            ...presence,
+            isSpectator,
+            seatIndex: isSpectator ? -1 : presence.seatIndex,
+            online: true,
+            lastSeen: Date.now(),
+          });
+
+          broadcastPresence();
+        }
+        if (msg.type === 'PING') {
+          conn.send({ type: 'PONG' });
+        }
+      });
+
+      conn.on('close', () => {
+        const p = _peers.get(conn.peer);
+        if (p) _peers.set(conn.peer, { ...p, online: false });
+        _connections.delete(conn.peer);
+        broadcastPresence();
+      });
+
+      conn.on('error', () => {
+        _connections.delete(conn.peer);
+      });
+    });
+
+    peer.on('disconnected', () => {
+      // PeerJS auto-reconnects to broker; game data channels stay open
+      peer.reconnect();
+    });
+  });
 }
 
 // ─── Join Room (non-host) ─────────────────────────────────────────────────────
@@ -170,112 +258,160 @@ export async function createRoom(
 export async function joinRoom(
   code: string,
   presence: Omit<RoomPresence, 'online' | 'lastSeen'>,
-): Promise<{ game: GameState; hostId: string }> {
+): Promise<{ game: GameState; hostId: string; isSpectator: boolean }> {
   setStatus('connecting');
-  const db = getDb();
-  const upperCode = code.toUpperCase().trim();
-  _peerId = presence.peerId;
   _isHost = false;
-  _roomCode = upperCode;
+  _roomCode = code.toUpperCase().trim();
+  _peerId = presence.peerId;
+  _peers.clear();
 
-  // Check room exists
-  const snap = await get(ref(db, `rooms/${upperCode}`));
-  if (!snap.exists()) {
-    setStatus('error');
-    throw new Error(`Room ${upperCode} not found. Double-check the code.`);
-  }
+  return new Promise((resolve, reject) => {
+    const peer = new Peer(PEER_CONFIG);
+    _peer = peer;
 
-  const roomData = snap.val();
+    const timeout = setTimeout(() => {
+      peer.destroy();
+      setStatus('error');
+      reject(new Error(`Could not reach room ${_roomCode}. Check the code and try again.`));
+    }, CONNECT_TIMEOUT_MS);
 
-  // Write own presence
-  await update(ref(db, `rooms/${upperCode}/players/${_peerId}`), {
-    ...presence, online: true, lastSeen: Date.now(),
+    peer.on('open', () => {
+      const conn = peer.connect(hostPeerId(_roomCode!), {
+        reliable: true,
+        serialization: 'json',
+      });
+      _hostConn = conn;
+
+      conn.on('open', () => {
+        clearTimeout(timeout);
+        // Send our presence to the host
+        conn.send({ type: 'PRESENCE', payload: { ...presence, online: true, lastSeen: Date.now() } });
+      });
+
+      conn.on('data', (raw: unknown) => {
+        const msg = raw as { type: string; payload: unknown };
+
+        if (msg.type === 'PRESENCE_BROADCAST') {
+          const players = msg.payload as Record<string, RoomPresence>;
+          _onPresenceUpdate?.(players);
+
+          // First PRESENCE_BROADCAST resolves the join promise
+          // We detect our own spectator status from what the host assigned us
+          const myEntry = players[_peerId!];
+          const isSpectator = myEntry?.isSpectator ?? false;
+
+          // We don't get a full GameState here yet — the host will
+          // broadcastState() on the next game action. Resolve with empty
+          // game placeholder; the store already has a game state from lobby.
+          if ((conn as any)._joinResolved !== true) {
+            (conn as any)._joinResolved = true;
+            setStatus('joined');
+            _startHeartbeat();
+            resolve({
+              game: null as unknown as GameState, // store keeps existing state
+              hostId: hostPeerId(_roomCode!),
+              isSpectator,
+            });
+          }
+        }
+
+        if (msg.type === 'GAME_STATE') {
+          _onGameUpdate?.(msg.payload as GameState);
+        }
+
+        if (msg.type === 'PONG') {
+          // heartbeat acknowledged
+        }
+      });
+
+      conn.on('close', () => {
+        setStatus('disconnected');
+      });
+
+      conn.on('error', (err: Error) => {
+        clearTimeout(timeout);
+        setStatus('error');
+        reject(new Error(`Connection error: ${err.message}`));
+      });
+    });
+
+    peer.on('error', (err: Error) => {
+      clearTimeout(timeout);
+      const type = (err as any).type;
+      if (type === 'peer-unavailable') {
+        setStatus('error');
+        reject(new Error(`Room ${_roomCode} not found. Check the code and try again.`));
+      } else {
+        setStatus('error');
+        reject(err);
+      }
+    });
   });
-
-  const presenceRef = ref(db, `rooms/${upperCode}/players/${_peerId}/online`);
-  onDisconnect(presenceRef).set(false);
-
-  _subscribeToRoom(upperCode);
-  setStatus('joined');
-
-  return {
-    game: roomData.game as GameState,
-    hostId: roomData.hostId as string,
-  };
 }
 
-// ─── Broadcast state (call after every store mutation) ────────────────────────
+// ─── Broadcast state (host → all joiners) ─────────────────────────────────────
 
 export function broadcastState(game: GameState): void {
-  if (!_db || !_roomCode) return;
-  // Fire-and-forget — update only the game node, don't overwrite presence
-  fbSet(ref(_db, `rooms/${_roomCode}/game`), sanitizeForFirebase(game)).catch(console.error);
+  if (!_isHost) return;
+  const msg = { type: 'GAME_STATE', payload: game };
+  for (const conn of _connections.values()) {
+    if (conn.open) {
+      conn.send(msg);
+    }
+  }
 }
 
-// ─── Subscribe ────────────────────────────────────────────────────────────────
-
-function _subscribeToRoom(code: string): void {
-  const db = getDb();
-
-  // Unsubscribe existing listeners
-  if (_gameUnsubscribe) { _gameUnsubscribe(); _gameUnsubscribe = null; }
-  if (_presenceUnsubscribe) { _presenceUnsubscribe(); _presenceUnsubscribe = null; }
-
-  // Listen to game state changes
-  const gameRef = ref(db, `rooms/${code}/game`);
-  const gameOff = onValue(gameRef, (snap) => {
-    if (!snap.exists()) return;
-    const game = snap.val() as GameState;
-    _onGameUpdate?.(game);
-  });
-  _gameUnsubscribe = () => off(gameRef, 'value', gameOff as any);
-
-  // Listen to presence changes
-  const presRef = ref(db, `rooms/${code}/players`);
-  const presOff = onValue(presRef, (snap) => {
-    if (!snap.exists()) return;
-    const players = snap.val() as Record<string, RoomPresence>;
-    _onPresenceUpdate?.(players);
-  });
-  _presenceUnsubscribe = () => off(presRef, 'value', presOff as any);
-}
-
-// ─── Update presence (heartbeat) ─────────────────────────────────────────────
+// ─── Update presence (joiner → host) ─────────────────────────────────────────
 
 export function updatePresence(fields: Partial<RoomPresence>): void {
-  if (!_db || !_roomCode || !_peerId) return;
-  update(ref(_db, `rooms/${_roomCode}/players/${_peerId}`), {
-    ...fields,
-    lastSeen: Date.now(),
-    online: true,
-  }).catch(console.error);
+  if (_isHost) {
+    // Host updates its own presence locally
+    const existing = _peers.get(_peerId!) ?? {} as RoomPresence;
+    _peers.set(_peerId!, { ...existing, ...fields, lastSeen: Date.now(), online: true });
+    broadcastPresence();
+  } else {
+    // Joiner sends updated presence to host
+    if (_hostConn?.open) {
+      const existing = _peers.get(_peerId!) ?? {} as RoomPresence;
+      _hostConn.send({
+        type: 'PRESENCE',
+        payload: { ...existing, ...fields, lastSeen: Date.now(), online: true },
+      });
+    }
+  }
 }
 
-// ─── Disconnect ───────────────────────────────────────────────────────────────
+// ─── Leave ────────────────────────────────────────────────────────────────────
 
 export function leaveRoom(): void {
-  if (_db && _roomCode && _peerId) {
-    update(ref(_db, `rooms/${_roomCode}/players/${_peerId}`), { online: false })
-      .catch(console.error);
-  }
-  if (_gameUnsubscribe) { _gameUnsubscribe(); _gameUnsubscribe = null; }
-  if (_presenceUnsubscribe) { _presenceUnsubscribe(); _presenceUnsubscribe = null; }
+  _stopHeartbeat();
+  if (_hostConn) { _hostConn.close(); _hostConn = null; }
+  for (const conn of _connections.values()) conn.close();
+  _connections.clear();
+  _peers.clear();
+  if (_peer) { _peer.destroy(); _peer = null; }
   _roomCode = null;
   _peerId = null;
   _isHost = false;
   setStatus('disconnected');
 }
 
-// ─── Firebase serialization ───────────────────────────────────────────────────
-// Firebase rejects `undefined` values. Strip them recursively.
+// ─── Heartbeat ────────────────────────────────────────────────────────────────
+// Keeps NAT mappings alive so connections don't drop on idle games.
 
-function sanitizeForFirebase(obj: unknown): unknown {
-  if (obj === undefined) return null;
-  if (obj === null || typeof obj !== 'object') return obj;
-  if (Array.isArray(obj)) return obj.map(sanitizeForFirebase);
-  return Object.fromEntries(
-    Object.entries(obj as Record<string, unknown>)
-      .filter(([, v]) => v !== undefined)
-      .map(([k, v]) => [k, sanitizeForFirebase(v)])
-  );
+function _startHeartbeat() {
+  _stopHeartbeat();
+  _heartbeatTimer = setInterval(() => {
+    if (_isHost) {
+      for (const conn of _connections.values()) {
+        if (conn.open) conn.send({ type: 'PING' });
+      }
+    } else {
+      if (_hostConn?.open) _hostConn.send({ type: 'PING' });
+    }
+  }, HEARTBEAT_MS);
+}
+
+function _stopHeartbeat() {
+  if (_heartbeatTimer) { clearInterval(_heartbeatTimer); _heartbeatTimer = null; }
 }

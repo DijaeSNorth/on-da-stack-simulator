@@ -12,11 +12,15 @@ import type { ResolvedIntent } from '../../engine/nlpParser';
 import { TutorialTooltip } from '../tutorial/TutorialTooltip';
 import { TOOLTIPS } from '../../store/tutorialStore';
 import { PulseBeacon } from '../tutorial/TutorialOverlay';
+import { useGameStore } from '../../store/gameStore';
 
 const MAX_HISTORY = 50;
 const MAX_SUGGESTIONS = 8;
 
 export function CommandInput() {
+  // Hide command bar entirely for spectators — hook called before guard
+  const { multiplayer } = useGameStore();
+
   const [value, setValue] = useState('');
   const [history, setHistory] = useState<string[]>([]);
   const [historyIdx, setHistoryIdx] = useState(-1);
@@ -179,6 +183,10 @@ export function CommandInput() {
   const chipSuggestions = !value ? suggestions('').slice(0, 6) : [];
 
   // ── Render ──────────────────────────────────────────────────────────────────
+
+
+  // Spectators get read-only mode — no command bar
+  if (multiplayer.isSpectator) return null;
 
   return (
     <>

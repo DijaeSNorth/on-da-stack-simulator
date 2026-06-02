@@ -11,7 +11,6 @@
 
 import { useState, useEffect } from 'react';
 import { useGameStore } from '../../store/gameStore';
-import { isConfigured } from '../../engine/multiplayerSync';
 
 const DEFAULT_COLORS = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899'];
 
@@ -30,9 +29,9 @@ export function MultiplayerPanel() {
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
 
-  const configured = isConfigured();
   const connected = multiplayer.status === 'host' || multiplayer.status === 'joined';
   const isHost = multiplayer.status === 'host';
+  const isSpectator = multiplayer.isSpectator;
 
   // Init listeners once
   useEffect(() => {
@@ -151,7 +150,9 @@ export function MultiplayerPanel() {
                 <div style={{ width: 12, height: 12, borderRadius: 3, background: p.color, flexShrink: 0 }} />
                 <div style={{ flex: 1 }}>
                   <span style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0' }}>{p.name}</span>
-                  <span style={{ fontSize: 11, color: '#475569', marginLeft: 8 }}>Seat {p.seatIndex + 1}</span>
+                  <span style={{ fontSize: 11, color: '#475569', marginLeft: 8 }}>
+                    {p.isSpectator ? '👁 Spectating' : `Seat ${p.seatIndex + 1}`}
+                  </span>
                   {p.peerId === multiplayer.peerId && (
                     <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 4px', borderRadius: 3, background: '#1e3a5f', color: '#60a5fa', marginLeft: 6 }}>YOU</span>
                   )}
@@ -168,8 +169,13 @@ export function MultiplayerPanel() {
         <div style={{
           fontSize: 11, color: '#475569', display: 'flex', alignItems: 'center', gap: 6,
         }}>
-          <div style={{ width: 6, height: 6, borderRadius: '50%', background: '#4ade80' }} />
-          {isHost ? 'Hosting — game state syncs to all joined players in real time.' : 'Joined — receiving live game state from host.'}
+          <div style={{ width: 6, height: 6, borderRadius: '50%', background: isSpectator ? '#a78bfa' : '#4ade80' }} />
+          {isHost
+            ? 'Hosting — game state syncs to all joined players in real time.'
+            : isSpectator
+              ? 'Spectating — lobby was full when you joined. You can see all game data.'
+              : 'Joined — receiving live game state from host.'
+          }
         </div>
 
         {/* Leave */}
@@ -184,44 +190,6 @@ export function MultiplayerPanel() {
         >
           Leave Room
         </button>
-      </div>
-    );
-  }
-
-  // ─── Not configured ───────────────────────────────────────────────────────
-
-  if (!configured) {
-    return (
-      <div style={{
-        background: '#1c1500', border: '1px solid #78350f',
-        borderRadius: 10, padding: '16px 20px',
-      }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: '#fcd34d', marginBottom: 8 }}>
-          Firebase not configured
-        </div>
-        <div style={{ fontSize: 12, color: '#92400e', lineHeight: 1.6 }}>
-          Add your Firebase project credentials to a <code style={{ background: '#0f0a00', padding: '1px 4px', borderRadius: 3 }}>.env</code> file to enable multiplayer:
-        </div>
-        <pre style={{
-          background: '#0a0800', borderRadius: 6, padding: '10px 12px',
-          fontSize: 10, color: '#a3a3a3', marginTop: 10, overflowX: 'auto',
-          border: '1px solid #292524',
-        }}>{`VITE_FIREBASE_API_KEY=...
-VITE_FIREBASE_AUTH_DOMAIN=...
-VITE_FIREBASE_DATABASE_URL=...
-VITE_FIREBASE_PROJECT_ID=...
-VITE_FIREBASE_STORAGE_BUCKET=...
-VITE_FIREBASE_MESSAGING_SENDER_ID=...
-VITE_FIREBASE_APP_ID=...`}</pre>
-        <div style={{ fontSize: 11, color: '#78350f', marginTop: 8 }}>
-          Create a free Firebase project at{' '}
-          <a href="https://console.firebase.google.com" target="_blank" rel="noreferrer"
-            style={{ color: '#fbbf24' }}>
-            console.firebase.google.com
-          </a>
-          {' '}→ Realtime Database → Create database.
-          <br />The AWS backend will replace this before production.
-        </div>
       </div>
     );
   }
