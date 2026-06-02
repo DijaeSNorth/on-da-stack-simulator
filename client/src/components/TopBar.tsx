@@ -1,6 +1,10 @@
 import { useEffect } from 'react';
 import { useGameStore } from '../store/gameStore';
 import { MultiplayerBadge } from './multiplayer/MultiplayerBadge';
+import { useTutorial } from '../store/tutorialStore';
+import { TutorialTooltip } from './tutorial/TutorialTooltip';
+import { TOOLTIPS } from '../store/tutorialStore';
+import { PulseBeacon } from './tutorial/TutorialOverlay';
 
 const PHASE_LABELS: Record<string, string> = {
   untap: 'Untap',
@@ -20,6 +24,7 @@ const PHASE_LABELS: Record<string, string> = {
 export function TopBar() {
   const store = useGameStore();
   const { game, ui } = store;
+  const tutorial = useTutorial();
 
   // Global keyboard shortcut: / or Ctrl+F → open card search panel
   useEffect(() => {
@@ -209,6 +214,48 @@ export function TopBar() {
           style={topBtnStyle('none', '#64748b')}
           title="Lobby / New Game"
         >New</button>
+        {/* Tutorial / Help */}
+        <TutorialTooltip
+          content={{ title: 'Tutorial & Tooltips', body: 'Click to toggle player tooltips on/off, or restart the guided walkthrough for new players.', step: 'judge_mode' }}
+          placement="bottom"
+          alwaysShow
+        >
+          <button
+            data-testid="btn-tutorial"
+            onClick={() => {
+              if (tutorial.walkthroughActive) {
+                tutorial.stopWalkthrough();
+              } else if (!tutorial.enabled) {
+                tutorial.toggleTooltips();
+              } else {
+                tutorial.startWalkthrough();
+              }
+            }}
+            title={tutorial.walkthroughActive ? 'Stop tour' : tutorial.enabled ? 'Start tour / help' : 'Enable tooltips'}
+            style={{
+              ...topBtnStyle(tutorial.walkthroughActive ? '#1d4ed822' : 'none', tutorial.enabled ? '#a78bfa' : '#334155'),
+              position: 'relative',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 3,
+            }}
+          >
+            ?
+            {!tutorial.hasSeenStep('welcome') && (
+              <PulseBeacon step="welcome" style={{ position: 'absolute', top: -3, right: -3, width: 7, height: 7 }} />
+            )}
+          </button>
+        </TutorialTooltip>
+        {/* Tooltip toggle (small x) when tooltips are on */}
+        {tutorial.enabled && (
+          <button
+            onClick={tutorial.toggleTooltips}
+            title="Disable tooltips"
+            style={{ ...topBtnStyle('none', '#334155'), fontSize: 9, padding: '3px 5px' }}
+          >
+            📖
+          </button>
+        )}
       </div>
     </div>
   );

@@ -9,6 +9,9 @@ import { useNLPCommand } from '../../hooks/useNLPCommand';
 import { useCombatFlow } from '../../hooks/useCombatFlow';
 import { CombatPanel } from '../combat/CombatPanel';
 import type { ResolvedIntent } from '../../engine/nlpParser';
+import { TutorialTooltip } from '../tutorial/TutorialTooltip';
+import { TOOLTIPS } from '../../store/tutorialStore';
+import { PulseBeacon } from '../tutorial/TutorialOverlay';
 
 const MAX_HISTORY = 50;
 const MAX_SUGGESTIONS = 8;
@@ -32,6 +35,27 @@ export function CommandInput() {
   }, [handleCombatIntent]);
 
   const { execute, suggestions } = useNLPCommand(onCombatIntent);
+
+  // Tutorial: rotate tip shown in the hint bar
+  const HINT_TIPS = [
+    { label: 'Attack', example: 'attack with Goblin Guide, Mayhem Devil' },
+    { label: 'Cast', example: 'cast Sol Ring' },
+    { label: 'Scry', example: 'scry 3' },
+    { label: 'Draw', example: 'draw 2' },
+    { label: 'Tokens', example: 'create 3 goblin tokens' },
+    { label: 'Life', example: 'player 2 takes 5' },
+    { label: 'Counter', example: '+1/+1 counter on Ghave' },
+    { label: 'Reanimate', example: 'reanimate Griselbrand' },
+    { label: 'Flashback', example: 'flashback Snapcaster Mage' },
+    { label: 'Activate', example: 'activate Krenko' },
+  ];
+  const [tipIdx, setTipIdx] = useState(0);
+  // Rotate tip every 6 seconds when bar is idle
+  useEffect(() => {
+    if (value) return;
+    const t = setInterval(() => setTipIdx(i => (i + 1) % HINT_TIPS.length), 6000);
+    return () => clearInterval(t);
+  }, [value]);
 
   // ── Autocomplete ────────────────────────────────────────────────────────────
 
@@ -211,29 +235,66 @@ export function CommandInput() {
           </div>
         )}
 
+        {/* Rotating hint tip — shows when bar is empty */}
+        {!value && (
+          <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            marginBottom: 4,
+            opacity: 0.55,
+          }}>
+            <span style={{ fontSize: 10, color: '#475569', fontWeight: 600, letterSpacing: '0.05em', flexShrink: 0 }}>
+              TRY:
+            </span>
+            <button
+              onClick={() => { setValue(HINT_TIPS[tipIdx].example); inputRef.current?.focus(); }}
+              style={{
+                background: 'none',
+                border: 'none',
+                padding: 0,
+                cursor: 'pointer',
+                fontFamily: '"JetBrains Mono","Fira Code","Courier New",monospace',
+                fontSize: 10,
+                color: '#475569',
+                textAlign: 'left',
+              }}
+            >
+              "{HINT_TIPS[tipIdx].example}"
+            </button>
+            <span style={{ fontSize: 9, color: '#334155', marginLeft: 'auto', cursor: 'pointer', flexShrink: 0 }}
+              onClick={() => setTipIdx(i => (i + 1) % HINT_TIPS.length)}
+            >
+              next tip ›
+            </span>
+          </div>
+        )}
+
         {/* Input row */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ color: '#475569', fontSize: 14, userSelect: 'none', flexShrink: 0 }}>⌘</span>
-          <input
-            ref={inputRef}
-            value={value}
-            onChange={handleChange}
-            onKeyDown={handleKeyDown}
-            onFocus={() => value && updateCompletions(value)}
-            placeholder={`Type a command… "attack with Goblin Guide, Mayhem Devil" · "cast Sol Ring" · "draw 3"`}
-            autoComplete="off"
-            spellCheck={false}
-            style={{
-              flex: 1,
-              background: 'transparent',
-              border: 'none',
-              outline: 'none',
-              color: '#e2e8f0',
-              fontSize: 13,
-              fontFamily: 'inherit',
-              caretColor: '#38bdf8',
-            }}
-          />
+          <TutorialTooltip content={TOOLTIPS.command_bar} placement="top" delay={800}>
+            <input
+              ref={inputRef}
+              value={value}
+              onChange={handleChange}
+              onKeyDown={handleKeyDown}
+              onFocus={() => value && updateCompletions(value)}
+              placeholder={`Type a command… "attack with Goblin Guide" · "cast Sol Ring" · "draw 3" · "scry 2"`}
+              autoComplete="off"
+              spellCheck={false}
+              style={{
+                flex: 1,
+                background: 'transparent',
+                border: 'none',
+                outline: 'none',
+                color: '#e2e8f0',
+                fontSize: 13,
+                fontFamily: 'inherit',
+                caretColor: '#38bdf8',
+              }}
+            />
+          </TutorialTooltip>
           {value && (
             <button
               onClick={() => { setValue(''); setDropdownOpen(false); inputRef.current?.focus(); }}

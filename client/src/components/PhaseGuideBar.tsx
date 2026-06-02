@@ -19,6 +19,9 @@
 import { useState } from 'react';
 import { useGameStore } from '../store/gameStore';
 import type { Phase } from '../types/game';
+import { TutorialTooltip } from './tutorial/TutorialTooltip';
+import { TOOLTIPS } from '../store/tutorialStore';
+import { PulseBeacon } from './tutorial/TutorialOverlay';
 
 // ── Phase metadata ─────────────────────────────────────────────────────────────
 

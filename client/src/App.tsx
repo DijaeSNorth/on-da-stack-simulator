@@ -13,6 +13,7 @@ import { CommandInput } from './components/command/CommandInput';
 import { CardSearchPanel } from './components/panels/CardSearchPanel';
 import { ReplayPanel } from './components/replay/ReplayPanel';
 import { ProfilePanel } from './components/profile/ProfilePanel';
+import { WelcomeModal, CoachMark } from './components/tutorial/TutorialOverlay';
 
 export default function App() {
   const ui = useGameStore(s => s.ui);
@@ -87,6 +88,9 @@ export default function App() {
       <CardSearchPanel />
       <ReplayPanel />
       <ProfilePanel />
+      {/* Tutorial system */}
+      <WelcomeModal />
+      <CoachMark />
     </div>
   );
 }

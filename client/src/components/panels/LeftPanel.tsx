@@ -1,5 +1,7 @@
 import { useGameStore } from '../../store/gameStore';
 import type { Player } from '../../types/game';
+import { TutorialTooltip } from '../tutorial/TutorialTooltip';
+import { TOOLTIPS } from '../../store/tutorialStore';
 
 function LifeCounter({ player, onChange }: { player: Player; onChange: (delta: number) => void }) {
   return (
@@ -199,24 +201,28 @@ export function LeftPanel() {
                     border: 'none', borderRadius: 3, cursor: 'pointer',
                   }}
                 >Draw</button>
-                <button
-                  data-testid={`btn-open-graveyard-${player.id}`}
-                  onClick={(e) => { e.stopPropagation(); store.openZoneDrawer('graveyard', player.id); }}
-                  style={{
-                    fontSize: 9, padding: '2px 6px',
-                    background: '#1c1917', color: '#78716c',
-                    border: '1px solid #292524', borderRadius: 3, cursor: 'pointer',
-                  }}
-                >GY ({player.graveyard.length})</button>
-                <button
-                  data-testid={`btn-open-exile-${player.id}`}
-                  onClick={(e) => { e.stopPropagation(); store.openZoneDrawer('exile', player.id); }}
-                  style={{
-                    fontSize: 9, padding: '2px 6px',
-                    background: '#1c1917', color: '#78716c',
-                    border: '1px solid #292524', borderRadius: 3, cursor: 'pointer',
-                  }}
-                >Ex ({player.exile.length})</button>
+                <TutorialTooltip content={TOOLTIPS.zone_graveyard} placement="top" delay={500}>
+                  <button
+                    data-testid={`btn-open-graveyard-${player.id}`}
+                    onClick={(e) => { e.stopPropagation(); store.openZoneDrawer('graveyard', player.id); }}
+                    style={{
+                      fontSize: 9, padding: '2px 6px',
+                      background: '#1c1917', color: '#78716c',
+                      border: '1px solid #292524', borderRadius: 3, cursor: 'pointer',
+                    }}
+                  >GY ({player.graveyard.length})</button>
+                </TutorialTooltip>
+                <TutorialTooltip content={TOOLTIPS.zone_exile} placement="top" delay={500}>
+                  <button
+                    data-testid={`btn-open-exile-${player.id}`}
+                    onClick={(e) => { e.stopPropagation(); store.openZoneDrawer('exile', player.id); }}
+                    style={{
+                      fontSize: 9, padding: '2px 6px',
+                      background: '#1c1917', color: '#78716c',
+                      border: '1px solid #292524', borderRadius: 3, cursor: 'pointer',
+                    }}
+                  >Ex ({player.exile.length})</button>
+                </TutorialTooltip>
               </div>
             </div>
           );
