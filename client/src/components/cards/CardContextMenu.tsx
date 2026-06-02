@@ -7,6 +7,7 @@ import {
   getTier3Patterns,
   type CardMechanic,
 } from '../../engine/mechanicResolver';
+import { getTokenEntry, getTokensFromOracleText } from '../../engine/tokenRegistry';
 
 interface MenuAction {
   label: string;
@@ -155,6 +156,58 @@ export function CardContextMenu() {
       actions.push({ label: 'Tap', action: () => { store.tapCard(instanceId); close(); } });
     } else {
       actions.push({ label: 'Untap', action: () => { store.untapCard(instanceId); close(); } });
+    }
+
+    // ── Token shortcuts ──────────────────────────────────────────────────────
+    const tokenEntry = getTokenEntry(def.name);
+    const oracleTokens = !tokenEntry ? getTokensFromOracleText(def.oracleText || '') : [];
+    const allTokens = tokenEntry?.tokens.length ? tokenEntry.tokens : oracleTokens;
+
+    if (allTokens.length > 0) {
+      actions.push({ divider: true, label: '', action: () => {} });
+      const count = tokenEntry?.defaultCount ?? 1;
+      const isVariable = tokenEntry?.variableCount ?? false;
+      const hint = tokenEntry?.hint ?? `Create token(s) from ${def.name}'s ability`;
+      const seen = new Set<string>();
+      for (const tok of allTokens) {
+        if (seen.has(tok.name)) continue;
+        seen.add(tok.name);
+        const countLabel = isVariable ? 'X×' : count > 1 ? `${count}×` : '1×';
+        actions.push({
+          label: `✨ ${countLabel} ${tok.emoji ?? ''} ${tok.name}`.trim(),
+          tier: 1,
+          tooltip: hint,
+          action: () => {
+            const n = isVariable ? 1 : count;
+            for (let i = 0; i < n; i++) {
+              store.createTokenCard(localPlayerId, {
+                id: `token-${tok.name.toLowerCase().replace(/\s+/g, '-')}`,
+                name: tok.name,
+                power: tok.power,
+                toughness: tok.toughness,
+                colors: tok.colors,
+                cardTypes: tok.cardTypes,
+                subTypes: tok.subTypes,
+                keywords: tok.keywords,
+                oracleText: tok.oracleText ?? '',
+                typeLine: tok.typeLine,
+                isDoubleFaced: false,
+                legalities: {},
+                colorIdentity: tok.colors,
+                cmc: 0,
+              });
+            }
+            close();
+          },
+        });
+      }
+      if (isVariable) {
+        actions.push({
+          label: `  → type "create N ${allTokens[0].subTypes[0]?.toLowerCase() || 'token'}s" for custom count`,
+          tooltip: hint,
+          action: () => close(),
+        });
+      }
     }
 
     if (def.cardTypes.includes('Creature') && !card.tapped && !card.summoningSick) {

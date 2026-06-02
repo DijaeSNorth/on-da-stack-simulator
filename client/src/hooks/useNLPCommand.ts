@@ -8,6 +8,7 @@ import { useCallback } from 'react';
 import { useGameStore } from '../store/gameStore';
 import { parseCommand, resolveIntent, getSuggestions } from '../engine/nlpParser';
 import type { ResolvedIntent } from '../engine/nlpParser';
+import { resolveTokenShortcut, getBattlefieldTokenSuggestions } from '../engine/tokenRegistry';
 
 export function useNLPCommand(onCombatIntent?: (intent: ResolvedIntent) => void) {
   const store = useGameStore();
@@ -15,7 +16,27 @@ export function useNLPCommand(onCombatIntent?: (intent: ResolvedIntent) => void)
   /** Get autocomplete suggestions for a partial command string */
   const suggestions = useCallback((partial: string): string[] => {
     const { game, localPlayerId } = store;
-    return getSuggestions(partial, game, localPlayerId);
+    const base = getSuggestions(partial, game, localPlayerId);
+
+    // Token shortcuts from battlefield cards
+    const localPlayer = game.players.find(p => p.id === localPlayerId);
+    if (localPlayer && partial.length >= 1) {
+      const battlefieldNames = Object.values(game.cards)
+        .filter(c => c.zone === 'battlefield' && c.controllerId === localPlayerId)
+        .map(c => c.definition.name);
+      const tokenSuggestions = getBattlefieldTokenSuggestions(battlefieldNames);
+      for (const { cardName, entry } of tokenSuggestions) {
+        if (entry.defaultCount === 0) continue;
+        for (const tok of entry.tokens) {
+          const cmd = `create ${entry.defaultCount === 1 ? '1' : entry.defaultCount} ${tok.subTypes[0]?.toLowerCase() || tok.name.toLowerCase()} token`;
+          if (cmd.includes(partial.toLowerCase()) || cardName.toLowerCase().includes(partial.toLowerCase())) {
+            if (!base.includes(cmd)) base.push(cmd);
+          }
+        }
+      }
+    }
+
+    return base;
   }, [store]);
 
   /** Parse, resolve, and execute a raw command string */
@@ -252,8 +273,37 @@ export function useNLPCommand(onCombatIntent?: (intent: ResolvedIntent) => void)
       }
 
       case 'UNKNOWN':
-      default:
+      default: {
+        // Last-chance: try token shortcut from registry
+        // e.g. "activate krenko", "create token from smothering tithe", "make goblin token"
+        const tokenShortcut = resolveTokenShortcut(raw);
+        if (tokenShortcut) {
+          const { entry, count } = tokenShortcut;
+          for (let i = 0; i < count; i++) {
+            for (const tok of entry.tokens) {
+              store.createTokenCard(localPlayerId, {
+                id: `token-${tok.name.toLowerCase().replace(/\s+/g, '-')}`,
+                name: tok.name,
+                power: tok.power,
+                toughness: tok.toughness,
+                colors: tok.colors,
+                cardTypes: tok.cardTypes,
+                subTypes: tok.subTypes,
+                keywords: tok.keywords,
+                oracleText: tok.oracleText ?? '',
+                typeLine: tok.typeLine,
+                isDoubleFaced: false,
+                legalities: {},
+                colorIdentity: tok.colors,
+                cmc: 0,
+              });
+            }
+          }
+          const names = entry.tokens.map(t => t.name).join(', ');
+          return { success: true, message: `Created ${count}× ${names} token(s)` };
+        }
         return { success: false, message: `Unknown command: "${raw}"` };
+      }
     }
   }, [store, onCombatIntent]);
 
