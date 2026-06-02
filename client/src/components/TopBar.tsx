@@ -196,6 +196,12 @@ export function TopBar() {
           title="Replay — save & review game history"
           style={topBtnStyle(ui.replayOpen ? '#1e293b' : 'none', ui.replayOpen ? '#a78bfa' : '#64748b')}
         >⏺</button>
+        <button
+          data-testid="btn-profile"
+          onClick={() => store.setProfileOpen(true)}
+          title="Player Profile — customize your card"
+          style={topBtnStyle(ui.profileOpen ? '#1e3a1e' : 'none', ui.profileOpen ? '#4ade80' : '#64748b')}
+        >👤</button>
         <MultiplayerBadge />
         <button
           data-testid="btn-open-lobby"

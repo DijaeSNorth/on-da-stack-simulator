@@ -46,6 +46,7 @@ export interface UIState {
   showTokenEditor: boolean;
   cardSearchOpen: boolean;
   replayOpen: boolean;
+  profileOpen: boolean;
   judgeMode: boolean;
   battlefieldView: 'normal' | 'overview';
   assistantMessages: AssistantMessage[];
@@ -101,6 +102,7 @@ const DEFAULT_UI: UIState = {
   showTokenEditor: false,
   cardSearchOpen: false,
   replayOpen: false,
+  profileOpen: false,
   judgeMode: false,
   battlefieldView: 'normal',
   assistantMessages: [],
@@ -206,6 +208,7 @@ export interface GameStore {
   setCardPreview: (instanceId: string | null) => void;
   setCardSearchOpen: (open: boolean) => void;
   setReplayOpen: (open: boolean) => void;
+  setProfileOpen: (open: boolean) => void;
   saveReplay: (name?: string) => void;
   setJudgeMode: (on: boolean) => void;
   toggleBattlefieldView: () => void;
@@ -1000,6 +1003,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   setCardPreview: (id) => set(s => ({ ui: { ...s.ui, cardPreview: id } })),
   setCardSearchOpen: (open) => set(s => ({ ui: { ...s.ui, cardSearchOpen: open } })),
   setReplayOpen: (open) => set(s => ({ ui: { ...s.ui, replayOpen: open } })),
+  setProfileOpen: (open) => set(s => ({ ui: { ...s.ui, profileOpen: open } })),
   saveReplay: (name) => {
     const { game } = get();
     const replay = createReplay(game, name);

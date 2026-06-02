@@ -1,7 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import { importDecklist, saveDeck } from '../../engine/deckImport';
 import { MultiplayerPanel } from '../multiplayer/MultiplayerPanel';
+import { getActiveProfile } from '../../engine/profileStorage';
 import type { Deck } from '../../types/game';
 
 interface PlayerSetup {
@@ -37,6 +38,16 @@ export function LobbyScreen() {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<{ deck: Deck; errors: string[]; warnings: string[] } | null>(null);
   const [houseRules, setHouseRules] = useState<Set<string>>(new Set());
+
+  // Auto-populate seat 0 from active profile on mount
+  useEffect(() => {
+    const profile = getActiveProfile();
+    if (profile) {
+      setPlayers(prev => prev.map((p, i) =>
+        i === 0 ? { ...p, name: profile.displayName, color: profile.color } : p
+      ));
+    }
+  }, []);
 
   const savedDecks = store.decks;
 

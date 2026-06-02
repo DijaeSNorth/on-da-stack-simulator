@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { CardState } from '../../types/game';
 import { getCardPlaceholderStyle } from '../../data/cardDatabase';
+import { getActiveProfile, getArtOverride } from '../../engine/profileStorage';
 
 interface CardImageProps {
   card: CardState;
@@ -23,7 +24,10 @@ export function CardImage({ card, size = 'normal', showArt = true, className = '
   const def = card.definition;
   const dims = SIZE_DIMS[size];
 
-  const imageUrl = card.transformed ? def.imageUrlBack : def.imageUrl;
+  // Art override: check active profile for a player-chosen print
+  const activeProfile = getActiveProfile();
+  const artOverride = getArtOverride(activeProfile, def.name);
+  const imageUrl = artOverride?.imageUrl ?? (card.transformed ? def.imageUrlBack : def.imageUrl);
   const placeholder = getCardPlaceholderStyle(def);
 
   const containerStyle: React.CSSProperties = {
