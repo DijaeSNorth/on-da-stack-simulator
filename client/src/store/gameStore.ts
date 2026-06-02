@@ -19,6 +19,12 @@ import {
   detectETBTriggers, getActiveModifiers,
 } from '../engine/assistantEngine';
 import { saveDeck, loadDecksFromStorage } from '../engine/deckImport';
+import {
+  initMultiplayer, createRoom, joinRoom, leaveRoom,
+  broadcastState, updatePresence, getRoomCode, getPeerId, getIsHost,
+  getSyncStatus, isConfigured,
+  type RoomPresence, type SyncStatus,
+} from '../engine/multiplayerSync';
 
 // ─── UI State ─────────────────────────────────────────────────────────────────
 
@@ -56,6 +62,26 @@ export interface AssistantMessage {
   phase: Phase;
 }
 
+// ─── Multiplayer State ───────────────────────────────────────────────────────
+
+export interface MultiplayerState {
+  status: SyncStatus;
+  roomCode: string | null;
+  peerId: string | null;
+  isHost: boolean;
+  peers: Record<string, RoomPresence>; // all players in room by peerId
+  configured: boolean;                  // Firebase env vars present
+}
+
+const DEFAULT_MULTIPLAYER: MultiplayerState = {
+  status: 'disconnected',
+  roomCode: null,
+  peerId: null,
+  isHost: false,
+  peers: {},
+  configured: false,
+};
+
 const DEFAULT_UI: UIState = {
   selectedCardId: null,
   hoveredCardId: null,
@@ -83,8 +109,26 @@ const DEFAULT_UI: UIState = {
 export interface GameStore {
   game: GameState;
   ui: UIState;
+  multiplayer: MultiplayerState;
   decks: Deck[];
   localPlayerId: string;
+
+  // ── Multiplayer actions ──────────────────────────────────────────────────
+  initMultiplayerListeners: () => void;
+  createMultiplayerRoom: (
+    hostName: string,
+    hostColor: string,
+    seatIndex: number,
+  ) => Promise<string>;
+  joinMultiplayerRoom: (
+    code: string,
+    peerName: string,
+    peerColor: string,
+    seatIndex: number,
+  ) => Promise<void>;
+  leaveMultiplayerRoom: () => void;
+  setMultiplayerStatus: (status: SyncStatus) => void;
+  setMultiplayerPeers: (peers: Record<string, RoomPresence>) => void;
 
   initGame: (config: GameConfig, players: { id: string; name: string; color: string }[]) => void;
   loadDeck: (playerId: string, deck: Deck) => Promise<void>;
@@ -192,10 +236,92 @@ const PLAYER_COLORS = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#
 export const useGameStore = create<GameStore>()((set, get) => ({
   game: createEmptyGameState(createDefaultGameConfig(4)),
   ui: DEFAULT_UI,
+  multiplayer: { ...DEFAULT_MULTIPLAYER, configured: isConfigured() },
   decks: loadDecksFromStorage(),
   localPlayerId: '',
 
-  // ── Init ──────────────────────────────────────────────────────────────────
+  // ── Multiplayer ────────────────────────────────────────────────────────
+
+  initMultiplayerListeners: () => {
+    initMultiplayer(
+      // onGameUpdate — remote peer pushed a new GameState
+      (game: GameState) => {
+        // Only apply remote update if it's newer than ours
+        if (game.lastUpdatedAt > get().game.lastUpdatedAt) {
+          set({ game });
+        }
+      },
+      // onPresenceUpdate — someone joined/left
+      (peers: Record<string, RoomPresence>) => {
+        set(s => ({ multiplayer: { ...s.multiplayer, peers } }));
+      },
+      // onStatusChange
+      (status: SyncStatus) => {
+        set(s => ({ multiplayer: { ...s.multiplayer, status } }));
+      },
+    );
+  },
+
+  createMultiplayerRoom: async (hostName, hostColor, seatIndex) => {
+    const { game } = get();
+    const peerId = crypto.randomUUID();
+    const code = await createRoom(game, {
+      peerId,
+      name: hostName,
+      color: hostColor,
+      seatIndex,
+    });
+    set(s => ({
+      localPlayerId: game.players[seatIndex]?.id ?? game.players[0]?.id ?? '',
+      multiplayer: {
+        ...s.multiplayer,
+        status: 'host',
+        roomCode: code,
+        peerId,
+        isHost: true,
+        configured: true,
+      },
+    }));
+    return code;
+  },
+
+  joinMultiplayerRoom: async (code, peerName, peerColor, seatIndex) => {
+    const peerId = crypto.randomUUID();
+    const { game: remoteGame, hostId } = await joinRoom(code, {
+      peerId,
+      name: peerName,
+      color: peerColor,
+      seatIndex,
+    });
+    const playerId = remoteGame.players[seatIndex]?.id ?? remoteGame.players[0]?.id ?? '';
+    set(s => ({
+      game: remoteGame,
+      localPlayerId: playerId,
+      multiplayer: {
+        ...s.multiplayer,
+        status: 'joined',
+        roomCode: code.toUpperCase(),
+        peerId,
+        isHost: false,
+        configured: true,
+      },
+    }));
+  },
+
+  leaveMultiplayerRoom: () => {
+    leaveRoom();
+    set(s => ({
+      multiplayer: { ...DEFAULT_MULTIPLAYER, configured: isConfigured() },
+    }));
+  },
+
+  setMultiplayerStatus: (status) =>
+    set(s => ({ multiplayer: { ...s.multiplayer, status } })),
+
+  setMultiplayerPeers: (peers) =>
+    set(s => ({ multiplayer: { ...s.multiplayer, peers } })),
+
+  // ── Init ────────────────────────────────────────────────────────
 
   initGame: (config, players) => {
     const g = createEmptyGameState(config);
@@ -887,3 +1013,25 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     set({ decks: loadDecksFromStorage() });
   },
 }));
+
+// ─── Broadcast subscriber ─────────────────────────────────────────────────────────────
+// Any time game state changes AND we’re in a room, push to Firebase.
+// This is outside the store so it runs once at module load time —
+// no need to patch every individual action.
+useGameStore.subscribe(
+  (state) => state.game,
+  (game, prevGame) => {
+    const { multiplayer } = useGameStore.getState();
+    // Only broadcast if we’re in a room and it’s a real change
+    if (
+      multiplayer.status === 'host' ||
+      multiplayer.status === 'joined'
+    ) {
+      // Don’t broadcast if this was an incoming remote update (same lastUpdatedAt)
+      if (game.lastUpdatedAt !== prevGame.lastUpdatedAt) {
+        broadcastState(game);
+      }
+    }
+  },
+  { equalityFn: (a, b) => a === b },
+);

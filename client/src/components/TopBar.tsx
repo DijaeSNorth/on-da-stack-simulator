@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { useGameStore } from '../store/gameStore';
+import { MultiplayerBadge } from './multiplayer/MultiplayerBadge';
 
 const PHASE_LABELS: Record<string, string> = {
   untap: 'Untap',
@@ -189,6 +190,7 @@ export function TopBar() {
           title="Card Search (/ or Ctrl+F)"
           style={topBtnStyle(ui.cardSearchOpen ? '#1e3a5f' : 'none', ui.cardSearchOpen ? '#60a5fa' : '#64748b')}
         >🔍</button>
+        <MultiplayerBadge />
         <button
           data-testid="btn-open-lobby"
           onClick={() => store.setLobbyOpen(true)}

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import { importDecklist, saveDeck } from '../../engine/deckImport';
+import { MultiplayerPanel } from '../multiplayer/MultiplayerPanel';
 import type { Deck } from '../../types/game';
 
 interface PlayerSetup {
@@ -438,6 +439,19 @@ export function LobbyScreen() {
               </div>
             )}
           </div>
+        </div>
+
+        {/* Multiplayer */}
+        <div style={{
+          background: '#111827',
+          border: '1px solid #1e293b',
+          borderRadius: 10,
+          padding: 16,
+        }}>
+          <div style={{ fontSize: 11, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 12, fontWeight: 700 }}>
+            Multiplayer — Testing (Firebase)
+          </div>
+          <MultiplayerPanel />
         </div>
 
         {/* Start button */}
