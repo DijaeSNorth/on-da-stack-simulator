@@ -303,7 +303,7 @@ export function PhaseGuideBar() {
 
       {/* ── Phase hint (compact, expandable) ──────────────────────────────── */}
       <div
-        style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0, cursor: 'pointer' }}
+        style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0, maxWidth: 420, cursor: 'pointer' }}
         onClick={() => setExpanded(e => !e)}
         title="Click to expand phase details"
       >
@@ -422,6 +422,7 @@ export function PhaseGuideBar() {
               padding: '3px 11px',
               fontSize: 9,
               fontWeight: 800,
+              whiteSpace: 'nowrap',
               background: hasBlocker
                 ? 'rgba(127,29,29,0.3)'
                 : `${GROUP_COLORS[PHASE_META[nextPhase!].group]}`,

@@ -108,25 +108,51 @@ export function PlayerHand() {
             >
               <CardImage card={card} size="normal" />
 
-              {/* Hovered card name tooltip */}
+              {/* Hovered card tooltip — name + type + mana + P/T */}
               {isHovered && (
                 <div style={{
                   position: 'absolute',
-                  bottom: '100%',
+                  bottom: '105%',
                   left: '50%',
                   transform: 'translateX(-50%)',
-                  background: '#1e1e32',
-                  border: '1px solid #3d3d5c',
-                  borderRadius: 4,
-                  padding: '3px 6px',
-                  fontSize: 10,
-                  color: '#e2e8f0',
-                  whiteSpace: 'nowrap',
+                  background: '#0f172a',
+                  border: '1px solid #334155',
+                  borderRadius: 6,
+                  padding: '6px 8px',
                   pointerEvents: 'none',
                   marginBottom: 4,
-                  boxShadow: '0 4px 12px rgba(0,0,0,0.5)',
+                  boxShadow: '0 6px 20px rgba(0,0,0,0.7)',
+                  minWidth: 120,
+                  maxWidth: 180,
+                  zIndex: 200,
                 }}>
-                  {card.definition.name}
+                  {/* Name row */}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: '#e2e8f0', whiteSpace: 'nowrap' }}>
+                      {card.definition.name}
+                    </span>
+                    {card.definition.manaCost?.raw && (
+                      <span style={{ fontSize: 9, color: '#94a3b8', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                        {card.definition.manaCost.raw}
+                      </span>
+                    )}
+                  </div>
+                  {/* Type line */}
+                  {card.definition.cardTypes.length > 0 && (
+                    <div style={{ fontSize: 9, color: '#64748b', marginTop: 2 }}>
+                      {card.definition.cardTypes.join(' ')}
+                    </div>
+                  )}
+                  {/* P/T for creatures */}
+                  {card.definition.power !== undefined && (
+                    <div style={{ fontSize: 10, fontWeight: 700, color: '#fbbf24', marginTop: 2 }}>
+                      {card.definition.power}/{card.definition.toughness}
+                    </div>
+                  )}
+                  {/* Summoning sick */}
+                  {card.summoningSick && (
+                    <div style={{ fontSize: 9, color: '#f59e0b', marginTop: 1 }}>⏳ Summoning sickness</div>
+                  )}
                 </div>
               )}
             </div>

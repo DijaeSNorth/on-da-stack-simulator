@@ -4,6 +4,130 @@ import { DragCombatProvider, useDragCombatContext } from '../../hooks/DragCombat
 import { TriggerQueuePanel } from '../triggers/TriggerQueuePanel';
 import type { Player } from '../../types/game';
 
+// ── Combat Summary Bar ────────────────────────────────────────────────────────
+// Shown during declareAttackers, declareBlockers, combatDamage, endOfCombat
+// Gives every player a clear picture of the combat assignment state.
+
+function CombatSummaryBar() {
+  const store = useGameStore();
+  const { game } = store;
+  const combat = game.combat;
+  const phase = game.phase;
+
+  const isCombatPhase = [
+    'declareAttackers', 'declareBlockers', 'combatDamage', 'endOfCombat'
+  ].includes(phase);
+
+  if (!isCombatPhase) return null;
+  if (!combat.active && combat.attackers.length === 0) return null;
+
+  const PHASE_LABEL: Record<string, string> = {
+    declareAttackers: '⚔ Declare Attackers',
+    declareBlockers: '🛡 Declare Blockers',
+    combatDamage: '💥 Combat Damage',
+    endOfCombat: '🔔 End of Combat',
+  };
+
+  return (
+    <div
+      data-testid="combat-summary-bar"
+      style={{
+        margin: '2px 4px 0',
+        padding: '5px 12px',
+        background: 'rgba(127,29,29,0.35)',
+        border: '1px solid #7f1d1d',
+        borderRadius: 6,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 12,
+        flexShrink: 0,
+        flexWrap: 'wrap',
+        zIndex: 15,
+      }}
+    >
+      {/* Phase label */}
+      <span style={{ fontSize: 10, fontWeight: 800, color: '#fca5a5', letterSpacing: '0.05em', flexShrink: 0 }}>
+        {PHASE_LABEL[phase] || phase}
+      </span>
+
+      {/* Attackers list */}
+      {combat.attackers.length === 0 ? (
+        <span style={{ fontSize: 10, color: '#64748b', fontStyle: 'italic' }}>No attackers declared</span>
+      ) : (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          {combat.attackers.map(atk => {
+            const card = game.cards[atk.instanceId];
+            const target = game.players.find(p => p.id === atk.targetPlayerId);
+            const blocker = combat.blockers.find(b => b.blockedAttacker === atk.instanceId);
+            const blockerCard = blocker ? game.cards[blocker.instanceId] : null;
+
+            return (
+              <div
+                key={atk.instanceId}
+                data-testid={`combat-atk-${atk.instanceId}`}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 4,
+                  background: 'rgba(0,0,0,0.3)',
+                  border: '1px solid #7f1d1d',
+                  borderRadius: 4,
+                  padding: '2px 7px',
+                  fontSize: 10,
+                }}
+              >
+                {/* Attacker name */}
+                <span style={{ color: '#fca5a5', fontWeight: 700 }}>
+                  {card?.definition.name ?? atk.instanceId.slice(0, 8)}
+                </span>
+                {/* Power/toughness if creature */}
+                {card?.definition.power !== undefined && (
+                  <span style={{ color: '#f87171', fontSize: 9 }}>
+                    {card.definition.power}/{card.definition.toughness}
+                  </span>
+                )}
+                {/* Arrow to target */}
+                <span style={{ color: '#ef444466', fontSize: 11 }}>→</span>
+                <span style={{ color: '#fbbf24', fontWeight: 600 }}>
+                  {target?.name ?? '?'}
+                </span>
+                {/* Blocker info */}
+                {blockerCard ? (
+                  <>
+                    <span style={{ color: '#3b82f6', fontSize: 11 }}>🛡</span>
+                    <span style={{ color: '#93c5fd', fontWeight: 600, fontSize: 10 }}>
+                      {blockerCard.definition.name}
+                    </span>
+                    {blockerCard.definition.power !== undefined && (
+                      <span style={{ color: '#60a5fa', fontSize: 9 }}>
+                        {blockerCard.definition.power}/{blockerCard.definition.toughness}
+                      </span>
+                    )}
+                  </>
+                ) : phase !== 'declareAttackers' ? (
+                  <span style={{ color: '#f59e0b', fontSize: 9, fontStyle: 'italic' }}>unblocked</span>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Attacker count badge */}
+      {combat.attackers.length > 0 && (
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, alignItems: 'center', flexShrink: 0 }}>
+          <span style={{ fontSize: 9, color: '#f87171' }}>
+            {combat.attackers.length} attacker{combat.attackers.length !== 1 ? 's' : ''}
+          </span>
+          {combat.blockers.length > 0 && (
+            <span style={{ fontSize: 9, color: '#60a5fa' }}>
+              {combat.blockers.length} blocker{combat.blockers.length !== 1 ? 's' : ''}
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Commander table layouts — local player (seatIndex 0) always at bottom
 function getPlayerLayout(playerCount: number): {
   top?: number[]; left?: number[]; right?: number[]; bottom: number[];
@@ -136,6 +260,9 @@ function CommanderTableInner() {
         />
       )}
 
+      {/* Combat summary — visible whenever combat phases are active */}
+      <CombatSummaryBar />
+
       {/* Top opponents */}
       {topPlayers.length > 0 && (
         <div style={sectionStyle('top')}>
@@ -152,17 +279,25 @@ function CommanderTableInner() {
             </div>
           )}
 
-          {/* Center surface */}
+          {/* Center surface — shows board context */}
           <div style={{
             flex: 1, background: 'rgba(255,255,255,0.01)',
             borderRadius: 8, border: '1px solid rgba(255,255,255,0.04)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+            gap: 4,
           }}>
             <div style={{
               color: '#1e293b', fontSize: 11, fontWeight: 600,
               letterSpacing: '0.2em', textTransform: 'uppercase', userSelect: 'none',
             }}>
               Commander
+            </div>
+            {/* Turn + phase watermark */}
+            <div style={{
+              fontSize: 9, color: '#1a2540', fontWeight: 600,
+              letterSpacing: '0.08em', textTransform: 'uppercase', userSelect: 'none',
+            }}>
+              T{game.turn} · {game.phase}
             </div>
           </div>
 

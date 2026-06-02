@@ -280,6 +280,25 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
           </span>
         )}
 
+        {/* Opponent hand count — always visible so you can track what they're holding */}
+        {!isLocal && (
+          <span style={{
+            marginLeft: compact ? undefined : 'auto',
+            fontSize: 9,
+            color: player.hand.length > 7
+              ? '#f59e0b'
+              : player.hand.length === 0
+                ? '#334155'
+                : '#475569',
+            fontWeight: 600,
+            flexShrink: 0,
+          }}
+          title={`${player.name} has ${player.hand.length} card${player.hand.length !== 1 ? 's' : ''} in hand`}
+          >
+            ✋ {player.hand.length}
+          </span>
+        )}
+
         {/* Drag hint — show when dragging an attack toward this player */}
         {isDraggingAttack && !isLocal && (
           <span style={{
@@ -323,13 +342,20 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
       {/* Empty state */}
       {cards.length === 0 && !compact && (
         <div style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          flex: 1, color: '#334155', fontSize: 12, fontStyle: 'italic',
+          display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+          flex: 1, gap: 4,
         }}>
-          {isDraggingAttack && !isLocal
-            ? <span style={{ color: '#ef444466' }}>Drop here to attack {player.name}</span>
-            : 'No permanents'
-          }
+          {isDraggingAttack && !isLocal ? (
+            <span style={{ color: '#ef444466', fontSize: 12, fontStyle: 'italic' }}>Drop here to attack {player.name}</span>
+          ) : (
+            <span style={{ color: '#1e293b', fontSize: 11, fontStyle: 'italic' }}>No permanents</span>
+          )}
+          {/* Show library / graveyard counts as context */}
+          {isLocal && (
+            <span style={{ fontSize: 9, color: '#1e293b' }}>
+              Library: {player.library.length} · GY: {player.graveyard.length}
+            </span>
+          )}
         </div>
       )}
     </div>
