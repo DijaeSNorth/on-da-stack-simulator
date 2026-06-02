@@ -19,6 +19,7 @@ import {
   detectETBTriggers, getActiveModifiers,
 } from '../engine/assistantEngine';
 import { saveDeck, loadDecksFromStorage } from '../engine/deckImport';
+import { createReplay, saveReplayToStorage } from '../engine/replayEngine';
 import {
   initMultiplayer, createRoom, joinRoom, leaveRoom,
   broadcastState, updatePresence, getRoomCode, getPeerId, getIsHost,
@@ -44,6 +45,7 @@ export interface UIState {
   searchQuery: string;
   showTokenEditor: boolean;
   cardSearchOpen: boolean;
+  replayOpen: boolean;
   judgeMode: boolean;
   battlefieldView: 'normal' | 'overview';
   assistantMessages: AssistantMessage[];
@@ -98,6 +100,7 @@ const DEFAULT_UI: UIState = {
   searchQuery: '',
   showTokenEditor: false,
   cardSearchOpen: false,
+  replayOpen: false,
   judgeMode: false,
   battlefieldView: 'normal',
   assistantMessages: [],
@@ -202,6 +205,8 @@ export interface GameStore {
   closeCardContextMenu: () => void;
   setCardPreview: (instanceId: string | null) => void;
   setCardSearchOpen: (open: boolean) => void;
+  setReplayOpen: (open: boolean) => void;
+  saveReplay: (name?: string) => void;
   setJudgeMode: (on: boolean) => void;
   toggleBattlefieldView: () => void;
   toggleCombatMode: () => void;
@@ -994,6 +999,12 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   closeCardContextMenu: () => set(s => ({ ui: { ...s.ui, cardContextMenu: null } })),
   setCardPreview: (id) => set(s => ({ ui: { ...s.ui, cardPreview: id } })),
   setCardSearchOpen: (open) => set(s => ({ ui: { ...s.ui, cardSearchOpen: open } })),
+  setReplayOpen: (open) => set(s => ({ ui: { ...s.ui, replayOpen: open } })),
+  saveReplay: (name) => {
+    const { game } = get();
+    const replay = createReplay(game, name);
+    saveReplayToStorage(replay);
+  },
   setJudgeMode: (on) => set(s => ({ ui: { ...s.ui, judgeMode: on } })),
   toggleBattlefieldView: () => set(s => ({ ui: { ...s.ui, battlefieldView: s.ui.battlefieldView === 'normal' ? 'overview' : 'normal' } })),
   toggleCombatMode: () => set(s => ({ ui: { ...s.ui, combatMode: !s.ui.combatMode } })),

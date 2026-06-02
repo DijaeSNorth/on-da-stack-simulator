@@ -11,6 +11,7 @@ import { ZoneDrawer } from './components/zones/ZoneDrawer';
 import { LobbyScreen } from './components/lobby/LobbyScreen';
 import { CommandInput } from './components/command/CommandInput';
 import { CardSearchPanel } from './components/panels/CardSearchPanel';
+import { ReplayPanel } from './components/replay/ReplayPanel';
 
 export default function App() {
   const ui = useGameStore(s => s.ui);
@@ -83,6 +84,7 @@ export default function App() {
       <CardContextMenu />
       <ZoneDrawer />
       <CardSearchPanel />
+      <ReplayPanel />
     </div>
   );
 }

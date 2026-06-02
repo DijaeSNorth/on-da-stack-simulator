@@ -190,6 +190,12 @@ export function TopBar() {
           title="Card Search (/ or Ctrl+F)"
           style={topBtnStyle(ui.cardSearchOpen ? '#1e3a5f' : 'none', ui.cardSearchOpen ? '#60a5fa' : '#64748b')}
         >🔍</button>
+        <button
+          data-testid="btn-replay"
+          onClick={() => store.setReplayOpen(true)}
+          title="Replay — save & review game history"
+          style={topBtnStyle(ui.replayOpen ? '#1e293b' : 'none', ui.replayOpen ? '#a78bfa' : '#64748b')}
+        >⏺</button>
         <MultiplayerBadge />
         <button
           data-testid="btn-open-lobby"
