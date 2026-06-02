@@ -60,6 +60,13 @@ export type IntentType =
   | 'FLIP_COIN'
   | 'ROLL_DICE'
   | 'UNDO'
+  | 'SURVEIL'
+  | 'CYCLE'
+  | 'CAST_FROM_GY'
+  | 'CAST_FROM_EXILE'
+  | 'REANIMATE'
+  | 'LOOK_AT_HAND'   // peek at opponent's hand
+  | 'LOOK_AT_TOP'    // look at top N of any player's library
   | 'UNKNOWN';
 
 export interface ParsedIntent {
@@ -290,6 +297,76 @@ export function parseCommand(raw: string): ParsedIntent {
   const scryMatch = lower.match(/^scry\s+(\d+|one|two|three|four|five|six|seven)$/);
   if (scryMatch) {
     return { ...result, intent: 'SCRY', count: parseWordNumber(scryMatch[1]) || 1, confidence: 'high' };
+  }
+
+  // ── Surveil ──
+  const surveilMatch = lower.match(/^surveil\s+(\d+|one|two|three|four|five)$/);
+  if (surveilMatch) {
+    return { ...result, intent: 'SURVEIL', count: parseWordNumber(surveilMatch[1]) || 1, confidence: 'high' };
+  }
+
+  // ── Cycle ──
+  // "cycle sol ring" / "discard for cycling sol ring" / "cycle my goblin guide"
+  const cycleMatch = lower.match(/^(?:cycle|cycling|cycle away|discard.*cycling)\s+(.+)$/);
+  if (cycleMatch) {
+    return { ...result, intent: 'CYCLE', cardName: normalizeName(cycleMatch[1]), confidence: 'high' };
+  }
+
+  // ── Look at opponent hand ──
+  // "look at player 2's hand" / "see player 3 hand"
+  const lookHandMatch = lower.match(/^(?:look at|see|peek at|search)\s+player\s+(\d)(?:'s)?\s+hand$/);
+  if (lookHandMatch) {
+    return { ...result, intent: 'LOOK_AT_HAND', targetPlayerIndex: parseInt(lookHandMatch[1]), confidence: 'high' };
+  }
+
+  // ── Look at top N ──
+  // "look at top 3" / "look at top 3 of my library" / "look at top of player 2's library"
+  const lookTopSelf = lower.match(/^look at top(?:\s+(\d+))?(?:\s+(?:of|cards?|of my library|of my deck))?$/);
+  if (lookTopSelf) {
+    return { ...result, intent: 'LOOK_AT_TOP', count: parseWordNumber(lookTopSelf[1]) || 1, confidence: 'high' };
+  }
+  const lookTopPlayer = lower.match(/^look at top(?:\s+(\d+))?(?:\s+cards?)? of player\s+(\d)(?:'s)?(?:\s+(?:library|deck))?$/);
+  if (lookTopPlayer) {
+    return { ...result, intent: 'LOOK_AT_TOP', count: parseWordNumber(lookTopPlayer[1]) || 1, targetPlayerIndex: parseInt(lookTopPlayer[2]), confidence: 'high' };
+  }
+
+  // ── Cast from graveyard (flashback, unearth, encore, escape, etc.) ──
+  // "flashback goblin dark-dwellers" / "cast from graveyard goblin guide"
+  // "escape elspeth" / "unearth gravecrawler" / "encore zuzu"
+  const castFromGyMatch = lower.match(
+    /^(?:flashback|escape|unearth|encore|delve|disturb|rebound|dredge|cast from gy|cast from graveyard)\s+(.+)$/
+  );
+  if (castFromGyMatch) {
+    return { ...result, intent: 'CAST_FROM_GY', cardName: normalizeName(castFromGyMatch[1]), confidence: 'high' };
+  }
+  // "cast sol ring from graveyard"
+  const castFromGyAlt = lower.match(/^cast\s+(.+?)\s+from\s+(?:graveyard|gy|grave)$/);
+  if (castFromGyAlt) {
+    return { ...result, intent: 'CAST_FROM_GY', cardName: normalizeName(castFromGyAlt[1]), confidence: 'high' };
+  }
+
+  // ── Cast from exile ──
+  // "foretell nephalia drownyard" / "adventure goblin guide" / "cast from exile"
+  const castFromExileMatch = lower.match(
+    /^(?:foretell|adventure|cast from exile|exile cast)\s+(.+)$/
+  );
+  if (castFromExileMatch) {
+    return { ...result, intent: 'CAST_FROM_EXILE', cardName: normalizeName(castFromExileMatch[1]), confidence: 'high' };
+  }
+  const castFromExileAlt = lower.match(/^cast\s+(.+?)\s+from\s+exile$/);
+  if (castFromExileAlt) {
+    return { ...result, intent: 'CAST_FROM_EXILE', cardName: normalizeName(castFromExileAlt[1]), confidence: 'high' };
+  }
+
+  // ── Reanimate ──
+  // "reanimate gravecrawler" / "return gravecrawler to battlefield" / "put gravecrawler onto battlefield"
+  const reanimateKeyword = lower.match(/^(?:reanimate|animate|raise|resurrect|recover)\s+(.+)$/);
+  const reanimateReturn = lower.match(/^return\s+(.+?)\s+to\s+(?:the\s+)?battlefield(?:\s+under\s+(?:your|my)\s+control)?$/);
+  const reanimatePut = lower.match(/^put\s+(.+?)\s+(?:on|onto)\s+(?:the\s+)?battlefield(?:\s+under\s+(?:your|my)\s+control)?$/);
+  const reanimateMatch = reanimateKeyword || reanimateReturn || reanimatePut;
+  if (reanimateMatch) {
+    const name = reanimateMatch[1];
+    return { ...result, intent: 'REANIMATE', cardName: normalizeName(name), confidence: 'high' };
   }
 
   // ── Life gain / loss ──
@@ -711,8 +788,12 @@ function getSearchZones(intent: ParsedIntent): import('../types/game').Zone[] {
     case 'ADD_COUNTER': return ['battlefield'];
     case 'REMOVE_COUNTER': return ['battlefield'];
     case 'DISCARD': return ['hand'];
+    case 'CYCLE': return ['hand'];
     case 'COUNTER_SPELL': return ['stack'];
     case 'MOVE_CARD': return ['battlefield', 'hand', 'graveyard', 'exile', 'library'];
+    case 'CAST_FROM_GY': return ['graveyard'];
+    case 'CAST_FROM_EXILE': return ['exile'];
+    case 'REANIMATE': return ['graveyard', 'exile'];
     default: return ['battlefield', 'hand', 'graveyard', 'exile', 'command', 'stack'];
   }
 }

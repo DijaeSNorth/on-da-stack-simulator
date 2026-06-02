@@ -95,11 +95,49 @@ export function useNLPCommand(onCombatIntent?: (intent: ResolvedIntent) => void)
       }
 
       case 'SCRY': {
-        store.addAssistantMessage({
-          severity: 'info', label: 'Info',
-          text: `Scry ${intent.count ?? 1} — look at the top ${intent.count ?? 1} card(s) of your library.`,
-        });
-        return { success: true, message: `Scry ${intent.count ?? 1}` };
+        store.scryCards(localPlayerId, intent.count ?? 1);
+        return { success: true, message: `Scry ${intent.count ?? 1} — library drawer opened` };
+      }
+
+      case 'SURVEIL': {
+        store.surveilCards(localPlayerId, intent.count ?? 1);
+        return { success: true, message: `Surveil ${intent.count ?? 1} — library drawer opened` };
+      }
+
+      case 'CYCLE': {
+        if (!intent.resolvedInstanceId) return { success: false, message: intent.error ?? `Card not found: ${intent.cardName}` };
+        store.cycleCard(localPlayerId, intent.resolvedInstanceId);
+        return { success: true, message: `Cycled ${intent.cardName} — drew 1` };
+      }
+
+      case 'CAST_FROM_GY': {
+        if (!intent.resolvedInstanceId) return { success: false, message: intent.error ?? `"${intent.cardName}" not found in graveyard` };
+        store.castFromZone(localPlayerId, intent.resolvedInstanceId, 'graveyard');
+        return { success: true, message: `Cast ${intent.cardName} from graveyard` };
+      }
+
+      case 'CAST_FROM_EXILE': {
+        if (!intent.resolvedInstanceId) return { success: false, message: intent.error ?? `"${intent.cardName}" not found in exile` };
+        store.castFromZone(localPlayerId, intent.resolvedInstanceId, 'exile');
+        return { success: true, message: `Cast ${intent.cardName} from exile` };
+      }
+
+      case 'REANIMATE': {
+        if (!intent.resolvedInstanceId) return { success: false, message: intent.error ?? `"${intent.cardName}" not found in graveyard/exile` };
+        store.reanimateCard(intent.resolvedInstanceId, localPlayerId);
+        return { success: true, message: `Reanimated ${intent.cardName}` };
+      }
+
+      case 'LOOK_AT_HAND': {
+        const targetId = intent.targetPlayerId ?? localPlayerId;
+        store.openZoneDrawer('hand', targetId);
+        return { success: true, message: `Looking at player ${intent.targetPlayerIndex}'s hand` };
+      }
+
+      case 'LOOK_AT_TOP': {
+        const targetId = intent.targetPlayerId ?? localPlayerId;
+        store.openZoneDrawer('library', targetId);
+        return { success: true, message: `Looking at top of library` };
       }
 
       case 'ADD_COUNTER': {

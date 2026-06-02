@@ -39,7 +39,7 @@ export interface UIState {
   combatMode: boolean;
   deckBuilderOpen: boolean;
   lobbyOpen: boolean;
-  zoneDrawer: { zone: 'graveyard' | 'exile' | 'library'; playerId: string } | null;
+  zoneDrawer: { zone: 'graveyard' | 'exile' | 'library' | 'hand'; playerId: string } | null;
   cardContextMenu: { instanceId: string; x: number; y: number } | null;
   cardPreview: string | null;
   searchQuery: string;
@@ -201,7 +201,7 @@ export interface GameStore {
   setRightPanelTab: (tab: UIState['rightPanelTab']) => void;
   toggleLeftPanel: () => void;
   toggleRightPanel: () => void;
-  openZoneDrawer: (zone: 'graveyard' | 'exile' | 'library', playerId: string) => void;
+  openZoneDrawer: (zone: 'graveyard' | 'exile' | 'library' | 'hand', playerId: string) => void;
   closeZoneDrawer: () => void;
   openCardContextMenu: (instanceId: string, x: number, y: number) => void;
   closeCardContextMenu: () => void;
@@ -219,6 +219,19 @@ export interface GameStore {
 
   loadDecks: () => void;
   saveDeckToStorage: (deck: Deck) => void;
+
+  /** Scry N — move top N to a holding list so player can decide via ZoneDrawer */
+  scryCards: (playerId: string, count: number) => void;
+  /** Surveil N — same as scry but mills to GY instead of bottom */
+  surveilCards: (playerId: string, count: number) => void;
+  /** Cycle a card: discard it, draw 1 */
+  cycleCard: (playerId: string, instanceId: string) => void;
+  /** Cast a card from a specific zone (GY, exile, command, etc.) */
+  castFromZone: (playerId: string, instanceId: string, fromZone: CardState['zone']) => void;
+  /** Reanimate: move any card from GY/exile directly to battlefield */
+  reanimateCard: (instanceId: string, toControllerId: string) => void;
+  /** Log a freeform judge note / mechanic hint (Tier 3 oracle actions) */
+  logAction: (playerId: string, type: string, text: string) => void;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1026,6 +1039,83 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   saveDeckToStorage: (deck) => {
     saveDeck(deck);
     set({ decks: loadDecksFromStorage() });
+  },
+
+  // ── Scry / Surveil / Cycle / Cast-from-zone / Reanimate ──────────────────
+
+  scryCards: (playerId, count) => {
+    const { game } = get();
+    const player = game.players.find(p => p.id === playerId);
+    if (!player || player.library.length === 0) return;
+    const n = Math.min(count, player.library.length);
+    const action = createAction(game, playerId, 'SCRY',
+      `Scry ${count} — look at top ${n} card(s)`);
+    set({
+      game: { ...game, actionLog: [...game.actionLog, action] },
+      ui: { ...get().ui, zoneDrawer: { zone: 'library', playerId } },
+    });
+  },
+
+  surveilCards: (playerId, count) => {
+    const { game } = get();
+    const player = game.players.find(p => p.id === playerId);
+    if (!player || player.library.length === 0) return;
+    const n = Math.min(count, player.library.length);
+    const action = createAction(game, playerId, 'SURVEIL',
+      `Surveil ${count} — top ${n} card(s): keep or mill`);
+    set({
+      game: { ...game, actionLog: [...game.actionLog, action] },
+      ui: { ...get().ui, zoneDrawer: { zone: 'library', playerId } },
+    });
+  },
+
+  cycleCard: (playerId, instanceId) => {
+    let g = get().game;
+    const card = g.cards[instanceId];
+    if (!card || card.zone !== 'hand') return;
+    g = discardCard(g, playerId, instanceId);
+    g = drawCards(g, playerId, 1);
+    const action = createAction(g, playerId, 'CYCLE',
+      `Cycled ${card.definition.name} — drew 1`, [instanceId]);
+    set({ game: { ...g, actionLog: [...g.actionLog, action] } });
+  },
+
+  castFromZone: (playerId, instanceId, fromZone) => {
+    let g = get().game;
+    const card = g.cards[instanceId];
+    if (!card) return;
+    const zoneName = fromZone === 'graveyard' ? 'graveyard'
+      : fromZone === 'exile' ? 'exile'
+      : fromZone === 'command' ? 'command zone' : fromZone;
+    const isPermanent = ['Creature', 'Artifact', 'Enchantment', 'Planeswalker', 'Land', 'Battle']
+      .some(t => card.definition.cardTypes.includes(t));
+    // Update controller then move
+    g = { ...g, cards: { ...g.cards, [instanceId]: { ...g.cards[instanceId], controllerId: playerId } } };
+    g = moveCard(g, instanceId, isPermanent ? 'battlefield' : 'graveyard');
+    const action = createAction(g, playerId, 'CAST',
+      `Cast ${card.definition.name} from ${zoneName}`, [instanceId]);
+    const flags = checkCastLegality(g, playerId, instanceId);
+    const newMsgs = flags.map(f => makeMsg(g, f));
+    g = { ...g, actionLog: [...g.actionLog, action] };
+    set({ game: g, ui: { ...get().ui, assistantMessages: [...get().ui.assistantMessages, ...newMsgs].slice(-200) } });
+  },
+
+  reanimateCard: (instanceId, toControllerId) => {
+    let g = get().game;
+    const card = g.cards[instanceId];
+    if (!card) return;
+    g = { ...g, cards: { ...g.cards, [instanceId]: { ...g.cards[instanceId], controllerId: toControllerId } } };
+    g = moveCard(g, instanceId, 'battlefield');
+    const player = g.players.find(p => p.id === toControllerId);
+    const action = createAction(g, toControllerId, 'REANIMATE',
+      `${player?.name || toControllerId} reanimated ${card.definition.name}`, [instanceId]);
+    set({ game: { ...g, actionLog: [...g.actionLog, action] } });
+  },
+
+  logAction: (playerId, type, text) => {
+    const g = get().game;
+    const action = createAction(g, playerId, type as any, text);
+    set({ game: { ...g, actionLog: [...g.actionLog, action] } });
   },
 }));
 
