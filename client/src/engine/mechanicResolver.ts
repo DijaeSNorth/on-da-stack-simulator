@@ -278,8 +278,9 @@ export const TIER3_PATTERNS: OraclePattern[] = [
     label: 'Tutor → Top of Library',
     category: 'search-library',
     description: 'Searches your library and puts the found card on top.' },
-  // Replacement: if it would go to GY, exile instead (Leyline of the Void style)
-  { id: 'gy-to-exile-replacement', pattern: /if (?:a )?card.+?would (?:be put|go) into (?:a )?(?:graveyard|opponent'?s? graveyard).+?exile/i,
+  // Replacement: if it would go to GY, exile instead (Leyline of the Void / Yawgmoth's Will style)
+  { id: 'gy-to-exile-replacement',
+    pattern: /if (?:a )?card.+?would (?:be put|go) into (?:(?:a|your|their|an opponent'?s?|any) )?graveyard/is,
     label: 'Graveyard Replacement → Exile',
     category: 'replacement',
     description: 'Replaces cards going to graveyard with exile. Affects reanimation, flashback, etc.' },
