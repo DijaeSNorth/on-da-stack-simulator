@@ -1,0 +1,76 @@
+{
+  "rules": {
+
+    "rooms": {
+
+      "$roomCode": {
+
+        // ── Block 1: Room-level read ───────────────────────────────────────────
+        // Anyone who knows the 6-char room code can read the full room snapshot.
+        // Required for joiners and spectators to fetch initial game state and
+        // peer presence on connect. Scoped to one room path — no cross-room reads.
+        ".read": true,
+
+        // ── Block 2: Room creation (authenticated host only) ──────────────────
+        // A room can only be created when:
+        //   (a) the caller is authenticated (auth != null)
+        //   (b) the room does not yet exist (!data.exists())
+        //   (c) the hostId field written equals the caller's own UID
+        // After creation data.exists() is true, so this path can never overwrite.
+        ".write": "auth != null && !data.exists() && newData.child('hostId').val() === auth.uid",
+
+        "game": {
+          // ── Block 3: Game state broadcast (host only) ─────────────────────
+          // Only the room host can push game state mutations via broadcastState().
+          // Cross-references the stored hostId at the room root against auth.uid.
+          // Prevents any joined peer from overwriting the authoritative game state.
+          ".write": "auth != null && root.child('rooms/' + $roomCode + '/hostId').val() === auth.uid"
+        },
+
+        "players": {
+
+          "$peerId": {
+            // ── Block 4: Peer presence read ───────────────────────────────────
+            // Inherited from the room-level read above. Stated explicitly here
+            // so individual peer nodes can be overridden independently later
+            // (e.g. hiding spectator identities from seated players).
+            ".read": true,
+
+            // ── Block 5: Own presence write ───────────────────────────────────
+            // Each peer can only write their OWN presence record.
+            // The $peerId wildcard must match the caller's Firebase Auth UID.
+            // Applies equally to seated players and spectators — you can update
+            // your own name, color, seatIndex, isSpectator, and online flag,
+            // but cannot touch any other player's record.
+            ".write": "auth != null && auth.uid === $peerId",
+
+            "online": {
+              // ── Block 6: Online flag protection ───────────────────────────
+              // Reinforces that no one — including the host — can flip another
+              // player's online flag. Firebase onDisconnect() handlers run in
+              // the disconnecting client's own auth context so graceful
+              // disconnect (online → false) still works correctly.
+              ".write": "auth != null && auth.uid === $peerId"
+            }
+          }
+        },
+
+        "hostId": {
+          // ── Block 7: hostId is immutable after creation ───────────────────
+          // Can only be written once (on room creation) and only to the
+          // creator's own UID. data.exists() is true post-creation, so the
+          // rule always evaluates to false — preventing host-takeover attacks.
+          ".write": "auth != null && !data.exists() && newData.val() === auth.uid"
+        },
+
+        "createdAt": {
+          // ── Block 8: createdAt is write-once ─────────────────────────────
+          // Set once on room creation, immutable thereafter. No explicit auth
+          // check needed here because Block 2's room-level write already
+          // validates auth before any child node can be written.
+          ".write": "!data.exists()"
+        }
+      }
+    }
+  }
+}
