@@ -112,13 +112,13 @@ export type KeywordAction =
   | 'EXPLOIT'      // sacrifice a creature for effect
   | 'MANIFEST'     // put face-down, may turn up
   | 'MORPH_UP'     // turn face-up from morph
-  | 'GENERIC'      // catch-all for display only
+  | 'GENERIC';     // catch-all for display only
 
 export interface KeywordMechanic {
   keyword: string;          // normalized lowercase Scryfall keyword
   action: KeywordAction;
   label: string;            // short UI label
-  fromZone?: 'graveyard' | 'exile' | 'hand' | 'library';
+  fromZone?: 'graveyard' | 'exile' | 'hand' | 'library' | 'battlefield';
   description: string;      // tooltip / judge reminder
 }
 

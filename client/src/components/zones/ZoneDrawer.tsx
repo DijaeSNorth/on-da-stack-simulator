@@ -15,6 +15,7 @@ export function ZoneDrawer() {
 
   const player = game.players.find(p => p.id === playerId);
   if (!player) return null;
+  const playerName = player.name;
 
   const localPlayer = game.players.find(p => p.id === localPlayerId);
   const isOwnZone = playerId === localPlayerId;
@@ -60,7 +61,7 @@ export function ZoneDrawer() {
   // Per-card action buttons based on zone
   function CardActions({ card }: { card: CardState }) {
     const isPermanent = ['Creature', 'Artifact', 'Enchantment', 'Planeswalker', 'Land', 'Battle']
-      .some(t => card.definition.cardTypes.includes(t));
+      .some(t => card.definition.cardTypes.includes(t as typeof card.definition.cardTypes[number]));
     const isCreature = card.definition.cardTypes.includes('Creature');
 
     if (zone === 'graveyard') {
@@ -231,8 +232,8 @@ export function ZoneDrawer() {
                 title="Take this card (Praetor's Grasp / Bribery effect)"
                 onClick={() => {
                   store.moveCardToZone(card.instanceId, 'hand');
-                  store.addAssistantMessage({ severity: 'flag', label: 'Action',
-                    text: `Searched ${player.name}'s library and took ${card.definition.name}` });
+                  store.addAssistantMessage({ severity: 'info', label: 'Info',
+                    text: `Searched ${playerName}'s library and took ${card.definition.name}` });
                   store.shuffleLibrary(playerId);
                   store.closeZoneDrawer();
                 }}

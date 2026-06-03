@@ -113,7 +113,7 @@ function blockerLegal(blocker: CardState, attacker: CardState): { legal: boolean
   const protMatch = aOracle.match(/protection from ([\w\s,]+?)(?:\.|,|\band\b|$)/g);
   if (protMatch) {
     const bColors = blocker.definition.colors.map(c => c.toLowerCase());
-    const bTypes  = blocker.definition.subtypes?.map(t => t.toLowerCase()) ?? [];
+    const bTypes  = blocker.definition.subTypes?.map((t: string) => t.toLowerCase()) ?? [];
     for (const pm of protMatch) {
       const quality = pm.replace('protection from ', '').replace(/[.,]+$/, '').trim();
       if (quality === 'everything') {

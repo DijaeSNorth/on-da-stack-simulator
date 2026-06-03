@@ -1,6 +1,7 @@
 // ─── Assistant / Judge Engine ─────────────────────────────────────────────────
 import { v4 as uuid } from 'uuid';
-import type { GameState, CardState, AssistantFlag, FlagSeverity, Phase } from '../types/game';
+import type { CustomTrigger, GameState, CardState, AssistantFlag, FlagSeverity, Phase } from '../types/game';
+import { getTier3Patterns } from './mechanicResolver';
 
 // ─── Timing Windows ───────────────────────────────────────────────────────────
 
@@ -217,12 +218,16 @@ export function detectETBTriggers(state: GameState, newCard: CardState): Detecte
   const triggers: DetectedTrigger[] = [];
   const text = newCard.definition.oracleText.toLowerCase();
 
-  if (text.includes('when') && (text.includes('enters') || text.includes('enters the battlefield'))) {
+  if ((text.includes('when') || text.includes('whenever')) && (text.includes('enters') || text.includes('enters the battlefield'))) {
     triggers.push({
       sourceCard: newCard,
       triggerText: extractTriggerText(newCard.definition.oracleText, 'enters'),
       triggerType: 'ETB',
     });
+  }
+
+  for (const custom of getMatchingCustomTriggers(newCard, 'ETB')) {
+    triggers.push(customToDetectedTrigger(newCard, custom, 'ETB'));
   }
 
   // Check other cards that trigger on this card entering
@@ -236,6 +241,9 @@ export function detectETBTriggers(state: GameState, newCard: CardState): Detecte
         triggerType: 'ETB',
       });
     }
+    for (const custom of getMatchingCustomTriggers(card, 'ETB').filter(customEtbCanObserveOtherCard)) {
+      triggers.push(customToDetectedTrigger(card, custom, 'ETB'));
+    }
   }
 
   return triggers;
@@ -245,7 +253,9 @@ export function detectAttackTriggers(state: GameState, attackerCard: CardState):
   const triggers: DetectedTrigger[] = [];
   const text = attackerCard.definition.oracleText.toLowerCase();
 
-  if (text.includes('whenever this creature attacks') || text.includes('when ~ attacks')) {
+  if (text.includes('whenever this creature attacks') ||
+    text.includes('whenever') && text.includes('attacks') ||
+    text.includes('when ~ attacks')) {
     triggers.push({
       sourceCard: attackerCard,
       triggerText: extractTriggerText(attackerCard.definition.oracleText, 'whenever'),
@@ -253,7 +263,47 @@ export function detectAttackTriggers(state: GameState, attackerCard: CardState):
     });
   }
 
+  for (const custom of getMatchingCustomTriggers(attackerCard, 'attack')) {
+    triggers.push(customToDetectedTrigger(attackerCard, custom, 'attack'));
+  }
+
   return triggers;
+}
+
+function getMatchingCustomTriggers(card: CardState, eventType: DetectedTrigger['triggerType']): CustomTrigger[] {
+  return (card.definition.customTriggers ?? []).filter(trigger => customTriggerMatchesEvent(trigger, eventType));
+}
+
+function customTriggerMatchesEvent(trigger: CustomTrigger, eventType: DetectedTrigger['triggerType']): boolean {
+  const event = trigger.event.toLowerCase();
+  if (eventType === 'ETB') return /\b(etb|enter|enters|battlefield)\b/.test(event);
+  if (eventType === 'attack') return /\b(attack|attacks|attacking)\b/.test(event);
+  if (eventType === 'upkeep') return event.includes('upkeep');
+  if (eventType === 'graveyard') return event.includes('graveyard') || event.includes('dies');
+  if (eventType === 'exile') return event.includes('exile');
+  if (eventType === 'damage') return event.includes('damage');
+  return true;
+}
+
+function customEtbCanObserveOtherCard(trigger: CustomTrigger): boolean {
+  const event = trigger.event.toLowerCase();
+  return event.includes('another') ||
+    event.includes('a creature') ||
+    event.includes('a permanent') ||
+    event.includes('a card') ||
+    event.includes('whenever');
+}
+
+function customToDetectedTrigger(
+  sourceCard: CardState,
+  trigger: CustomTrigger,
+  triggerType: DetectedTrigger['triggerType']
+): DetectedTrigger {
+  return {
+    sourceCard,
+    triggerText: trigger.reminderText || `${trigger.event}: ${trigger.effect}`,
+    triggerType,
+  };
 }
 
 function extractTriggerText(oracleText: string, keyword: string): string {
@@ -325,6 +375,31 @@ export function getActiveModifiers(state: GameState): AssistantFlag[] {
     if (text.includes("opponents can't")) {
       flags.push(makeFlag('info', 'Info',
         `${card.definition.name} is restricting what opponents can do. Check the restriction.`
+      ));
+    }
+
+    for (const effect of card.definition.replacementEffects ?? []) {
+      flags.push(makeFlag('needsReview', 'Needs Review',
+        `${card.definition.name} has a custom replacement effect: ${effect.replaces} -> ${effect.replacement}.`,
+        undefined,
+        card.instanceId
+      ));
+    }
+
+    for (const rule of card.definition.customRules ?? []) {
+      flags.push(makeFlag('info', 'Info',
+        `${card.definition.name} is covered by custom rule "${rule.name}": ${rule.effect}.`,
+        undefined,
+        card.instanceId
+      ));
+    }
+
+    for (const pattern of getTier3Patterns(card.definition)) {
+      if (!['replacement', 'copy', 'cast-from-zone', 'zone-change'].includes(pattern.category)) continue;
+      flags.push(makeFlag('needsReview', 'Needs Review',
+        `${card.definition.name}: ${pattern.description}`,
+        undefined,
+        card.instanceId
       ));
     }
   }

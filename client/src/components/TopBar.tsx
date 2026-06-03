@@ -132,7 +132,7 @@ export function TopBar() {
       {/* Trigger badge */}
       {pendingTriggers > 0 && (
         <button
-          onClick={() => store.setRightPanelTab('triggers')}
+          onClick={() => store.setRightPanelTab('stack')}
           style={{
             display: 'flex', alignItems: 'center', gap: 4,
             background: '#78350f', border: '1px solid #f59e0b',
@@ -141,7 +141,7 @@ export function TopBar() {
           }}
         >
           <span style={{ fontSize: 9, color: '#fcd34d', fontWeight: 700 }}>
-            TRIGGERS {pendingTriggers}
+            STACK / TRIGGERS {pendingTriggers}
           </span>
         </button>
       )}

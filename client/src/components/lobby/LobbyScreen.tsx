@@ -34,6 +34,7 @@ export function LobbyScreen() {
   const [startingLife, setStartingLife] = useState(40);
   const [activePlayerTab, setActivePlayerTab] = useState(0);
   const [deckText, setDeckText] = useState('');
+  const [customLogicText, setCustomLogicText] = useState('');
   const [deckName, setDeckName] = useState('');
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<{ deck: Deck; errors: string[]; warnings: string[] } | null>(null);
@@ -74,7 +75,7 @@ export function LobbyScreen() {
     if (!deckText.trim()) return;
     setImporting(true);
     try {
-      const result = await importDecklist(deckText, deckName || 'Imported Deck');
+      const result = await importDecklist(deckText, deckName || 'Imported Deck', undefined, undefined, customLogicText);
       setImportResult(result);
     } finally {
       setImporting(false);
@@ -86,6 +87,7 @@ export function LobbyScreen() {
     await store.loadDeck(players[activePlayerTab].id, deck);
     setImportResult(null);
     setDeckText('');
+    setCustomLogicText('');
   }
 
   async function saveDeckAndAssign() {
@@ -396,6 +398,38 @@ export function LobbyScreen() {
                   lineHeight: 1.5,
                 }}
               />
+              <details style={{ marginTop: 8 }}>
+                <summary style={{
+                  fontSize: 10,
+                  color: '#64748b',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                }}>
+                  Custom logic and card notes
+                </summary>
+                <textarea
+                  placeholder={'Optional JSON or lines like:\nnote: Card Name = table reminder\ntrigger: Card Name | attacks | create a Treasure\nreplacement: Card Name | would die | exile it instead'}
+                  value={customLogicText}
+                  onChange={e => setCustomLogicText(e.target.value)}
+                  data-testid="input-custom-logic"
+                  rows={4}
+                  style={{
+                    width: '100%',
+                    boxSizing: 'border-box',
+                    marginTop: 6,
+                    background: '#0f172a',
+                    border: '1px solid #334155',
+                    borderRadius: 5,
+                    padding: '7px 9px',
+                    fontSize: 10,
+                    color: '#e2e8f0',
+                    outline: 'none',
+                    resize: 'vertical',
+                    fontFamily: 'monospace',
+                    lineHeight: 1.45,
+                  }}
+                />
+              </details>
               <button
                 data-testid="btn-import-deck"
                 onClick={handleImport}
@@ -427,6 +461,25 @@ export function LobbyScreen() {
                 {importResult.deck.commanders.length > 0 && (
                   <div style={{ fontSize: 10, color: '#a78bfa', marginBottom: 4 }}>
                     Commander{importResult.deck.commanders.length > 1 ? 's' : ''}: {importResult.deck.commanders.join(', ')}
+                  </div>
+                )}
+
+                {importResult.deck.logicFile && (
+                  <div style={{
+                    fontSize: 10,
+                    color: '#93c5fd',
+                    background: 'rgba(30,58,95,0.35)',
+                    border: '1px solid #1e3a5f',
+                    borderRadius: 4,
+                    padding: '4px 6px',
+                    marginBottom: 6,
+                  }}>
+                    Custom logic: {[
+                      importResult.deck.logicFile.rules.length ? `${importResult.deck.logicFile.rules.length} rules` : '',
+                      importResult.deck.logicFile.triggers.length ? `${importResult.deck.logicFile.triggers.length} triggers` : '',
+                      importResult.deck.logicFile.replacementEffects.length ? `${importResult.deck.logicFile.replacementEffects.length} replacements` : '',
+                      Object.keys(importResult.deck.logicFile.cardNotes).length ? `${Object.keys(importResult.deck.logicFile.cardNotes).length} notes` : '',
+                    ].filter(Boolean).join(' / ')}
                   </div>
                 )}
 

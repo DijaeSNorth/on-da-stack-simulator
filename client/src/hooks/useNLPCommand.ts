@@ -287,7 +287,7 @@ export function useNLPCommand(onCombatIntent?: (intent: ResolvedIntent) => void)
                 power: tok.power,
                 toughness: tok.toughness,
                 colors: tok.colors,
-                cardTypes: tok.cardTypes,
+                cardTypes: tok.cardTypes as import('../types/game').CardType[],
                 subTypes: tok.subTypes,
                 keywords: tok.keywords,
                 oracleText: tok.oracleText ?? '',

@@ -44,6 +44,10 @@ export interface CardDefinition {
   legalities: Record<string, 'legal' | 'not_legal' | 'banned' | 'restricted'>;
   rulings?: { date: string; text: string }[];
   relatedCards?: string[];
+  customTriggers?: CustomTrigger[];
+  replacementEffects?: ReplacementEffect[];
+  customRules?: CustomRule[];
+  customNotes?: string[];
 }
 
 export interface Counter {
@@ -166,7 +170,8 @@ export type ActionType =
   | 'VOTE' | 'CHOOSE_MODE'
   | 'UNDO' | 'REDO' | 'SNAPSHOT'
   | 'GAME_START' | 'GAME_END' | 'MULLIGAN'
-  | 'NOTE' | 'FLAG';
+  | 'NOTE' | 'FLAG'
+  | 'SCRY' | 'SURVEIL' | 'CYCLE' | 'CAST' | 'REANIMATE' | 'OTHER';
 
 export interface ActionRecord {
   id: string;

@@ -86,6 +86,7 @@ const _connections: Map<string, DataConnection> = new Map();
 
 // Joiner-side: single connection to host
 let _hostConn: DataConnection | null = null;
+let _latestGame: GameState | null = null;
 
 // Presence table — host owns the authoritative copy; joiners mirror it
 const _peers: Map<string, RoomPresence> = new Map();
@@ -151,6 +152,7 @@ export async function createRoom(
 ): Promise<string> {
   setStatus('connecting');
   _isHost = true;
+  _latestGame = _initialGame;
   _connections.clear();
   _peers.clear();
 
@@ -194,13 +196,8 @@ export async function createRoom(
       _connections.set(conn.peer, conn);
 
       conn.on('open', () => {
-        // Send current game state + full presence table to the new joiner
-        if (_onGameUpdate) {
-          // We don't store game state here — the store broadcasts it after
-          // every mutation via broadcastState(). On first connect we trigger
-          // the store to re-broadcast by firing a no-op presence update.
-          broadcastPresence();
-        }
+        if (_latestGame) conn.send({ type: 'GAME_STATE', payload: _latestGame });
+        broadcastPresence();
       });
 
       conn.on('data', (raw: unknown) => {
@@ -293,6 +290,10 @@ export async function joinRoom(
 
         if (msg.type === 'PRESENCE_BROADCAST') {
           const players = msg.payload as Record<string, RoomPresence>;
+          _peers.clear();
+          for (const [peerId, presence] of Object.entries(players)) {
+            _peers.set(peerId, presence);
+          }
           _onPresenceUpdate?.(players);
 
           // First PRESENCE_BROADCAST resolves the join promise
@@ -321,6 +322,10 @@ export async function joinRoom(
 
         if (msg.type === 'PONG') {
           // heartbeat acknowledged
+        }
+
+        if (msg.type === 'PING') {
+          conn.send({ type: 'PONG' });
         }
       });
 
@@ -352,6 +357,7 @@ export async function joinRoom(
 // ─── Broadcast state (host → all joiners) ─────────────────────────────────────
 
 export function broadcastState(game: GameState): void {
+  _latestGame = game;
   if (!_isHost) return;
   const msg = { type: 'GAME_STATE', payload: game };
   for (const conn of _connections.values()) {

@@ -479,16 +479,16 @@ export async function loadDeckIntoPlayer(
     const isCommander = deck.commanders.includes(name);
 
     for (let i = 0; i < count; i++) {
-      const d = def || createPlaceholderDef(name);
+      const d = applyDeckLogicToDefinition(def || createPlaceholderDef(name), deck);
       newDefs[d.id] = d;
 
       if (isCommander && i === 0) {
-        const cs = createCardState(d, playerId, 'command', true);
+        const cs = applyDeckLogicToCard(createCardState(d, playerId, 'command', true), d);
         newCards[cs.instanceId] = cs;
         newPlayer.commandZone.push(cs.instanceId);
         newPlayer.commanders.push(cs.instanceId);
       } else {
-        const cs = createCardState(d, playerId, 'library');
+        const cs = applyDeckLogicToCard(createCardState(d, playerId, 'library'), d);
         newCards[cs.instanceId] = cs;
         newPlayer.library.push(cs.instanceId);
       }
@@ -497,10 +497,10 @@ export async function loadDeckIntoPlayer(
 
   // Sideboard
   for (const { name, count } of deck.sideboard) {
-    const def = defsMap.get(name) || createPlaceholderDef(name);
+    const def = applyDeckLogicToDefinition(defsMap.get(name) || createPlaceholderDef(name), deck);
     newDefs[def.id] = def;
     for (let i = 0; i < count; i++) {
-      const cs = createCardState(def, playerId, 'sideboard');
+      const cs = applyDeckLogicToCard(createCardState(def, playerId, 'sideboard'), def);
       newCards[cs.instanceId] = cs;
       newPlayer.sideboard.push(cs.instanceId);
     }
@@ -535,6 +535,50 @@ function createPlaceholderDef(name: string): CardDefinition {
     keywords: [],
     isDoubleFaced: false,
     legalities: {},
+  };
+}
+
+function applyDeckLogicToDefinition(def: CardDefinition, deck: Deck): CardDefinition {
+  const logic = deck.logicFile;
+  if (!logic) return def;
+
+  const cardName = def.name.toLowerCase();
+  const customTriggers = logic.triggers.filter(t => t.sourceCard.toLowerCase() === cardName);
+  const replacementEffects = logic.replacementEffects.filter(r => r.sourceCard.toLowerCase() === cardName);
+  const customRules = logic.rules.filter(rule => {
+    if (!rule.enabled) return false;
+    if (!rule.cardFilter) return true;
+    const filter = rule.cardFilter.toLowerCase();
+    return def.name.toLowerCase().includes(filter) ||
+      def.typeLine.toLowerCase().includes(filter) ||
+      def.oracleText.toLowerCase().includes(filter);
+  });
+  const note = getCardNote(logic.cardNotes, def.name);
+
+  if (!customTriggers.length && !replacementEffects.length && !customRules.length && !note) return def;
+
+  return {
+    ...def,
+    customTriggers: [...(def.customTriggers ?? []), ...customTriggers],
+    replacementEffects: [...(def.replacementEffects ?? []), ...replacementEffects],
+    customRules: [...(def.customRules ?? []), ...customRules],
+    customNotes: note ? [...(def.customNotes ?? []), note] : def.customNotes,
+  };
+}
+
+function getCardNote(notes: Record<string, string>, cardName: string): string | undefined {
+  const exact = notes[cardName];
+  if (exact) return exact;
+  const cardNameLower = cardName.toLowerCase();
+  const matched = Object.entries(notes).find(([name]) => name.toLowerCase() === cardNameLower);
+  return matched?.[1];
+}
+
+function applyDeckLogicToCard(card: CardState, def: CardDefinition): CardState {
+  if (!def.customNotes?.length) return card;
+  return {
+    ...card,
+    notes: [card.notes, ...def.customNotes].filter(Boolean).join('\n'),
   };
 }
 
@@ -604,7 +648,7 @@ export function createToken(
     ...tokenDef,
   };
 
-  const cs = createCardState(fullDef, controllerId, 'battlefield');
+  const cs = createCardState(fullDef, controllerId, 'library');
   const tokenInstance: CardState = {
     ...cs,
     token: true,

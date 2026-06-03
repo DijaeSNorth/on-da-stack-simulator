@@ -24,10 +24,51 @@ const SEVERITY_LABEL_STYLES: Record<string, { bg: string; color: string }> = {
 
 function AssistantTab() {
   const messages = useGameStore(s => s.ui.assistantMessages);
+  const game = useGameStore(s => s.game);
+  const store = useGameStore();
   const reversed = [...messages].reverse();
+  const pendingTriggers = game.triggerQueue.filter(t => !t.acknowledged);
+  const missedTriggers = game.triggerQueue.filter(t => t.missed);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+      {(pendingTriggers.length > 0 || missedTriggers.length > 0) && (
+        <div style={{
+          margin: 8,
+          padding: '7px 8px',
+          borderRadius: 5,
+          background: pendingTriggers.length > 0 ? 'rgba(245,158,11,0.08)' : 'rgba(88,28,135,0.12)',
+          border: `1px solid ${pendingTriggers.length > 0 ? '#78350f' : '#581c87'}`,
+          display: 'flex',
+          justifyContent: 'space-between',
+          gap: 8,
+          alignItems: 'center',
+        }}>
+          <div>
+            <div style={{ fontSize: 10, color: pendingTriggers.length > 0 ? '#fcd34d' : '#d8b4fe', fontWeight: 700 }}>
+              {pendingTriggers.length > 0 ? `${pendingTriggers.length} pending trigger${pendingTriggers.length === 1 ? '' : 's'}` : `${missedTriggers.length} missed trigger${missedTriggers.length === 1 ? '' : 's'}`}
+            </div>
+            <div style={{ fontSize: 9, color: '#64748b', marginTop: 2 }}>
+              Managed with stack objects in the Stack panel.
+            </div>
+          </div>
+          <button
+            onClick={() => store.setRightPanelTab('stack')}
+            style={{
+              fontSize: 9,
+              padding: '3px 7px',
+              background: '#1e293b',
+              color: '#cbd5e1',
+              border: '1px solid #334155',
+              borderRadius: 4,
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          >
+            Open
+          </button>
+        </div>
+      )}
       {reversed.length === 0 ? (
         <div style={{
           flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -86,22 +127,24 @@ function StackTab() {
   const { game } = store;
   const stack = game.stack;
 
-  if (stack.length === 0) {
-    return (
-      <div style={{
-        flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-        color: '#334155', fontSize: 12, fontStyle: 'italic', padding: 16, textAlign: 'center',
-      }}>
-        Stack is empty
-      </div>
-    );
-  }
-
   return (
-    <div style={{ flex: 1, overflowY: 'auto', padding: 8 }}>
+    <div style={{ flex: 1, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ fontSize: 9, color: '#60a5fa', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
+        Stack ({stack.length})
+      </div>
       <div style={{ fontSize: 10, color: '#475569', marginBottom: 6, textAlign: 'center' }}>
         Resolves top → bottom
       </div>
+      {stack.length === 0 && (
+        <div style={{
+          color: '#334155', fontSize: 12, fontStyle: 'italic',
+          padding: '14px 8px', textAlign: 'center',
+          border: '1px dashed #1e293b',
+          borderRadius: 5,
+        }}>
+          Stack is empty
+        </div>
+      )}
       {stack.map((obj: StackObject, i) => {
         const player = game.players.find(p => p.id === obj.controllerId);
         return (
@@ -169,6 +212,7 @@ function StackTab() {
           </div>
         );
       })}
+      <TriggersTab embedded />
     </div>
   );
 }
@@ -214,7 +258,7 @@ function LogTab() {
   );
 }
 
-function TriggersTab() {
+function TriggersTab({ embedded = false }: { embedded?: boolean }) {
   const store = useGameStore();
   const { game } = store;
   const pending = game.triggerQueue.filter(t => !t.acknowledged);
@@ -222,7 +266,7 @@ function TriggersTab() {
   const acknowledged = game.triggerQueue.filter(t => t.acknowledged && !t.missed);
 
   return (
-    <div style={{ flex: 1, overflowY: 'auto', padding: 8 }}>
+    <div style={embedded ? { flexShrink: 0 } : { flex: 1, overflowY: 'auto', padding: 8 }}>
 
       {/* Active overlay note */}
       {pending.length > 0 && (
@@ -386,11 +430,10 @@ const debugBtnStyle: React.CSSProperties = {
 };
 
 const TABS: { id: string; label: string }[] = [
-  { id: 'assistant', label: '⚖ Judge' },
-  { id: 'stack', label: '📚 Stack' },
-  { id: 'log', label: '📋 Log' },
-  { id: 'triggers', label: '⚡ Triggers' },
-  { id: 'debug', label: '🔧 Debug' },
+  { id: 'assistant', label: 'Judge' },
+  { id: 'stack', label: 'Stack' },
+  { id: 'log', label: 'Log' },
+  { id: 'debug', label: 'Tools' },
 ];
 
 export function RightPanel() {
@@ -400,6 +443,7 @@ export function RightPanel() {
   if (!ui.rightPanelOpen) return null;
 
   const pendingTriggers = game.triggerQueue.filter(t => !t.acknowledged).length;
+  const effectiveTab = ui.rightPanelTab === 'triggers' ? 'stack' : ui.rightPanelTab;
 
   return (
     <div
@@ -422,8 +466,8 @@ export function RightPanel() {
         flexShrink: 0,
       }}>
         {TABS.map(tab => {
-          const isTriggerTab = tab.id === 'triggers';
-          const isActive = ui.rightPanelTab === tab.id;
+          const isStackTab = tab.id === 'stack';
+          const isActive = effectiveTab === tab.id;
           return (
             <button
               key={tab.id}
@@ -444,7 +488,7 @@ export function RightPanel() {
               }}
             >
               {tab.label}
-              {isTriggerTab && pendingTriggers > 0 && (
+              {isStackTab && pendingTriggers > 0 && (
                 <span style={{
                   position: 'absolute', top: 4, right: 2,
                   background: '#f59e0b', color: '#000',
@@ -469,11 +513,10 @@ export function RightPanel() {
 
       {/* Tab content */}
       <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-        {ui.rightPanelTab === 'assistant' && <AssistantTab />}
-        {ui.rightPanelTab === 'stack' && <StackTab />}
-        {ui.rightPanelTab === 'log' && <LogTab />}
-        {ui.rightPanelTab === 'triggers' && <TriggersTab />}
-        {ui.rightPanelTab === 'debug' && <DebugTab />}
+        {effectiveTab === 'assistant' && <AssistantTab />}
+        {effectiveTab === 'stack' && <StackTab />}
+        {effectiveTab === 'log' && <LogTab />}
+        {effectiveTab === 'debug' && <DebugTab />}
       </div>
     </div>
   );

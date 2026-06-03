@@ -441,16 +441,6 @@ export const TOKEN_REGISTRY: Record<string, CardTokenEntry> = {
     hint: 'Create 4 1/1 Squirrel tokens when Deranged Hermit enters',
     tier: 'B',
   },
-  'parallel lives': {
-    defaultCount: 0, tokens: [],
-    hint: 'Replacement effect — doubles tokens you create',
-    tier: 'A',
-  },
-  'tireless tracker': {
-    defaultCount: 1, tokens: [CLUE],
-    hint: 'Create a Clue token whenever a land enters under your control',
-    tier: 'A',
-  },
   'nissa, who shakes the world': {
     defaultCount: 0, tokens: [],
     hint: 'No token creation — animates lands',
@@ -530,11 +520,6 @@ export const TOKEN_REGISTRY: Record<string, CardTokenEntry> = {
   'emmara, soul of the accord': {
     defaultCount: 1, tokens: [SOLDIER_W],
     hint: 'Create a 1/1 white Soldier whenever Emmara becomes tapped',
-    tier: 'A',
-  },
-  'rhys the redeemed': {
-    defaultCount: 1, tokens: [ELF_G],
-    hint: '{G}: Create a 1/1 Elf  {4}{G}{W}: Copy each token you control',
     tier: 'A',
   },
   'queasy orb': {

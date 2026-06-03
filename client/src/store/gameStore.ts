@@ -16,7 +16,7 @@ import {
 } from '../engine/gameEngine';
 import {
   checkCastLegality, checkTapLegality, checkAttackLegality, checkBlockLegality,
-  detectETBTriggers, getActiveModifiers,
+  detectAttackTriggers, detectETBTriggers, getActiveModifiers,
 } from '../engine/assistantEngine';
 import { saveDeck, loadDecksFromStorage } from '../engine/deckImport';
 import { createReplay, saveReplayToStorage } from '../engine/replayEngine';
@@ -295,6 +295,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       name: hostName,
       color: hostColor,
       seatIndex,
+      isSpectator: false,
     });
     set(s => ({
       localPlayerId: game.players[seatIndex]?.id ?? game.players[0]?.id ?? '',
@@ -821,9 +822,16 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const check = checkAttackLegality(g, attackerInstanceId);
     g = declareAttacker(g, attackerInstanceId, targetPlayerId);
     const card = g.cards[attackerInstanceId];
+    const triggers = card ? detectAttackTriggers(g, card) : [];
+    const newTriggers: TriggerItem[] = triggers.map(t => ({
+      id: uuid(), sourceInstanceId: t.sourceCard.instanceId,
+      sourceName: t.sourceCard.definition.name, controllerId: t.sourceCard.controllerId,
+      text: t.triggerText, triggerType: t.triggerType,
+      acknowledged: false, missed: false, timestamp: Date.now(),
+    }));
     const action = createAction(g, g.activePlayerId, 'DECLARE_ATTACKER',
       `${card?.definition.name} attacks ${targetPlayerId}`, [attackerInstanceId], {}, check.flags);
-    g = { ...g, actionLog: [...g.actionLog, action] };
+    g = { ...g, actionLog: [...g.actionLog, action], triggerQueue: [...g.triggerQueue, ...newTriggers] };
     const newMsgs = check.flags.map(f => makeMsg(g, f));
     set({ game: g, ui: { ...get().ui, assistantMessages: [...get().ui.assistantMessages, ...newMsgs] } });
   },
@@ -1136,14 +1144,14 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       : fromZone === 'exile' ? 'exile'
       : fromZone === 'command' ? 'command zone' : fromZone;
     const isPermanent = ['Creature', 'Artifact', 'Enchantment', 'Planeswalker', 'Land', 'Battle']
-      .some(t => card.definition.cardTypes.includes(t));
+      .some(t => card.definition.cardTypes.includes(t as typeof card.definition.cardTypes[number]));
     // Update controller then move
     g = { ...g, cards: { ...g.cards, [instanceId]: { ...g.cards[instanceId], controllerId: playerId } } };
     g = moveCard(g, instanceId, isPermanent ? 'battlefield' : 'graveyard');
     const action = createAction(g, playerId, 'CAST',
       `Cast ${card.definition.name} from ${zoneName}`, [instanceId]);
-    const flags = checkCastLegality(g, playerId, instanceId);
-    const newMsgs = flags.map(f => makeMsg(g, f));
+    const check = checkCastLegality(g, playerId, instanceId);
+    const newMsgs = check.flags.map(f => makeMsg(g, f));
     g = { ...g, actionLog: [...g.actionLog, action] };
     set({ game: g, ui: { ...get().ui, assistantMessages: [...get().ui.assistantMessages, ...newMsgs].slice(-200) } });
   },
@@ -1172,8 +1180,9 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 // This is outside the store so it runs once at module load time —
 // no need to patch every individual action.
 useGameStore.subscribe(
-  (state) => state.game,
-  (game, prevGame) => {
+  (state, prevState) => {
+    const game = state.game;
+    const prevGame = prevState.game;
     const { multiplayer } = useGameStore.getState();
     // Only broadcast if we’re in a room and it’s a real change
     if (
@@ -1186,5 +1195,4 @@ useGameStore.subscribe(
       }
     }
   },
-  { equalityFn: (a, b) => a === b },
 );

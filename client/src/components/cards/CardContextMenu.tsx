@@ -48,7 +48,7 @@ export function CardContextMenu() {
   const inExile = card.zone === 'exile';
   const inLibrary = card.zone === 'library';
   const isPermanent = ['Creature', 'Artifact', 'Enchantment', 'Planeswalker', 'Land', 'Battle']
-    .some(t => def.cardTypes.includes(t));
+    .some(t => def.cardTypes.includes(t as typeof def.cardTypes[number]));
 
   const close = () => store.closeCardContextMenu();
 
@@ -186,7 +186,7 @@ export function CardContextMenu() {
                 power: tok.power,
                 toughness: tok.toughness,
                 colors: tok.colors,
-                cardTypes: tok.cardTypes,
+                cardTypes: tok.cardTypes as typeof def.cardTypes,
                 subTypes: tok.subTypes,
                 keywords: tok.keywords,
                 oracleText: tok.oracleText ?? '',

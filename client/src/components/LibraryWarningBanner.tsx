@@ -12,7 +12,7 @@ export function LibraryWarningBanner() {
 
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
 
-  if (!game.started) return null;
+  if (game.status !== 'playing') return null;
 
   const players = game.players.map(p => ({
     id: p.id,
