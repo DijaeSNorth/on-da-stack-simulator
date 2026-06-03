@@ -96,6 +96,15 @@ export function LobbyScreen() {
   }
 
   function startGame() {
+    const selectedHouseRules = HOUSE_RULE_PRESETS
+      .filter(rule => houseRules.has(rule.id))
+      .map(rule => ({
+        ...rule,
+        votes: Object.fromEntries(players.map(player => [player.id, true])),
+        approved: true,
+        appliesTo: 'all' as const,
+      }));
+
     const config = {
       playerCount,
       format: 'commander' as const,
@@ -104,8 +113,8 @@ export function LobbyScreen() {
       useInfect: true,
       startingHandSize: 7,
       maxMulligans: 6,
-      commanderTaxEnabled: true,
-      houseRules: [],
+      commanderTaxEnabled: !houseRules.has('no_commander_tax'),
+      houseRules: selectedHouseRules,
       timerEnabled: false,
     };
 

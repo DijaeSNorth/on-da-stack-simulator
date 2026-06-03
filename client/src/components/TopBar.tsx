@@ -5,21 +5,7 @@ import { useTutorial } from '../store/tutorialStore';
 import { TutorialTooltip } from './tutorial/TutorialTooltip';
 import { TOOLTIPS } from '../store/tutorialStore';
 import { PulseBeacon } from './tutorial/TutorialOverlay';
-
-const PHASE_LABELS: Record<string, string> = {
-  untap: 'Untap',
-  upkeep: 'Upkeep',
-  draw: 'Draw',
-  main1: 'Main 1',
-  beginningOfCombat: 'Begin Combat',
-  declareAttackers: 'Attackers',
-  declareBlockers: 'Blockers',
-  combatDamage: 'Damage',
-  endOfCombat: 'End Combat',
-  main2: 'Main 2',
-  endStep: 'End Step',
-  cleanup: 'Cleanup',
-};
+import { getPhaseLabel } from '../engine/phaseMeta';
 
 export function TopBar() {
   const store = useGameStore();
@@ -85,7 +71,7 @@ export function TopBar() {
           borderRadius: 4,
           padding: '2px 8px',
         }}>
-          {PHASE_LABELS[game.phase] || game.phase}
+          {getPhaseLabel(game.phase)}
         </div>
       </div>
 
@@ -167,42 +153,49 @@ export function TopBar() {
       <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
         <button
           data-testid="btn-toggle-left-panel"
+          aria-label={ui.leftPanelOpen ? 'Hide players panel' : 'Show players panel'}
           onClick={store.toggleLeftPanel}
           title={ui.leftPanelOpen ? 'Hide players' : 'Show players'}
           style={topBtnStyle(ui.leftPanelOpen ? '#1d4ed822' : 'none', '#64748b')}
         >☰</button>
         <button
           data-testid="btn-toggle-view"
+          aria-label={ui.battlefieldView === 'normal' ? 'Switch to battlefield overview' : 'Switch to normal battlefield view'}
           onClick={store.toggleBattlefieldView}
           title={ui.battlefieldView === 'normal' ? 'Overview' : 'Normal view'}
           style={topBtnStyle(ui.battlefieldView !== 'normal' ? '#1d4ed822' : 'none', '#64748b')}
         >⊞</button>
         <button
           data-testid="btn-toggle-right-panel"
+          aria-label={ui.rightPanelOpen ? 'Hide assistant panel' : 'Show assistant panel'}
           onClick={store.toggleRightPanel}
           title={ui.rightPanelOpen ? 'Hide assistant' : 'Show assistant'}
           style={topBtnStyle(ui.rightPanelOpen ? '#1d4ed822' : 'none', '#64748b')}
         >⚖</button>
         <button
           data-testid="btn-judge-mode"
+          aria-label={ui.judgeMode ? 'Exit judge mode' : 'Enter judge mode'}
           onClick={() => store.setJudgeMode(!ui.judgeMode)}
           title={ui.judgeMode ? 'Exit Judge Mode' : 'Enter Judge Mode'}
           style={topBtnStyle(ui.judgeMode ? '#78350f' : 'none', ui.judgeMode ? '#fcd34d' : '#64748b')}
         >⚜</button>
         <button
           data-testid="btn-card-search"
+          aria-label="Open card search"
           onClick={() => store.setCardSearchOpen(true)}
           title="Card Search (/ or Ctrl+F)"
           style={topBtnStyle(ui.cardSearchOpen ? '#1e3a5f' : 'none', ui.cardSearchOpen ? '#60a5fa' : '#64748b')}
         >🔍</button>
         <button
           data-testid="btn-replay"
+          aria-label="Open replay panel"
           onClick={() => store.setReplayOpen(true)}
           title="Replay — save & review game history"
           style={topBtnStyle(ui.replayOpen ? '#1e293b' : 'none', ui.replayOpen ? '#a78bfa' : '#64748b')}
         >⏺</button>
         <button
           data-testid="btn-profile"
+          aria-label="Open player profile"
           onClick={() => store.setProfileOpen(true)}
           title="Player Profile — customize your card"
           style={topBtnStyle(ui.profileOpen ? '#1e3a1e' : 'none', ui.profileOpen ? '#4ade80' : '#64748b')}
@@ -210,6 +203,7 @@ export function TopBar() {
         <MultiplayerBadge />
         <button
           data-testid="btn-open-lobby"
+          aria-label="Open lobby for a new game"
           onClick={() => store.setLobbyOpen(true)}
           style={topBtnStyle('none', '#64748b')}
           title="Lobby / New Game"
@@ -222,6 +216,7 @@ export function TopBar() {
         >
           <button
             data-testid="btn-tutorial"
+            aria-label={tutorial.walkthroughActive ? 'Stop guided tour' : tutorial.enabled ? 'Start guided tour or help' : 'Enable tooltips'}
             onClick={() => {
               if (tutorial.walkthroughActive) {
                 tutorial.stopWalkthrough();
@@ -249,6 +244,7 @@ export function TopBar() {
         {/* Tooltip toggle (small x) when tooltips are on */}
         {tutorial.enabled && (
           <button
+            aria-label="Disable tooltips"
             onClick={tutorial.toggleTooltips}
             title="Disable tooltips"
             style={{ ...topBtnStyle('none', '#334155'), fontSize: 9, padding: '3px 5px' }}

@@ -2,6 +2,7 @@ import { useGameStore } from '../../store/gameStore';
 import type { Player } from '../../types/game';
 import { TutorialTooltip } from '../tutorial/TutorialTooltip';
 import { TOOLTIPS } from '../../store/tutorialStore';
+import { getPhaseLabel } from '../../engine/phaseMeta';
 
 function LifeCounter({ player, onChange }: { player: Player; onChange: (delta: number) => void }) {
   return (
@@ -46,6 +47,8 @@ function LifeCounter({ player, onChange }: { player: Player; onChange: (delta: n
 export function LeftPanel() {
   const store = useGameStore();
   const { game, ui, localPlayerId } = store;
+  const phaseLabel = getPhaseLabel(game.phase);
+  const phaseBlocked = game.stack.length > 0;
 
   if (!ui.leftPanelOpen) return null;
 
@@ -235,21 +238,27 @@ export function LeftPanel() {
         padding: 8,
       }}>
         <div style={{ fontSize: 9, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 4 }}>
-          Turn {game.turn} · {game.phase}
+          Turn {game.turn} · {phaseLabel}
         </div>
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           <button
             data-testid="btn-next-phase"
+            aria-label={phaseBlocked ? 'Resolve the stack before advancing phase' : `Advance from ${phaseLabel} to the next phase`}
             onClick={store.advancePhase}
+            disabled={phaseBlocked}
+            title={phaseBlocked ? 'Resolve stack before advancing' : 'Advance to next phase'}
             style={{
               flex: 1, padding: '5px 0',
-              background: '#1d4ed8', color: '#fff',
-              border: 'none', borderRadius: 4, cursor: 'pointer',
+              background: phaseBlocked ? '#334155' : '#1d4ed8',
+              color: phaseBlocked ? '#64748b' : '#fff',
+              border: 'none', borderRadius: 4,
+              cursor: phaseBlocked ? 'not-allowed' : 'pointer',
               fontSize: 10, fontWeight: 700,
             }}
-          >Next Phase</button>
+          >{phaseBlocked ? 'Stack Pending' : 'Next Phase'}</button>
           <button
             data-testid="btn-next-turn"
+            aria-label="End the current turn"
             onClick={store.advanceTurn}
             style={{
               padding: '5px 8px',

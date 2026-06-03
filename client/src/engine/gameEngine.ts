@@ -5,6 +5,7 @@ import type {
   Phase, StackObject, TriggerItem, AssistantFlag, Deck, GameConfig, Counter, CombatState
 } from '../types/game';
 import { fetchCardsByNames } from '../data/cardDatabase';
+import { PHASE_ORDER } from './phaseMeta';
 
 // ─── Factory Helpers ──────────────────────────────────────────────────────────
 
@@ -116,7 +117,7 @@ export function createEmptyGameState(config: GameConfig): GameState {
     actionLog: [],
     assistantFlags: [],
     combat: createEmptyCombat(),
-    houseRules: [],
+    houseRules: config.houseRules,
     snapshots: {},
     undoPointer: 0,
     createdAt: Date.now(),
@@ -345,13 +346,6 @@ export function addCommanderDamage(
 }
 
 // ─── Phase Management ─────────────────────────────────────────────────────────
-
-const PHASE_ORDER: Phase[] = [
-  'untap', 'upkeep', 'draw', 'main1',
-  'beginningOfCombat', 'declareAttackers', 'declareBlockers',
-  'combatDamage', 'endOfCombat',
-  'main2', 'endStep', 'cleanup',
-];
 
 export function nextPhase(state: GameState): GameState {
   const currentIdx = PHASE_ORDER.indexOf(state.phase);

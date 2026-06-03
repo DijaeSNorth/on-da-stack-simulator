@@ -1,4 +1,5 @@
 import { useGameStore } from './store/gameStore';
+import { useEffect, useRef } from 'react';
 import { TopBar } from './components/TopBar';
 import { PhaseGuideBar } from './components/PhaseGuideBar';
 import { LeftPanel } from './components/panels/LeftPanel';
@@ -14,9 +15,36 @@ import { CardSearchPanel } from './components/panels/CardSearchPanel';
 import { ReplayPanel } from './components/replay/ReplayPanel';
 import { ProfilePanel } from './components/profile/ProfilePanel';
 import { WelcomeModal, CoachMark } from './components/tutorial/TutorialOverlay';
+import { useIsMobile } from './hooks/use-mobile';
 
 export default function App() {
   const ui = useGameStore(s => s.ui);
+  const rightPanelOpen = useGameStore(s => s.ui.rightPanelOpen);
+  const toggleRightPanel = useGameStore(s => s.toggleRightPanel);
+  const isMobile = useIsMobile();
+  const appliedMobileLayout = useRef(false);
+
+  useEffect(() => {
+    if (isMobile && !appliedMobileLayout.current) {
+      appliedMobileLayout.current = true;
+      if (rightPanelOpen) toggleRightPanel();
+    }
+  }, [isMobile, rightPanelOpen, toggleRightPanel]);
+
+  if (ui.screen === 'lobby') {
+    return (
+      <div style={{
+        width: '100vw',
+        height: '100vh',
+        background: '#0d1117',
+        overflow: 'hidden',
+        fontFamily: '"Inter", "SF Pro Display", system-ui, sans-serif',
+      }}>
+        <LobbyScreen />
+        <WelcomeModal />
+      </div>
+    );
+  }
 
   return (
     <div style={{
@@ -28,9 +56,6 @@ export default function App() {
       overflow: 'hidden',
       fontFamily: '"Inter", "SF Pro Display", system-ui, sans-serif',
     }}>
-      {/* Lobby overlay */}
-      {ui.lobbyOpen && <LobbyScreen />}
-
       {/* Top bar */}
       <TopBar />
       {/* Phase guide bar — player-driven, never auto-advances */}
@@ -100,6 +125,8 @@ function CollapseHandle({ side }: { side: 'left' | 'right' }) {
 
   return (
     <button
+      aria-label={side === 'left' ? 'Show players panel' : 'Show assistant panel'}
+      title={side === 'left' ? 'Show players panel' : 'Show assistant panel'}
       onClick={side === 'left' ? store.toggleLeftPanel : store.toggleRightPanel}
       style={{
         width: 16,

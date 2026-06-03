@@ -30,6 +30,7 @@ import {
 // ─── UI State ─────────────────────────────────────────────────────────────────
 
 export interface UIState {
+  screen: 'lobby' | 'game';
   selectedCardId: string | null;
   hoveredCardId: string | null;
   focusedPlayerId: string | null;
@@ -88,6 +89,7 @@ const DEFAULT_MULTIPLAYER: MultiplayerState = {
 };
 
 const DEFAULT_UI: UIState = {
+  screen: 'lobby',
   selectedCardId: null,
   hoveredCardId: null,
   focusedPlayerId: null,
@@ -364,7 +366,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     g.priorityPlayerId = g.players[0].id;
     g.players[0].isActive = true;
     g.players[0].hasPriority = true;
-    set({ game: g, localPlayerId: players[0].id, ui: { ...get().ui, lobbyOpen: true } });
+    set({ game: g, localPlayerId: players[0].id, ui: { ...get().ui, screen: 'lobby', lobbyOpen: true } });
   },
 
   loadDeck: async (playerId, deck) => {
@@ -373,11 +375,16 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   startGame: () => {
-    const g = get().game;
+    let g = get().game;
+    for (const player of g.players) {
+      if (player.hand.length === 0 && player.library.length > 0) {
+        g = drawCards(g, player.id, g.config.startingHandSize);
+      }
+    }
     const action = createAction(g, g.activePlayerId, 'GAME_START', 'Game started.');
     set({
       game: { ...g, status: 'playing', phase: 'main1', actionLog: [...g.actionLog, action] },
-      ui: { ...get().ui, lobbyOpen: false },
+      ui: { ...get().ui, screen: 'game', lobbyOpen: false },
     });
   },
 
@@ -643,6 +650,27 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
   advancePhase: () => {
     let g = get().game;
+    if (g.stack.length > 0) {
+      const blockedMsg: AssistantMessage = {
+        id: uuid(),
+        timestamp: Date.now(),
+        severity: 'warning',
+        label: 'Needs Review',
+        text: `Resolve the stack before advancing phases (${g.stack.length} item${g.stack.length === 1 ? '' : 's'} pending).`,
+        ruleRef: 'CR 117',
+        turn: g.turn,
+        phase: g.phase,
+      };
+      set(s => ({
+        ui: {
+          ...s.ui,
+          assistantMessages: [...s.ui.assistantMessages, blockedMsg].slice(-200),
+          rightPanelOpen: true,
+          rightPanelTab: 'assistant',
+        },
+      }));
+      return;
+    }
     const prev = g.phase;
     g = nextPhase(g);
     const action = createAction(g, g.activePlayerId, 'CHANGE_PHASE', `${prev} → ${g.phase}`);
@@ -669,12 +697,21 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
   passPriority: () => {
     const g = get().game;
+    if (g.players.length === 0) return;
     const ids = g.players.map(p => p.id);
     const nextIdx = (ids.indexOf(g.priorityPlayerId) + 1) % ids.length;
     const nextId = ids[nextIdx];
     const newPlayers = g.players.map((p, i) => ({ ...p, hasPriority: i === nextIdx }));
     const action = createAction(g, nextId, 'PASS_PRIORITY', 'Priority passed');
-    set({ game: { ...g, priorityPlayerId: nextId, players: newPlayers, actionLog: [...g.actionLog, action] } });
+    set({
+      game: {
+        ...g,
+        priorityPlayerId: nextId,
+        players: newPlayers,
+        actionLog: [...g.actionLog, action],
+        lastUpdatedAt: Date.now(),
+      },
+    });
   },
 
   // ── Stack ─────────────────────────────────────────────────────────────────
@@ -1036,7 +1073,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   setJudgeMode: (on) => set(s => ({ ui: { ...s.ui, judgeMode: on } })),
   toggleBattlefieldView: () => set(s => ({ ui: { ...s.ui, battlefieldView: s.ui.battlefieldView === 'normal' ? 'overview' : 'normal' } })),
   toggleCombatMode: () => set(s => ({ ui: { ...s.ui, combatMode: !s.ui.combatMode } })),
-  setLobbyOpen: (open) => set(s => ({ ui: { ...s.ui, lobbyOpen: open } })),
+  setLobbyOpen: (open) => set(s => ({ ui: { ...s.ui, screen: open ? 'lobby' : 'game', lobbyOpen: open } })),
   setDeckBuilderOpen: (open) => set(s => ({ ui: { ...s.ui, deckBuilderOpen: open } })),
   addAssistantMessage: (msg) => set(s => {
     const g = s.game;
