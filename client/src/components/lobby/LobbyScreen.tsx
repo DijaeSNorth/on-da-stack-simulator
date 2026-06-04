@@ -106,7 +106,7 @@ export function LobbyScreen() {
     await assignDeckToPlayer(importResult.deck);
   }
 
-  function startGame() {
+  function getGameConfig() {
     const selectedHouseRules = HOUSE_RULE_PRESETS
       .filter(rule => houseRules.has(rule.id))
       .map(rule => ({
@@ -116,7 +116,7 @@ export function LobbyScreen() {
         appliesTo: 'all' as const,
       }));
 
-    const config = {
+    return {
       playerCount,
       format: 'commander' as const,
       startingLife,
@@ -128,6 +128,10 @@ export function LobbyScreen() {
       houseRules: selectedHouseRules,
       timerEnabled: false,
     };
+  }
+
+  function startGame(deckOverrides: Record<string, Deck> = {}) {
+    const config = getGameConfig();
 
     store.initGame(config, players.map(p => ({
       id: p.id, name: p.name, color: p.color,
@@ -136,7 +140,10 @@ export function LobbyScreen() {
     // Load saved decks for players who have them
     (async () => {
       for (let i = 0; i < players.length; i++) {
-        if (players[i].deckId) {
+        const override = deckOverrides[players[i].id];
+        if (override) {
+          await store.loadDeck(players[i].id, override);
+        } else if (players[i].deckId) {
           const deck = savedDecks.find(d => d.id === players[i].deckId);
           if (deck) {
             await store.loadDeck(players[i].id, deck);
@@ -144,7 +151,22 @@ export function LobbyScreen() {
         }
       }
       store.startGame();
+      if (gameMode === 'solo') {
+        store.setRightPanelTab('debug');
+      }
     })();
+  }
+
+  function testDeck(deck: Deck) {
+    updatePlayer(activePlayerTab, { deckId: deck.id });
+    startGame({ [players[activePlayerTab].id]: deck });
+  }
+
+  function saveDeckAndTest() {
+    if (!importResult) return;
+    saveDeck(importResult.deck);
+    store.loadDecks();
+    testDeck(importResult.deck);
   }
 
   return (
@@ -193,7 +215,7 @@ export function LobbyScreen() {
             padding: 16,
           }}>
             <div style={{ fontSize: 11, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 12, fontWeight: 700 }}>
-              Game Setup
+              {gameMode === 'solo' ? 'Solo Deck Lab' : 'Game Setup'}
             </div>
 
             {/* Game mode */}
@@ -213,7 +235,7 @@ export function LobbyScreen() {
                     borderRadius: 5, cursor: 'pointer', fontSize: 12, fontWeight: 700,
                   }}
                 >
-                  Solo Goldfish
+                  Solo Lab
                 </button>
                 <button
                   data-testid="btn-mode-table"
@@ -226,7 +248,7 @@ export function LobbyScreen() {
                     borderRadius: 5, cursor: 'pointer', fontSize: 12, fontWeight: 700,
                   }}
                 >
-                  Table / Multiplayer
+                  Commander Table
                 </button>
               </div>
             </div>
@@ -259,7 +281,7 @@ export function LobbyScreen() {
             {/* Starting life */}
             <div style={{ marginBottom: 14 }}>
               <label style={{ fontSize: 11, color: '#94a3b8', display: 'block', marginBottom: 6 }}>
-                Starting Life: {startingLife}
+                {gameMode === 'solo' ? 'Test Life' : 'Starting Life'}: {startingLife}
               </label>
               <div style={{ display: 'flex', gap: 6 }}>
                 {[20, 30, 40].map(n => (
@@ -325,6 +347,7 @@ export function LobbyScreen() {
             </div>
 
             {/* House Rules */}
+            {gameMode === 'table' && (
             <div>
               <label style={{ fontSize: 11, color: '#94a3b8', display: 'block', marginBottom: 6 }}>
                 Rule Zero Options
@@ -354,6 +377,7 @@ export function LobbyScreen() {
                 </label>
               ))}
             </div>
+            )}
           </div>
 
           {/* Right: Deck import */}
@@ -397,14 +421,14 @@ export function LobbyScreen() {
                           </div>
                         </div>
                         <button
-                          onClick={() => assignDeckToPlayer(deck)}
+                          onClick={() => gameMode === 'solo' ? testDeck(deck) : assignDeckToPlayer(deck)}
                           style={{
                             fontSize: 9, padding: '3px 8px',
                             background: assigned ? '#1d4ed8' : '#1e293b',
                             color: assigned ? '#fff' : '#94a3b8',
                             border: 'none', borderRadius: 3, cursor: 'pointer',
                           }}
-                        >{assigned ? '✓ Assigned' : 'Use'}</button>
+                        >{gameMode === 'solo' ? 'Test' : assigned ? 'Assigned' : 'Use'}</button>
                       </div>
                     );
                   })}
@@ -444,7 +468,7 @@ export function LobbyScreen() {
                   lineHeight: 1.5,
                 }}
               />
-              <details style={{ marginTop: 8 }}>
+              <details open={gameMode === 'solo'} style={{ marginTop: 8 }}>
                 <summary style={{
                   fontSize: 10,
                   color: '#64748b',
@@ -539,13 +563,13 @@ export function LobbyScreen() {
                 <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
                   <button
                     data-testid="btn-use-deck"
-                    onClick={saveDeckAndAssign}
+                    onClick={gameMode === 'solo' ? saveDeckAndTest : saveDeckAndAssign}
                     style={{
                       flex: 1, padding: '6px 0',
                       background: '#14532d', color: '#86efac',
                       border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 10, fontWeight: 700,
                     }}
-                  >Save & Use</button>
+                  >{gameMode === 'solo' ? 'Save & Test' : 'Save & Use'}</button>
                   <button
                     onClick={() => setImportResult(null)}
                     style={{
@@ -578,7 +602,7 @@ export function LobbyScreen() {
         {/* Start button */}
         <button
           data-testid="btn-start-game"
-          onClick={startGame}
+          onClick={() => startGame()}
           style={{
             width: '100%', padding: '14px 0',
             background: 'linear-gradient(135deg, #1d4ed8, #7c3aed)',
@@ -591,7 +615,7 @@ export function LobbyScreen() {
           onMouseEnter={e => { (e.target as HTMLElement).style.opacity = '0.9'; }}
           onMouseLeave={e => { (e.target as HTMLElement).style.opacity = '1'; }}
         >
-          {gameMode === 'solo' ? 'Start Solo Mode' : `Start Game (${playerCount} Players)`}
+          {gameMode === 'solo' ? 'Start Deck Lab' : `Start Game (${playerCount} Players)`}
         </button>
 
         <div style={{ textAlign: 'center', fontSize: 10, color: '#1e293b' }}>
