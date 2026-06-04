@@ -9,7 +9,7 @@ import { PHASE_ORDER } from './phaseMeta';
 
 // ─── Factory Helpers ──────────────────────────────────────────────────────────
 
-export function createDefaultGameConfig(playerCount: 2 | 3 | 4 | 5 | 6 = 4): GameConfig {
+export function createDefaultGameConfig(playerCount: 1 | 2 | 3 | 4 | 5 | 6 = 4): GameConfig {
   return {
     playerCount,
     format: 'commander',

@@ -12,6 +12,9 @@ interface PlayerSetup {
   deckId?: string;
 }
 
+type GameMode = 'solo' | 'table';
+type PlayerCount = 1 | 2 | 3 | 4 | 5 | 6;
+
 const DEFAULT_COLORS = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899'];
 
 const HOUSE_RULE_PRESETS = [
@@ -23,11 +26,12 @@ const HOUSE_RULE_PRESETS = [
 
 export function LobbyScreen() {
   const store = useGameStore();
-  const [playerCount, setPlayerCount] = useState<2 | 3 | 4 | 5 | 6>(4);
+  const [gameMode, setGameMode] = useState<GameMode>('solo');
+  const [playerCount, setPlayerCount] = useState<PlayerCount>(1);
   const [players, setPlayers] = useState<PlayerSetup[]>(() =>
-    Array.from({ length: 4 }, (_, i) => ({
+    Array.from({ length: 1 }, (_, i) => ({
       id: crypto.randomUUID(),
-      name: i === 0 ? 'Player 1 (You)' : `Player ${i + 1}`,
+      name: i === 0 ? 'You' : `Player ${i + 1}`,
       color: DEFAULT_COLORS[i],
     }))
   );
@@ -52,7 +56,12 @@ export function LobbyScreen() {
 
   const savedDecks = store.decks;
 
-  function updateCount(n: 2 | 3 | 4 | 5 | 6) {
+  function updateMode(mode: GameMode) {
+    setGameMode(mode);
+    updateCount(mode === 'solo' ? 1 : (Math.max(2, playerCount) as PlayerCount));
+  }
+
+  function updateCount(n: PlayerCount) {
     setPlayerCount(n);
     setPlayers(prev => {
       if (n > prev.length) {
@@ -187,28 +196,65 @@ export function LobbyScreen() {
               Game Setup
             </div>
 
-            {/* Player count */}
+            {/* Game mode */}
             <div style={{ marginBottom: 14 }}>
               <label style={{ fontSize: 11, color: '#94a3b8', display: 'block', marginBottom: 6 }}>
-                Players
+                Mode
               </label>
-              <div style={{ display: 'flex', gap: 6 }}>
-                {([2, 3, 4, 5, 6] as const).map(n => (
-                  <button
-                    key={n}
-                    data-testid={`btn-player-count-${n}`}
-                    onClick={() => updateCount(n)}
-                    style={{
-                      flex: 1, padding: '6px 0',
-                      background: playerCount === n ? '#1d4ed8' : '#1e293b',
-                      color: playerCount === n ? '#fff' : '#94a3b8',
-                      border: `1px solid ${playerCount === n ? '#3b82f6' : '#334155'}`,
-                      borderRadius: 5, cursor: 'pointer', fontSize: 13, fontWeight: 600,
-                    }}
-                  >{n}</button>
-                ))}
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+                <button
+                  data-testid="btn-mode-solo"
+                  onClick={() => updateMode('solo')}
+                  style={{
+                    padding: '8px 10px',
+                    background: gameMode === 'solo' ? '#14532d' : '#1e293b',
+                    color: gameMode === 'solo' ? '#bbf7d0' : '#94a3b8',
+                    border: `1px solid ${gameMode === 'solo' ? '#22c55e' : '#334155'}`,
+                    borderRadius: 5, cursor: 'pointer', fontSize: 12, fontWeight: 700,
+                  }}
+                >
+                  Solo Goldfish
+                </button>
+                <button
+                  data-testid="btn-mode-table"
+                  onClick={() => updateMode('table')}
+                  style={{
+                    padding: '8px 10px',
+                    background: gameMode === 'table' ? '#1d4ed8' : '#1e293b',
+                    color: gameMode === 'table' ? '#fff' : '#94a3b8',
+                    border: `1px solid ${gameMode === 'table' ? '#3b82f6' : '#334155'}`,
+                    borderRadius: 5, cursor: 'pointer', fontSize: 12, fontWeight: 700,
+                  }}
+                >
+                  Table / Multiplayer
+                </button>
               </div>
             </div>
+
+            {/* Player count */}
+            {gameMode === 'table' && (
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ fontSize: 11, color: '#94a3b8', display: 'block', marginBottom: 6 }}>
+                  Players
+                </label>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {([2, 3, 4, 5, 6] as const).map(n => (
+                    <button
+                      key={n}
+                      data-testid={`btn-player-count-${n}`}
+                      onClick={() => updateCount(n)}
+                      style={{
+                        flex: 1, padding: '6px 0',
+                        background: playerCount === n ? '#1d4ed8' : '#1e293b',
+                        color: playerCount === n ? '#fff' : '#94a3b8',
+                        border: `1px solid ${playerCount === n ? '#3b82f6' : '#334155'}`,
+                        borderRadius: 5, cursor: 'pointer', fontSize: 13, fontWeight: 600,
+                      }}
+                    >{n}</button>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Starting life */}
             <div style={{ marginBottom: 14 }}>
@@ -234,7 +280,7 @@ export function LobbyScreen() {
             {/* Player setup tabs */}
             <div style={{ marginBottom: 12 }}>
               <label style={{ fontSize: 11, color: '#94a3b8', display: 'block', marginBottom: 6 }}>
-                Player Names & Colors
+                {gameMode === 'solo' ? 'Solo Player' : 'Player Names & Colors'}
               </label>
               <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
                 {players.map((p, i) => (
@@ -322,7 +368,7 @@ export function LobbyScreen() {
             gap: 12,
           }}>
             <div style={{ fontSize: 11, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 700 }}>
-              Deck Import — Player {activePlayerTab + 1}
+              Deck Import — {gameMode === 'solo' ? 'Solo Player' : `Player ${activePlayerTab + 1}`}
             </div>
 
             {/* Saved decks */}
@@ -515,6 +561,7 @@ export function LobbyScreen() {
         </div>
 
         {/* Multiplayer */}
+        {gameMode === 'table' && (
         <div style={{
           background: '#111827',
           border: '1px solid #1e293b',
@@ -526,6 +573,7 @@ export function LobbyScreen() {
           </div>
           <MultiplayerPanel />
         </div>
+        )}
 
         {/* Start button */}
         <button
@@ -543,7 +591,7 @@ export function LobbyScreen() {
           onMouseEnter={e => { (e.target as HTMLElement).style.opacity = '0.9'; }}
           onMouseLeave={e => { (e.target as HTMLElement).style.opacity = '1'; }}
         >
-          Start Game ({playerCount} Players)
+          {gameMode === 'solo' ? 'Start Solo Mode' : `Start Game (${playerCount} Players)`}
         </button>
 
         <div style={{ textAlign: 'center', fontSize: 10, color: '#1e293b' }}>

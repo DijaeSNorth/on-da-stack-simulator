@@ -258,7 +258,7 @@ export interface HouseRule {
 }
 
 export interface GameConfig {
-  playerCount: 2 | 3 | 4 | 5 | 6;
+  playerCount: 1 | 2 | 3 | 4 | 5 | 6;
   format: 'commander' | 'brawl' | 'oathbreaker';
   startingLife: number;
   useCommanderDamage: boolean;
