@@ -116,7 +116,7 @@ test('passPriority updates lastUpdatedAt for multiplayer broadcasting', () => {
   assert(next.lastUpdatedAt > 100, 'expected lastUpdatedAt to increase after priority pass');
 });
 
-test('advancePhase is blocked while stack has pending objects', () => {
+test('advancePhase allows mistakes while flagging pending stack review', () => {
   const game = {
     ...makeGame(2),
     phase: 'main1' as const,
@@ -134,9 +134,12 @@ test('advancePhase is blocked while stack has pending objects', () => {
   useGameStore.getState().advancePhase();
 
   const state = useGameStore.getState();
-  assert(state.game.phase === 'main1', `expected phase to stay main1, got ${state.game.phase}`);
+  assert(state.game.phase === 'beginningOfCombat', `expected phase to advance, got ${state.game.phase}`);
   assert(state.ui.rightPanelOpen, 'expected assistant panel to open with warning');
   assert(state.ui.assistantMessages.some(message => message.text.includes('Resolve the stack')), 'expected stack warning message');
+  const lastAction = state.game.actionLog[state.game.actionLog.length - 1];
+  assert(Array.isArray(lastAction.data.reviewTypes), 'expected reviewTypes metadata on phase action');
+  assert((lastAction.data.reviewTypes as string[]).includes('judge-review'), 'expected judge-review replay marker');
 });
 
 test('screen and lobbyOpen stay synchronized', () => {

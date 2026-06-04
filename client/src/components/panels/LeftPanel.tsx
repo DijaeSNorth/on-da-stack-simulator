@@ -243,19 +243,18 @@ export function LeftPanel() {
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           <button
             data-testid="btn-next-phase"
-            aria-label={phaseBlocked ? 'Resolve the stack before advancing phase' : `Advance from ${phaseLabel} to the next phase`}
+            aria-label={phaseBlocked ? 'Advance phase with stack pending' : `Advance from ${phaseLabel} to the next phase`}
             onClick={store.advancePhase}
-            disabled={phaseBlocked}
-            title={phaseBlocked ? 'Resolve stack before advancing' : 'Advance to next phase'}
+            title={phaseBlocked ? 'Advance anyway and let the assistant flag the pending stack' : 'Advance to next phase'}
             style={{
               flex: 1, padding: '5px 0',
-              background: phaseBlocked ? '#334155' : '#1d4ed8',
-              color: phaseBlocked ? '#64748b' : '#fff',
+              background: phaseBlocked ? '#78350f' : '#1d4ed8',
+              color: phaseBlocked ? '#fcd34d' : '#fff',
               border: 'none', borderRadius: 4,
-              cursor: phaseBlocked ? 'not-allowed' : 'pointer',
+              cursor: 'pointer',
               fontSize: 10, fontWeight: 700,
             }}
-          >{phaseBlocked ? 'Stack Pending' : 'Next Phase'}</button>
+          >{phaseBlocked ? 'Advance + Flag' : 'Next Phase'}</button>
           <button
             data-testid="btn-next-turn"
             aria-label="End the current turn"

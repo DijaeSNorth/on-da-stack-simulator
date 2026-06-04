@@ -545,6 +545,7 @@ export function LobbyScreen() {
                     marginBottom: 6,
                   }}>
                     Custom logic: {[
+                      importResult.deck.logicFile.customCards.length ? `${importResult.deck.logicFile.customCards.length} cards` : '',
                       importResult.deck.logicFile.rules.length ? `${importResult.deck.logicFile.rules.length} rules` : '',
                       importResult.deck.logicFile.triggers.length ? `${importResult.deck.logicFile.triggers.length} triggers` : '',
                       importResult.deck.logicFile.replacementEffects.length ? `${importResult.deck.logicFile.replacementEffects.length} replacements` : '',

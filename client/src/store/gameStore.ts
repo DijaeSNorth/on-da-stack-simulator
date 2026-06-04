@@ -20,6 +20,7 @@ import {
 } from '../engine/assistantEngine';
 import { saveDeck, loadDecksFromStorage } from '../engine/deckImport';
 import { createReplay, saveReplayToStorage } from '../engine/replayEngine';
+import { getActiveProfile } from '../engine/profileStorage';
 import {
   initMultiplayer, createRoom, joinRoom, leaveRoom,
   broadcastState, updatePresence, getRoomCode, getPeerId, getIsHost,
@@ -256,6 +257,69 @@ function makeMsg(game: GameState, flag: AssistantFlag): AssistantMessage {
 
 const PLAYER_COLORS = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899'];
 
+function getAssistantMode(ui: UIState): Player['settings']['assistantMode'] {
+  if (ui.judgeMode) return 'ON';
+  if (typeof localStorage === 'undefined') return 'ON';
+  return getActiveProfile()?.assistantMode ?? 'ON';
+}
+
+function getAssistantVerbosity(): Player['settings']['assistantVerbosity'] {
+  if (typeof localStorage === 'undefined') return 'normal';
+  return getActiveProfile()?.assistantVerbosity ?? 'normal';
+}
+
+function filterAssistantFlags(flags: AssistantFlag[], ui: UIState): AssistantFlag[] {
+  const mode = getAssistantMode(ui);
+  if (mode === 'OFF') return [];
+
+  const verbosity = getAssistantVerbosity();
+  return flags.filter(flag => {
+    if (mode === 'LIMITED') {
+      return flag.severity === 'flagged' ||
+        flag.severity === 'error' ||
+        flag.severity === 'needsReview' ||
+        flag.label === 'Missed Trigger' ||
+        flag.label === 'State-Based';
+    }
+    if (verbosity === 'minimal') {
+      return flag.severity !== 'legal' && flag.severity !== 'info';
+    }
+    if (verbosity === 'normal') {
+      return flag.severity !== 'legal';
+    }
+    return true;
+  });
+}
+
+function withAssistantMessages(ui: UIState, game: GameState, flags: AssistantFlag[]): UIState {
+  const visibleFlags = filterAssistantFlags(flags, ui);
+  if (visibleFlags.length === 0) return ui;
+  return {
+    ...ui,
+    rightPanelOpen: true,
+    assistantMessages: [...ui.assistantMessages, ...visibleFlags.map(f => makeMsg(game, f))].slice(-200),
+  };
+}
+
+function addReviewData(
+  data: Record<string, unknown>,
+  flags: AssistantFlag[]
+): Record<string, unknown> {
+  if (flags.length === 0) return data;
+  const reviewTypes = [...new Set(flags.map(flag => {
+    if (flag.label === 'Missed Trigger') return 'missed-trigger';
+    if (flag.label === 'Needs Review') return 'judge-review';
+    if (flag.label === 'Flagged') return 'illegal-action';
+    if (flag.label === 'State-Based') return 'state-based';
+    return flag.severity;
+  }))];
+  return {
+    ...data,
+    reviewTypes,
+    assistantSummary: flags.map(flag => flag.text),
+  };
+}
+
 // ─── Store ────────────────────────────────────────────────────────────────────
 
 export const useGameStore = create<GameStore>()((set, get) => ({
@@ -401,6 +465,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   castCard: (castingPlayerId, cardInstanceId) => {
     let g = get().game;
     const check = checkCastLegality(g, castingPlayerId, cardInstanceId);
+    const flags = filterAssistantFlags(check.flags, get().ui);
     const card = g.cards[cardInstanceId];
     if (!card) return;
 
@@ -436,11 +501,10 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     }
 
     const action = createAction(g, castingPlayerId, 'CAST_SPELL',
-      `${card.definition.name} cast by ${castingPlayerId}`, [cardInstanceId], {}, check.flags);
+      `${card.definition.name} cast by ${castingPlayerId}`, [cardInstanceId], addReviewData({}, flags), flags);
     g = { ...g, actionLog: [...g.actionLog, action] };
 
-    const newMsgs = check.flags.map(f => makeMsg(g, f));
-    set({ game: g, ui: { ...get().ui, assistantMessages: [...get().ui.assistantMessages, ...newMsgs] } });
+    set({ game: g, ui: withAssistantMessages(get().ui, g, flags) });
   },
 
   playLand: (playerId, cardInstanceId) => {
@@ -477,12 +541,13 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   tapCard: (instanceId) => {
     let g = get().game;
     const check = checkTapLegality(g, instanceId);
+    const flags = filterAssistantFlags(check.flags, get().ui);
     const card = g.cards[instanceId];
     if (!card) return;
     g = tapCard(g, instanceId, true);
-    const action = createAction(g, card.controllerId, 'TAP', `Tapped ${card.definition.name}`, [instanceId], {}, check.flags);
-    const newMsgs = check.flags.map(f => makeMsg(g, f));
-    set({ game: { ...g, actionLog: [...g.actionLog, action] }, ui: { ...get().ui, assistantMessages: [...get().ui.assistantMessages, ...newMsgs] } });
+    const action = createAction(g, card.controllerId, 'TAP', `Tapped ${card.definition.name}`, [instanceId], addReviewData({}, flags), flags);
+    const nextGame = { ...g, actionLog: [...g.actionLog, action] };
+    set({ game: nextGame, ui: withAssistantMessages(get().ui, nextGame, flags) });
   },
 
   untapCard: (instanceId) => {
@@ -651,34 +716,31 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
   advancePhase: () => {
     let g = get().game;
+    const reviewFlags: AssistantFlag[] = [];
     if (g.stack.length > 0) {
-      const blockedMsg: AssistantMessage = {
+      reviewFlags.push({
         id: uuid(),
-        timestamp: Date.now(),
         severity: 'warning',
         label: 'Needs Review',
         text: `Resolve the stack before advancing phases (${g.stack.length} item${g.stack.length === 1 ? '' : 's'} pending).`,
         ruleRef: 'CR 117',
-        turn: g.turn,
-        phase: g.phase,
-      };
-      set(s => ({
-        ui: {
-          ...s.ui,
-          assistantMessages: [...s.ui.assistantMessages, blockedMsg].slice(-200),
-          rightPanelOpen: true,
-          rightPanelTab: 'assistant',
-        },
-      }));
-      return;
+      });
     }
     const prev = g.phase;
     g = nextPhase(g);
-    const action = createAction(g, g.activePlayerId, 'CHANGE_PHASE', `${prev} → ${g.phase}`);
+    const phaseFlags = filterAssistantFlags(reviewFlags, get().ui);
+    const action = createAction(
+      g,
+      g.activePlayerId,
+      'CHANGE_PHASE',
+      `${prev} -> ${g.phase}`,
+      [],
+      addReviewData({ from: prev, to: g.phase }, phaseFlags),
+      phaseFlags
+    );
     g = { ...g, actionLog: [...g.actionLog, action] };
-    const mods = getActiveModifiers(g);
-    const newMsgs = mods.map(f => makeMsg(g, f));
-    set({ game: g, ui: { ...get().ui, assistantMessages: [...get().ui.assistantMessages, ...newMsgs] } });
+    const mods = filterAssistantFlags(getActiveModifiers(g), get().ui);
+    set({ game: g, ui: withAssistantMessages(withAssistantMessages(get().ui, g, phaseFlags), g, mods) });
   },
 
   goToPhase: (phase) => {
@@ -829,6 +891,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   declareAttack: (attackerInstanceId, targetPlayerId) => {
     let g = get().game;
     const check = checkAttackLegality(g, attackerInstanceId);
+    const flags = filterAssistantFlags(check.flags, get().ui);
     g = declareAttacker(g, attackerInstanceId, targetPlayerId);
     const card = g.cards[attackerInstanceId];
     const triggers = card ? detectAttackTriggers(g, card) : [];
@@ -839,10 +902,9 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       acknowledged: false, missed: false, timestamp: Date.now(),
     }));
     const action = createAction(g, g.activePlayerId, 'DECLARE_ATTACKER',
-      `${card?.definition.name} attacks ${targetPlayerId}`, [attackerInstanceId], {}, check.flags);
+      `${card?.definition.name} attacks ${targetPlayerId}`, [attackerInstanceId], addReviewData({}, flags), flags);
     g = { ...g, actionLog: [...g.actionLog, action], triggerQueue: [...g.triggerQueue, ...newTriggers] };
-    const newMsgs = check.flags.map(f => makeMsg(g, f));
-    set({ game: g, ui: { ...get().ui, assistantMessages: [...get().ui.assistantMessages, ...newMsgs] } });
+    set({ game: g, ui: withAssistantMessages(get().ui, g, flags) });
   },
 
   declareMyriadAttack: (attackerInstanceId, declaredDefenderId, copiesPerOpponent) => {
@@ -869,25 +931,28 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
     // Commander damage note: flag if attacker is a commander (copies track separately)
     const isCommander = g.players.some(p => p.commanders.includes(attackerInstanceId));
-    const msgs = isCommander && g.config.useCommanderDamage
-      ? [makeMsg(g, {
+    const commanderFlags: AssistantFlag[] = isCommander && g.config.useCommanderDamage
+      ? [{
           id: uuid(), severity: 'info', label: 'Info',
           text: `${attackerCard.definition.name} is a commander — each Myriad copy tracks commander damage to its target independently (CR 702.116, 903.17).`,
           ruleRef: 'CR 702.116',
-        })]
+        }]
       : [];
+    const visibleFlags = filterAssistantFlags(commanderFlags, get().ui);
 
-    set({ game: g, ui: { ...get().ui, assistantMessages: [...get().ui.assistantMessages, ...msgs] } });
+    set({ game: g, ui: withAssistantMessages(get().ui, g, visibleFlags) });
     return copies;
   },
 
   declareBlock: (blockerInstanceId, attackerInstanceId) => {
     let g = get().game;
     const check = checkBlockLegality(g, blockerInstanceId, attackerInstanceId);
+    const flags = filterAssistantFlags(check.flags, get().ui);
     g = declareBlocker(g, blockerInstanceId, attackerInstanceId);
     const action = createAction(g, g.activePlayerId, 'DECLARE_BLOCKER',
-      `Block declared`, [blockerInstanceId, attackerInstanceId], {}, check.flags);
-    set({ game: { ...g, actionLog: [...g.actionLog, action] } });
+      `Block declared`, [blockerInstanceId, attackerInstanceId], addReviewData({}, flags), flags);
+    g = { ...g, actionLog: [...g.actionLog, action] };
+    set({ game: g, ui: withAssistantMessages(get().ui, g, flags) });
   },
 
   resolveCombatDamage: () => {
@@ -1010,10 +1075,18 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       applyDamageForAttackers(g.combat.attackers, true);
       const { newState: afterFirstStrike, flags: fs1Flags } = checkStateBasedActions(g);
       g = afterFirstStrike;
-      const firstStrikeAction = createAction(g, g.activePlayerId, 'CHANGE_PHASE', 'First strike damage step resolved');
+      const visibleFlags = filterAssistantFlags(fs1Flags, get().ui);
+      const firstStrikeAction = createAction(
+        g,
+        g.activePlayerId,
+        'CHANGE_PHASE',
+        'First strike damage step resolved',
+        [],
+        addReviewData({}, visibleFlags),
+        visibleFlags
+      );
       g = { ...g, actionLog: [...g.actionLog, firstStrikeAction] };
-      const fs1Msgs = fs1Flags.map(f => makeMsg(g, f));
-      set({ game: g, ui: { ...get().ui, assistantMessages: [...get().ui.assistantMessages, ...fs1Msgs] } });
+      set({ game: g, ui: withAssistantMessages(get().ui, g, visibleFlags) });
       g = get().game; // re-read after state-based actions may have removed creatures
     }
 
@@ -1022,10 +1095,18 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
     const { newState, flags } = checkStateBasedActions(g);
     g = newState;
-    const action = createAction(g, g.activePlayerId, 'CHANGE_PHASE', 'Combat damage resolved');
+    const visibleFlags = filterAssistantFlags(flags, get().ui);
+    const action = createAction(
+      g,
+      g.activePlayerId,
+      'CHANGE_PHASE',
+      'Combat damage resolved',
+      [],
+      addReviewData({}, visibleFlags),
+      visibleFlags
+    );
     g = { ...g, actionLog: [...g.actionLog, action] };
-    const newMsgs = flags.map(f => makeMsg(g, f));
-    set({ game: g, ui: { ...get().ui, assistantMessages: [...get().ui.assistantMessages, ...newMsgs] } });
+    set({ game: g, ui: withAssistantMessages(get().ui, g, visibleFlags) });
   },
 
   endCombat: () => {
@@ -1060,8 +1141,8 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
   runStateBasedActions: () => {
     const { newState, flags } = checkStateBasedActions(get().game);
-    const newMsgs = flags.map(f => makeMsg(newState, f));
-    set({ game: newState, ui: { ...get().ui, assistantMessages: [...get().ui.assistantMessages, ...newMsgs] } });
+    const visibleFlags = filterAssistantFlags(flags, get().ui);
+    set({ game: newState, ui: withAssistantMessages(get().ui, newState, visibleFlags) });
   },
 
   undo: () => { set({ game: undoAction(get().game) }); },
@@ -1157,12 +1238,19 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     // Update controller then move
     g = { ...g, cards: { ...g.cards, [instanceId]: { ...g.cards[instanceId], controllerId: playerId } } };
     g = moveCard(g, instanceId, isPermanent ? 'battlefield' : 'graveyard');
-    const action = createAction(g, playerId, 'CAST',
-      `Cast ${card.definition.name} from ${zoneName}`, [instanceId]);
     const check = checkCastLegality(g, playerId, instanceId);
-    const newMsgs = check.flags.map(f => makeMsg(g, f));
+    const flags = filterAssistantFlags(check.flags, get().ui);
+    const action = createAction(
+      g,
+      playerId,
+      'CAST',
+      `Cast ${card.definition.name} from ${zoneName}`,
+      [instanceId],
+      addReviewData({ fromZone }, flags),
+      flags
+    );
     g = { ...g, actionLog: [...g.actionLog, action] };
-    set({ game: g, ui: { ...get().ui, assistantMessages: [...get().ui.assistantMessages, ...newMsgs].slice(-200) } });
+    set({ game: g, ui: withAssistantMessages(get().ui, g, flags) });
   },
 
   reanimateCard: (instanceId, toControllerId) => {

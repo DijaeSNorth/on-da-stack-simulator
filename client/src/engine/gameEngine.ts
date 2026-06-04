@@ -2,7 +2,7 @@
 import { v4 as uuid } from 'uuid';
 import type {
   GameState, Player, CardState, CardDefinition, ActionRecord, ActionType,
-  Phase, StackObject, TriggerItem, AssistantFlag, Deck, GameConfig, Counter, CombatState
+  Phase, StackObject, TriggerItem, AssistantFlag, Deck, GameConfig, Counter, CombatState, CustomCardDefinition
 } from '../types/game';
 import { fetchCardsByNames } from '../data/cardDatabase';
 import { PHASE_ORDER } from './phaseMeta';
@@ -457,6 +457,7 @@ export async function loadDeckIntoPlayer(
   // Fetch all card definitions
   const allNames = deck.cards.map(c => c.name);
   const defsMap = await fetchCardsByNames(allNames);
+  const customDefs = getCustomCardDefinitionMap(deck);
 
   let newState = { ...state };
   const newCards: Record<string, CardState> = { ...newState.cards };
@@ -475,7 +476,7 @@ export async function loadDeckIntoPlayer(
 
   // Create card instances
   for (const { name, count } of deck.cards) {
-    const def = defsMap.get(name);
+    const def = customDefs.get(name.toLowerCase()) ?? defsMap.get(name);
     const isCommander = deck.commanders.includes(name);
 
     for (let i = 0; i < count; i++) {
@@ -497,7 +498,7 @@ export async function loadDeckIntoPlayer(
 
   // Sideboard
   for (const { name, count } of deck.sideboard) {
-    const def = applyDeckLogicToDefinition(defsMap.get(name) || createPlaceholderDef(name), deck);
+    const def = applyDeckLogicToDefinition(customDefs.get(name.toLowerCase()) ?? defsMap.get(name) ?? createPlaceholderDef(name), deck);
     newDefs[def.id] = def;
     for (let i = 0; i < count; i++) {
       const cs = applyDeckLogicToCard(createCardState(def, playerId, 'sideboard'), def);
@@ -533,6 +534,54 @@ function createPlaceholderDef(name: string): CardDefinition {
     colors: [],
     colorIdentity: [],
     keywords: [],
+    isDoubleFaced: false,
+    legalities: {},
+  };
+}
+
+function getCustomCardDefinitionMap(deck: Deck): Map<string, CardDefinition> {
+  const customCards = deck.logicFile?.customCards ?? [];
+  return new Map(customCards.map(card => [card.name.toLowerCase(), createCustomCardDef(card)]));
+}
+
+function createCustomCardDef(card: CustomCardDefinition): CardDefinition {
+  const typeLine = card.typeLine || 'Creature';
+  const superTypes = ['Legendary', 'Basic', 'Snow', 'World', 'Historic']
+    .filter(type => typeLine.includes(type)) as CardDefinition['superTypes'];
+  const cardTypes = ['Creature', 'Instant', 'Sorcery', 'Artifact', 'Enchantment', 'Planeswalker', 'Land', 'Battle', 'Tribal']
+    .filter(type => typeLine.includes(type)) as CardDefinition['cardTypes'];
+  const subTypes = typeLine.includes('—')
+    ? typeLine.split('—').slice(1).join('—').trim().split(/\s+/).filter(Boolean)
+    : [];
+
+  return {
+    id: card.id || `custom-${card.name.toLowerCase().replace(/\s+/g, '-')}`,
+    name: card.name,
+    manaCost: card.manaCost?.raw ? {
+      W: card.manaCost.W,
+      U: card.manaCost.U,
+      B: card.manaCost.B,
+      R: card.manaCost.R,
+      G: card.manaCost.G,
+      C: card.manaCost.C,
+      generic: card.manaCost.generic,
+      X: card.manaCost.X,
+      raw: card.manaCost.raw,
+      cmc: card.cmc ?? card.manaCost.cmc ?? 0,
+    } : undefined,
+    cmc: card.cmc ?? card.manaCost?.cmc ?? 0,
+    typeLine,
+    superTypes,
+    cardTypes,
+    subTypes,
+    oracleText: card.oracleText || '',
+    power: card.power,
+    toughness: card.toughness,
+    loyalty: card.loyalty,
+    colors: card.colors ?? [],
+    colorIdentity: card.colorIdentity ?? card.colors ?? [],
+    keywords: card.keywords ?? [],
+    imageUrl: card.imageUrl,
     isDoubleFaced: false,
     legalities: {},
   };

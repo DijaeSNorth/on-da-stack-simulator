@@ -220,6 +220,23 @@ export interface DeckLogic {
   replacementEffects: ReplacementEffect[];
   cardNotes: Record<string, string>;
   triggers: CustomTrigger[];
+  customCards: CustomCardDefinition[];
+}
+
+export interface CustomCardDefinition {
+  id?: string;
+  name: string;
+  manaCost?: Partial<ManaCost> & { raw?: string };
+  cmc?: number;
+  typeLine?: string;
+  oracleText?: string;
+  power?: string;
+  toughness?: string;
+  loyalty?: number;
+  colors?: ManaColor[];
+  colorIdentity?: ManaColor[];
+  keywords?: string[];
+  imageUrl?: string;
 }
 
 export interface CustomRule {

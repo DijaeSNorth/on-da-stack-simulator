@@ -1,6 +1,7 @@
 // ─── Deck Import Engine ───────────────────────────────────────────────────────
 import type {
   CardDefinition,
+  CustomCardDefinition,
   CustomRule,
   CustomTrigger,
   Deck,
@@ -142,6 +143,7 @@ export function parseDeckLogicFile(raw: string, deckId: string): DeckLogicParseR
     replacementEffects: [],
     cardNotes: {},
     triggers: [],
+    customCards: [],
   };
 
   if (text.startsWith('{') || text.startsWith('[')) {
@@ -158,6 +160,9 @@ export function parseDeckLogicFile(raw: string, deckId: string): DeckLogicParseR
         ? payload.replacementEffects
         : Array.isArray(payload.replacements) ? payload.replacements : [];
       const rawTriggers = Array.isArray(payload.triggers) ? payload.triggers : [];
+      const rawCustomCards = Array.isArray(payload.customCards)
+        ? payload.customCards
+        : Array.isArray(payload.cards) ? payload.cards : [];
 
       base.rules = rawRules.map((rule: Partial<CustomRule>, index: number) => normalizeRule(rule, index));
       base.replacementEffects = rawReplacements.map((effect: Partial<ReplacementEffect>, index: number) =>
@@ -166,12 +171,15 @@ export function parseDeckLogicFile(raw: string, deckId: string): DeckLogicParseR
       base.triggers = rawTriggers.map((trigger: Partial<CustomTrigger>, index: number) =>
         normalizeTrigger(trigger, index)
       );
+      base.customCards = rawCustomCards
+        .map((card: Partial<CustomCardDefinition>, index: number) => normalizeCustomCard(card, index))
+        .filter((card: CustomCardDefinition | null): card is CustomCardDefinition => Boolean(card));
 
       if (payload.cardNotes && typeof payload.cardNotes === 'object' && !Array.isArray(payload.cardNotes)) {
         base.cardNotes = Object.fromEntries(
           Object.entries(payload.cardNotes)
-            .filter(([card, note]) => card.trim() && typeof note === 'string' && note.trim())
-            .map(([card, note]) => [normalizeName(card), String(note).trim()])
+            .filter(([card, note]) => String(card).trim() && typeof note === 'string' && note.trim())
+            .map(([card, note]) => [normalizeName(String(card)), String(note).trim()])
         );
       } else if (payload.cardNotes !== undefined) {
         warnings.push('Custom logic cardNotes must be an object keyed by card name.');
@@ -206,7 +214,20 @@ export function parseDeckLogicFile(raw: string, deckId: string): DeckLogicParseR
     }
 
     const parts = rest.split('|').map(p => p.trim()).filter(Boolean);
-    if (kind === 'trigger') {
+    if (kind === 'card') {
+      if (parts.length < 2) {
+        warnings.push(`Ignored card line; expected "card: Name | Type Line | optional text | optional power/toughness".`);
+        continue;
+      }
+      const [power, toughness] = parts[3]?.includes('/') ? parts[3].split('/').map(p => p.trim()) : [];
+      base.customCards.push(normalizeCustomCard({
+        name: parts[0],
+        typeLine: parts[1],
+        oracleText: parts[2] || '',
+        power,
+        toughness,
+      }, base.customCards.length) as CustomCardDefinition);
+    } else if (kind === 'trigger') {
       if (parts.length < 3) {
         warnings.push(`Ignored trigger line; expected "trigger: Card | event | effect".`);
         continue;
@@ -252,8 +273,30 @@ function withOptionalLogic(logicFile: DeckLogic, errors: string[], warnings: str
   const hasLogic = logicFile.rules.length > 0 ||
     logicFile.replacementEffects.length > 0 ||
     logicFile.triggers.length > 0 ||
+    logicFile.customCards.length > 0 ||
     Object.keys(logicFile.cardNotes).length > 0;
   return hasLogic ? { logicFile, errors, warnings } : { errors, warnings };
+}
+
+function normalizeCustomCard(card: Partial<CustomCardDefinition>, index: number): CustomCardDefinition | null {
+  const name = normalizeName(String(card.name || ''));
+  if (!name) return null;
+  const rawCost = card.manaCost?.raw ? String(card.manaCost.raw).trim() : undefined;
+  return {
+    id: safeId(card.id, `custom-card-${index + 1}`),
+    name,
+    manaCost: rawCost ? { ...card.manaCost, raw: rawCost } : card.manaCost,
+    cmc: typeof card.cmc === 'number' && Number.isFinite(card.cmc) ? card.cmc : undefined,
+    typeLine: String(card.typeLine || 'Creature').trim(),
+    oracleText: String(card.oracleText || '').trim(),
+    power: card.power !== undefined ? String(card.power).trim() : undefined,
+    toughness: card.toughness !== undefined ? String(card.toughness).trim() : undefined,
+    loyalty: typeof card.loyalty === 'number' && Number.isFinite(card.loyalty) ? card.loyalty : undefined,
+    colors: Array.isArray(card.colors) ? card.colors : undefined,
+    colorIdentity: Array.isArray(card.colorIdentity) ? card.colorIdentity : undefined,
+    keywords: Array.isArray(card.keywords) ? card.keywords.map(k => String(k).trim()).filter(Boolean) : undefined,
+    imageUrl: card.imageUrl,
+  };
 }
 
 function normalizeRule(rule: Partial<CustomRule>, index: number): CustomRule {
@@ -429,6 +472,7 @@ export async function importDecklist(
   if (logicFile) {
     warnings.push(...validateDeckLogicReferences(logicFile, allNames, fetchedDefs));
     const counts = [
+      logicFile.customCards.length ? `${logicFile.customCards.length} custom card${logicFile.customCards.length === 1 ? '' : 's'}` : '',
       logicFile.rules.length ? `${logicFile.rules.length} custom rule${logicFile.rules.length === 1 ? '' : 's'}` : '',
       logicFile.triggers.length ? `${logicFile.triggers.length} custom trigger${logicFile.triggers.length === 1 ? '' : 's'}` : '',
       logicFile.replacementEffects.length ? `${logicFile.replacementEffects.length} replacement effect${logicFile.replacementEffects.length === 1 ? '' : 's'}` : '',
@@ -460,9 +504,18 @@ function validateDeckLogicReferences(
   fetchedDefs: Map<string, CardDefinition>
 ): string[] {
   const warnings: string[] = [];
-  const names = new Set(importedNames.map(n => n.toLowerCase()));
+  const customCardNames = new Set(logicFile.customCards.map(card => card.name.toLowerCase()));
+  const names = new Set([...importedNames.map(n => n.toLowerCase()), ...customCardNames]);
   const hasCard = (name: string) => names.has(name.toLowerCase());
 
+  for (const customCard of logicFile.customCards) {
+    if (!customCard.name || !customCard.typeLine) {
+      warnings.push(`Custom card "${customCard.id ?? 'unknown'}" is missing a name or typeLine.`);
+    }
+    if (!importedNames.some(name => name.toLowerCase() === customCard.name.toLowerCase())) {
+      warnings.push(`Custom card "${customCard.name}" is defined but is not in this decklist.`);
+    }
+  }
   for (const [cardName] of Object.entries(logicFile.cardNotes)) {
     if (!hasCard(cardName)) warnings.push(`Custom note references "${cardName}", which is not in this deck.`);
   }

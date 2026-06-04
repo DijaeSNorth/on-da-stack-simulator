@@ -95,12 +95,16 @@ console.log('=== Custom logic parser ===');
     rules: [
       { name: 'Table Rule', effect: 'Treasures enter tapped.', enabled: true },
     ],
+    customCards: [
+      { name: 'Stack Lab Adept', typeLine: 'Creature - Human Wizard', oracleText: 'Whenever you cast your second spell each turn, copy target triggered ability.', power: '2', toughness: '3' },
+    ],
   }), 'deck-1');
 
   assert(result.errors.length === 0, `Expected no parser errors, got ${result.errors.join(', ')}`);
   assert(result.logicFile?.triggers.length === 1, 'Expected one custom trigger');
   assert(result.logicFile?.replacementEffects.length === 1, 'Expected one replacement effect');
   assert(result.logicFile?.rules.length === 1, 'Expected one custom rule');
+  assert(result.logicFile?.customCards[0].name === 'Stack Lab Adept', 'Expected one custom card');
   assert(result.logicFile?.cardNotes['Omnath, Locus of Creation'] === 'Track landfall count.', 'Expected card note');
 }
 
@@ -108,12 +112,14 @@ console.log('=== Custom logic line format ===');
 {
   const result = parseDeckLogicFile([
     'note: Custom Commander = Track copied spells.',
+    'card: Stack Lab Adept | Creature - Human Wizard | Whenever you copy a spell, investigate. | 2/3',
     'trigger: Custom Commander | attacks | create a tapped Treasure | Attack trigger reminder',
     'replacement: Custom Commander | would die | return it to command zone',
     'rule: Copy Watch | spell | Copies are not cast',
   ].join('\n'), 'deck-2');
 
   assert(result.errors.length === 0, 'Line format should not produce parser errors');
+  assert(result.logicFile?.customCards[0].power === '2', 'Expected custom card power from line format');
   assert(result.logicFile?.triggers[0].event === 'attacks', 'Expected attack trigger event');
   assert(result.logicFile?.cardNotes['Custom Commander'] === 'Track copied spells.', 'Expected line note');
 }

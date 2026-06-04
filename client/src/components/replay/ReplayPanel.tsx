@@ -45,10 +45,13 @@ interface ReplayReviewMarker {
 
 function getActionReviewMarker(action: ActionRecord): ReplayReviewMarker | null {
   const reviewType = String(action.data?.reviewType ?? '');
+  const reviewTypes = Array.isArray(action.data?.reviewTypes)
+    ? action.data.reviewTypes.map(type => String(type))
+    : [];
   const text = `${action.actionType} ${action.description}`.toLowerCase();
   const hasMissedTriggerFlag = action.flags.some(flag => flag.label === 'Missed Trigger');
 
-  if (reviewType === 'missed-trigger' || hasMissedTriggerFlag || /\btrigger missed\b|\bmissed trigger\b/.test(text)) {
+  if (reviewType === 'missed-trigger' || reviewTypes.includes('missed-trigger') || hasMissedTriggerFlag || /\btrigger missed\b|\bmissed trigger\b/.test(text)) {
     return {
       kind: 'missed-trigger',
       label: 'Missed Trigger',
@@ -58,7 +61,7 @@ function getActionReviewMarker(action: ActionRecord): ReplayReviewMarker | null 
     };
   }
 
-  if (action.actionType === 'FLAG' || action.flags.length > 0) {
+  if (action.actionType === 'FLAG' || reviewTypes.some(type => type === 'judge-review' || type === 'illegal-action' || type === 'state-based') || action.flags.length > 0) {
     return {
       kind: 'judge-flag',
       label: 'Judge Review',
@@ -404,6 +407,10 @@ function ReplayViewerView({
   const currentAction = replay.actionLog[cursor];
   const currentMarker = currentAction ? getActionReviewMarker(currentAction) : null;
   const reviewSummary = summarizeReviewMarkers(replay.actionLog);
+  const reviewIndexes = replay.actionLog
+    .map((action, index) => getActionReviewMarker(action) ? index : -1)
+    .filter(index => index >= 0);
+  const nextReviewIndex = reviewIndexes.find(index => index > cursor) ?? reviewIndexes[0];
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -480,6 +487,20 @@ function ReplayViewerView({
             <option value={400}>2×</option>
             <option value={150}>5×</option>
           </select>
+
+          <button
+            data-testid="replay-next-review"
+            onClick={() => {
+              if (nextReviewIndex === undefined) return;
+              setPlaying(false);
+              setCursor(nextReviewIndex);
+            }}
+            disabled={nextReviewIndex === undefined}
+            style={{ ...transportBtnStyle(nextReviewIndex === undefined), fontSize: 9, minWidth: 86 }}
+            title="Jump to next review marker"
+          >
+            Next Review
+          </button>
 
           <div style={{ flex: 1 }} />
 

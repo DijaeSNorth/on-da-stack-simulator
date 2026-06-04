@@ -296,11 +296,10 @@ export function PhaseGuideBar() {
         {!isLastPhase ? (
           <button
             data-testid="btn-suggest-next-phase"
-            onClick={() => !hasBlocker && store.advancePhase()}
-            disabled={hasBlocker}
+            onClick={() => store.advancePhase()}
             title={
               hasBlocker
-                ? 'Resolve stack / triggers before advancing'
+                ? 'Advance anyway and let the assistant flag pending stack or triggers'
                 : `Proceed to ${nextMeta?.label}`
             }
             style={{
@@ -316,21 +315,20 @@ export function PhaseGuideBar() {
                 : GROUP_ACCENT[PHASE_META[nextPhase!].group],
               border: `1px solid ${hasBlocker ? '#7f1d1d' : GROUP_ACCENT[PHASE_META[nextPhase!].group] + '66'}`,
               borderRadius: 4,
-              cursor: hasBlocker ? 'not-allowed' : 'pointer',
-              opacity: hasBlocker ? 0.6 : 1,
+              cursor: 'pointer',
+              opacity: 1,
               letterSpacing: '0.03em',
               transition: 'all 0.12s',
             }}
           >
-            {hasBlocker ? 'Blocked ⛔' : `→ ${nextMeta?.label}`}
+            {hasBlocker ? 'Advance + Flag' : `→ ${nextMeta?.label}`}
           </button>
         ) : (
           /* Last phase = End Turn button */
           <button
             data-testid="btn-end-turn-guide"
-            onClick={() => !hasBlocker && store.advanceTurn()}
-            disabled={hasBlocker}
-            title={hasBlocker ? 'Resolve stack / triggers first' : 'End turn'}
+            onClick={() => store.advanceTurn()}
+            title={hasBlocker ? 'End turn anyway and let the assistant flag pending stack or triggers' : 'End turn'}
             style={{
               padding: '3px 11px',
               fontSize: 9,
@@ -339,12 +337,12 @@ export function PhaseGuideBar() {
               color: hasBlocker ? '#7f1d1d' : '#c4b5fd',
               border: `1px solid ${hasBlocker ? '#7f1d1d' : '#7c3aed44'}`,
               borderRadius: 4,
-              cursor: hasBlocker ? 'not-allowed' : 'pointer',
-              opacity: hasBlocker ? 0.6 : 1,
+              cursor: 'pointer',
+              opacity: 1,
               letterSpacing: '0.03em',
             }}
           >
-            {hasBlocker ? 'Blocked ⛔' : 'End Turn →'}
+            {hasBlocker ? 'End + Flag' : 'End Turn →'}
           </button>
         )}
       </div>
