@@ -238,7 +238,7 @@ export function LobbyScreen() {
                   Players
                 </label>
                 <div style={{ display: 'flex', gap: 6 }}>
-                  {([2, 3, 4, 5, 6] as const).map(n => (
+                  {([2, 3, 4] as const).map(n => (
                     <button
                       key={n}
                       data-testid={`btn-player-count-${n}`}
