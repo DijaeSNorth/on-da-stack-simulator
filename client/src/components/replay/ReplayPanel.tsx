@@ -33,6 +33,67 @@ const PHASE_LABEL: Record<string, string> = {
   cleanup: 'Cleanup',
 };
 
+type ReviewKind = 'missed-trigger' | 'judge-flag' | 'replacement-review';
+
+interface ReplayReviewMarker {
+  kind: ReviewKind;
+  label: string;
+  color: string;
+  background: string;
+  detail: string;
+}
+
+function getActionReviewMarker(action: ActionRecord): ReplayReviewMarker | null {
+  const reviewType = String(action.data?.reviewType ?? '');
+  const text = `${action.actionType} ${action.description}`.toLowerCase();
+  const hasMissedTriggerFlag = action.flags.some(flag => flag.label === 'Missed Trigger');
+
+  if (reviewType === 'missed-trigger' || hasMissedTriggerFlag || /\btrigger missed\b|\bmissed trigger\b/.test(text)) {
+    return {
+      kind: 'missed-trigger',
+      label: 'Missed Trigger',
+      color: '#fca5a5',
+      background: '#7f1d1d',
+      detail: String(action.data?.triggerText ?? action.description),
+    };
+  }
+
+  if (action.actionType === 'FLAG' || action.flags.length > 0) {
+    return {
+      kind: 'judge-flag',
+      label: 'Judge Review',
+      color: '#fcd34d',
+      background: '#78350f',
+      detail: action.flags.map(flag => flag.text).join(' ') || action.description,
+    };
+  }
+
+  if (/\breplacement\b|\binstead\b|\bwould\b.+\bexile\b/.test(text)) {
+    return {
+      kind: 'replacement-review',
+      label: 'Replacement Check',
+      color: '#93c5fd',
+      background: '#1e3a5f',
+      detail: action.description,
+    };
+  }
+
+  return null;
+}
+
+function summarizeReviewMarkers(actions: ActionRecord[]) {
+  return actions.reduce(
+    (summary, action) => {
+      const marker = getActionReviewMarker(action);
+      if (!marker) return summary;
+      summary.total += 1;
+      summary[marker.kind] += 1;
+      return summary;
+    },
+    { total: 0, 'missed-trigger': 0, 'judge-flag': 0, 'replacement-review': 0 } as Record<ReviewKind | 'total', number>
+  );
+}
+
 // ─── Main ReplayPanel ─────────────────────────────────────────────────────────
 
 export function ReplayPanel() {
@@ -341,6 +402,8 @@ function ReplayViewerView({
   onExport: (e: React.MouseEvent) => void;
 }) {
   const currentAction = replay.actionLog[cursor];
+  const currentMarker = currentAction ? getActionReviewMarker(currentAction) : null;
+  const reviewSummary = summarizeReviewMarkers(replay.actionLog);
 
   return (
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -449,6 +512,37 @@ function ReplayViewerView({
             {describeAction(currentAction)}
           </div>
         )}
+
+        {reviewSummary.total > 0 && (
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 9, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 700 }}>
+              Review
+            </span>
+            {reviewSummary['missed-trigger'] > 0 && (
+              <ReviewPill label={`${reviewSummary['missed-trigger']} missed trigger${reviewSummary['missed-trigger'] === 1 ? '' : 's'}`} color="#fca5a5" background="#7f1d1d" />
+            )}
+            {reviewSummary['judge-flag'] > 0 && (
+              <ReviewPill label={`${reviewSummary['judge-flag']} judge flag${reviewSummary['judge-flag'] === 1 ? '' : 's'}`} color="#fcd34d" background="#78350f" />
+            )}
+            {reviewSummary['replacement-review'] > 0 && (
+              <ReviewPill label={`${reviewSummary['replacement-review']} replacement check${reviewSummary['replacement-review'] === 1 ? '' : 's'}`} color="#93c5fd" background="#1e3a5f" />
+            )}
+          </div>
+        )}
+
+        {currentMarker && (
+          <div style={{
+            fontSize: 11,
+            color: currentMarker.color,
+            background: `${currentMarker.background}55`,
+            border: `1px solid ${currentMarker.background}`,
+            borderRadius: 6,
+            padding: '6px 10px',
+            lineHeight: 1.35,
+          }}>
+            <strong>{currentMarker.label}:</strong> {currentMarker.detail}
+          </div>
+        )}
       </div>
 
       {/* Action log */}
@@ -472,6 +566,7 @@ function ReplayViewerView({
               const isCurrent = globalIndex === cursor;
               const isPast = globalIndex < cursor;
               const color = ACTION_COLORS[action.actionType] ?? '#475569';
+              const marker = getActionReviewMarker(action);
 
               return (
                 <div
@@ -499,9 +594,19 @@ function ReplayViewerView({
                     <span style={{ fontSize: 11, color: isCurrent ? '#e2e8f0' : '#94a3b8' }}>
                       {describeAction(action)}
                     </span>
-                    {action.flags.length > 0 && (
-                      <span style={{ fontSize: 9, color: '#fcd34d', marginLeft: 4 }}>
-                        ⚠ {action.flags.length}
+                    {marker && (
+                      <span style={{
+                        fontSize: 8,
+                        color: marker.color,
+                        background: `${marker.background}88`,
+                        border: `1px solid ${marker.background}`,
+                        borderRadius: 3,
+                        padding: '1px 4px',
+                        marginLeft: 5,
+                        fontWeight: 700,
+                        whiteSpace: 'nowrap',
+                      }}>
+                        {marker.label}
                       </span>
                     )}
                   </div>
@@ -527,6 +632,21 @@ function ReplayViewerView({
 }
 
 // ─── Micro styles ─────────────────────────────────────────────────────────────
+
+function ReviewPill({ label, color, background }: { label: string; color: string; background: string }) {
+  return (
+    <span style={{
+      fontSize: 9,
+      fontWeight: 700,
+      color,
+      background,
+      borderRadius: 999,
+      padding: '2px 7px',
+    }}>
+      {label}
+    </span>
+  );
+}
 
 const iconBtnStyle: React.CSSProperties = {
   width: 24, height: 24, borderRadius: 6,

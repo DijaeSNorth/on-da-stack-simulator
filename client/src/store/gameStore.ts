@@ -796,11 +796,20 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
   markTriggerMissed: (triggerId) => {
     const g = get().game;
+    const missed = g.triggerQueue.find(t => t.id === triggerId);
     const queue = g.triggerQueue.map(t =>
       t.id === triggerId ? { ...t, missed: true, acknowledged: true } : t
     );
     const action = createAction(g, g.activePlayerId, 'OTHER',
-      `Trigger missed: ${g.triggerQueue.find(t => t.id === triggerId)?.sourceName ?? triggerId}`);
+      `Trigger missed: ${missed?.sourceName ?? triggerId}`,
+      missed?.sourceInstanceId ? [missed.sourceInstanceId] : [],
+      {
+        reviewType: 'missed-trigger',
+        triggerId,
+        sourceName: missed?.sourceName,
+        triggerText: missed?.text,
+        controllerId: missed?.controllerId,
+      });
     set({ game: { ...g, triggerQueue: queue, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
   },
 
