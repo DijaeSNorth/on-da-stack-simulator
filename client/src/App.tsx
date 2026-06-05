@@ -1,5 +1,5 @@
 import { useGameStore } from './store/gameStore';
-import { useEffect, useRef } from 'react';
+import { Suspense, lazy, useEffect, useRef } from 'react';
 import { TopBar } from './components/TopBar';
 import { PhaseGuideBar } from './components/PhaseGuideBar';
 import { LeftPanel } from './components/panels/LeftPanel';
@@ -11,12 +11,21 @@ import { CardContextMenu } from './components/cards/CardContextMenu';
 import { ZoneDrawer } from './components/zones/ZoneDrawer';
 import { LobbyScreen } from './components/lobby/LobbyScreen';
 import { CommandInput } from './components/command/CommandInput';
-import { CardSearchPanel } from './components/panels/CardSearchPanel';
-import { ReplayPanel } from './components/replay/ReplayPanel';
-import { ProfilePanel } from './components/profile/ProfilePanel';
-import { SoloDeckBuilder } from './components/deckbuilder/SoloDeckBuilder';
 import { WelcomeModal, CoachMark } from './components/tutorial/TutorialOverlay';
 import { useIsMobile } from './hooks/use-mobile';
+
+const CardSearchPanel = lazy(() =>
+  import('./components/panels/CardSearchPanel').then(module => ({ default: module.CardSearchPanel }))
+);
+const ReplayPanel = lazy(() =>
+  import('./components/replay/ReplayPanel').then(module => ({ default: module.ReplayPanel }))
+);
+const ProfilePanel = lazy(() =>
+  import('./components/profile/ProfilePanel').then(module => ({ default: module.ProfilePanel }))
+);
+const SoloDeckBuilder = lazy(() =>
+  import('./components/deckbuilder/SoloDeckBuilder').then(module => ({ default: module.SoloDeckBuilder }))
+);
 
 export default function App() {
   const ui = useGameStore(s => s.ui);
@@ -44,7 +53,9 @@ export default function App() {
         fontFamily: '"Inter", "SF Pro Display", system-ui, sans-serif',
       }}>
         <LobbyScreen />
-        <ProfilePanel />
+        <Suspense fallback={null}>
+          <ProfilePanel />
+        </Suspense>
         <WelcomeModal />
       </div>
     );
@@ -112,7 +123,9 @@ export default function App() {
             overflow: 'auto',
             padding: 10,
           }}>
-            <SoloDeckBuilder playerId={localPlayerId || game.players[0]?.id} compact loadLabel="Reload Test Deck" />
+            <Suspense fallback={null}>
+              <SoloDeckBuilder playerId={localPlayerId || game.players[0]?.id} compact loadLabel="Reload Test Deck" />
+            </Suspense>
           </div>
         )}
 
@@ -128,9 +141,11 @@ export default function App() {
       <FloatingCardPreview />
       <CardContextMenu />
       <ZoneDrawer />
-      <CardSearchPanel />
-      <ReplayPanel />
-      <ProfilePanel />
+      <Suspense fallback={null}>
+        <CardSearchPanel />
+        <ReplayPanel />
+        <ProfilePanel />
+      </Suspense>
       {/* Tutorial system */}
       <WelcomeModal />
       <CoachMark />

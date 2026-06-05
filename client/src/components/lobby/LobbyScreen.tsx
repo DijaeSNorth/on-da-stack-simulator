@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { Suspense, lazy, useState, useEffect } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import {
   importDeckFromUrl,
@@ -15,7 +15,6 @@ import { getActiveProfile } from '../../engine/profileStorage';
 import { BrandMark } from '../branding/BrandMark';
 import { PlayerAvatar } from '../profile/PlayerAvatar';
 import { ExitGameModal } from '../exit/ExitGameModal';
-import { SoloDeckBuilder } from '../deckbuilder/SoloDeckBuilder';
 import type { Deck, PlayerAvatarImage } from '../../types/game';
 
 interface PlayerSetup {
@@ -40,6 +39,10 @@ const HOUSE_RULE_PRESETS = [
   { id: 'extra_land', name: 'Extra Land Drop', description: 'Each player may play an additional land per turn' },
   { id: 'shared_pool', name: 'Rule Zero Session', description: 'Custom power level agreement in effect' },
 ];
+
+const SoloDeckBuilder = lazy(() =>
+  import('../deckbuilder/SoloDeckBuilder').then(module => ({ default: module.SoloDeckBuilder }))
+);
 
 export function LobbyScreen() {
   const store = useGameStore();
@@ -278,29 +281,18 @@ export function LobbyScreen() {
       }
       store.startGame();
       if (gameMode === 'solo') {
-        store.setRightPanelTab('debug');
         store.setDeckBuilderOpen(true);
+        if (store.ui.rightPanelOpen) store.toggleRightPanel();
       }
     })();
-  }
-
-  function testDeck(deck: Deck) {
-    updatePlayer(setupPlayerIndex, { deckId: deck.id });
-    startGame({ [activeSetupPlayer.id]: deck });
-  }
-
-  function saveDeckAndTest() {
-    if (!importResult) return;
-    saveDeck(importResult.deck);
-    store.loadDecks();
-    setFavoriteDeckIds(loadFavoriteDeckIds());
-    testDeck(importResult.deck);
   }
 
   function toggleFavorite(deckId: string) {
     setFavoriteDeckIds(toggleFavoriteDeck(deckId));
     store.loadDecks();
   }
+
+  const deckPanelMode = gameMode;
 
   return (
     <div style={{
@@ -313,7 +305,7 @@ export function LobbyScreen() {
     }}>
       <div style={{
         width: '100%',
-        maxWidth: 860,
+        maxWidth: gameMode === 'solo' ? 1180 : 860,
         padding: 24,
         display: 'flex',
         flexDirection: 'column',
@@ -570,7 +562,28 @@ export function LobbyScreen() {
             )}
           </div>
 
-          {/* Right: Deck import */}
+          {deckPanelMode === 'solo' ? (
+          <div style={{
+            flex: '1.4 1 520px',
+            minWidth: 0,
+            background: '#0b0f12',
+            border: '1px solid #26323a',
+            borderRadius: 10,
+            padding: 12,
+          }}>
+            <Suspense fallback={null}>
+              <SoloDeckBuilder
+                playerId={activeSetupPlayer.id}
+                loadLabel="Load for Test"
+                onLoadDeck={async deck => {
+                  updatePlayer(setupPlayerIndex, { deckId: deck.id });
+                  await store.loadDeck(activeSetupPlayer.id, deck);
+                }}
+              />
+            </Suspense>
+          </div>
+          ) : (
+          /* Right: Deck import */
           <div style={{
             flex: '1 1 340px',
             background: '#10161a',
@@ -633,14 +646,14 @@ export function LobbyScreen() {
                             }}
                           >Fav</button>
                           <button
-                            onClick={() => gameMode === 'solo' ? testDeck(deck) : assignDeckToPlayer(deck)}
+                            onClick={() => assignDeckToPlayer(deck)}
                             style={{
                               fontSize: 9, padding: '3px 8px',
                               background: assigned ? '#1d4ed8' : '#1e293b',
                               color: assigned ? '#fff' : '#94a3b8',
                               border: 'none', borderRadius: 3, cursor: 'pointer',
                             }}
-                          >{gameMode === 'solo' ? 'Test' : assigned ? 'Assigned' : 'Use'}</button>
+                          >{assigned ? 'Assigned' : 'Use'}</button>
                         </div>
                       </div>
                     );
@@ -736,7 +749,7 @@ export function LobbyScreen() {
                   }}
                 />
               )}
-              <details open={gameMode === 'solo'} style={{ marginTop: 8 }}>
+              <details style={{ marginTop: 8 }}>
                 <summary style={{
                   fontSize: 10,
                   color: '#64748b',
@@ -846,13 +859,13 @@ export function LobbyScreen() {
                 <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
                   <button
                     data-testid="btn-use-deck"
-                    onClick={gameMode === 'solo' ? saveDeckAndTest : saveDeckAndAssign}
+                    onClick={saveDeckAndAssign}
                     style={{
                       flex: 1, padding: '6px 0',
                       background: '#14532d', color: '#86efac',
                       border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 10, fontWeight: 700,
                     }}
-                  >{gameMode === 'solo' ? 'Save & Test' : 'Save & Use'}</button>
+                  >Save & Use</button>
                   <button
                     onClick={() => setImportResult(null)}
                     style={{
@@ -865,25 +878,8 @@ export function LobbyScreen() {
               </div>
             )}
           </div>
+          )}
         </div>
-
-        {gameMode === 'solo' && (
-          <div style={{
-            background: '#0b0f12',
-            border: '1px solid #26323a',
-            borderRadius: 10,
-            padding: 12,
-          }}>
-            <SoloDeckBuilder
-              playerId={activeSetupPlayer.id}
-              loadLabel="Load for Test"
-              onLoadDeck={async deck => {
-                updatePlayer(setupPlayerIndex, { deckId: deck.id });
-                await store.loadDeck(activeSetupPlayer.id, deck);
-              }}
-            />
-          </div>
-        )}
 
         {/* Multiplayer */}
         {gameMode === 'table' && (
