@@ -1,6 +1,15 @@
 import { useState, useEffect } from 'react';
 import { useGameStore } from '../../store/gameStore';
-import { importDeckFromUrl, importDecklist, saveDeck, MAX_STORED_DECKS, type ImportResult } from '../../engine/deckImport';
+import {
+  importDeckFromUrl,
+  importDecklist,
+  saveDeck,
+  loadFavoriteDeckIds,
+  toggleFavoriteDeck,
+  MAX_STORED_DECKS,
+  MAX_FAVORITE_DECKS,
+  type ImportResult,
+} from '../../engine/deckImport';
 import { MultiplayerPanel } from '../multiplayer/MultiplayerPanel';
 import { getActiveProfile } from '../../engine/profileStorage';
 import { BrandMark } from '../branding/BrandMark';
@@ -52,6 +61,7 @@ export function LobbyScreen() {
   const [importError, setImportError] = useState('');
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [houseRules, setHouseRules] = useState<Set<string>>(new Set());
+  const [favoriteDeckIds, setFavoriteDeckIds] = useState<string[]>(() => loadFavoriteDeckIds());
 
   function applyActiveProfileToSeat0() {
     const profile = getActiveProfile();
@@ -167,6 +177,7 @@ export function LobbyScreen() {
     if (!importResult) return;
     saveDeck(importResult.deck);
     store.loadDecks();
+    setFavoriteDeckIds(loadFavoriteDeckIds());
     await assignDeckToPlayer(importResult.deck);
   }
 
@@ -278,7 +289,13 @@ export function LobbyScreen() {
     if (!importResult) return;
     saveDeck(importResult.deck);
     store.loadDecks();
+    setFavoriteDeckIds(loadFavoriteDeckIds());
     testDeck(importResult.deck);
+  }
+
+  function toggleFavorite(deckId: string) {
+    setFavoriteDeckIds(toggleFavoriteDeck(deckId));
+    store.loadDecks();
   }
 
   return (
@@ -568,12 +585,14 @@ export function LobbyScreen() {
             <div>
               <div style={{ fontSize: 10, color: '#64748b', marginBottom: 6 }}>
                 Saved Decks ({savedDecks.length}/{MAX_STORED_DECKS})
-                <span style={{ color: '#334155' }}> | newest decks stay stored</span>
+                <span style={{ color: '#334155' }}> | Favorites {favoriteDeckIds.length}/{MAX_FAVORITE_DECKS}</span>
               </div>
               {savedDecks.length > 0 ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                   {savedDecks.map(deck => {
                     const assigned = activeSetupPlayer?.deckId === deck.id;
+                    const favorite = favoriteDeckIds.includes(deck.id);
+                    const favoriteLimitReached = !favorite && favoriteDeckIds.length >= MAX_FAVORITE_DECKS;
                     return (
                       <div
                         key={deck.id}
@@ -592,15 +611,33 @@ export function LobbyScreen() {
                             {deck.commanders.length > 0 && ` · ${deck.commanders[0]}`}
                           </div>
                         </div>
-                        <button
-                          onClick={() => gameMode === 'solo' ? testDeck(deck) : assignDeckToPlayer(deck)}
-                          style={{
-                            fontSize: 9, padding: '3px 8px',
-                            background: assigned ? '#1d4ed8' : '#1e293b',
-                            color: assigned ? '#fff' : '#94a3b8',
-                            border: 'none', borderRadius: 3, cursor: 'pointer',
-                          }}
-                        >{gameMode === 'solo' ? 'Test' : assigned ? 'Assigned' : 'Use'}</button>
+                        <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                          <button
+                            type="button"
+                            title={favorite ? 'Remove from favorites' : favoriteLimitReached ? 'Favorite limit reached' : 'Mark as favorite'}
+                            onClick={() => toggleFavorite(deck.id)}
+                            disabled={favoriteLimitReached}
+                            style={{
+                              fontSize: 9,
+                              padding: '3px 6px',
+                              background: favorite ? '#713f12' : '#1e293b',
+                              color: favorite ? '#fde68a' : favoriteLimitReached ? '#334155' : '#94a3b8',
+                              border: 'none',
+                              borderRadius: 3,
+                              cursor: favoriteLimitReached ? 'not-allowed' : 'pointer',
+                              fontWeight: 700,
+                            }}
+                          >Fav</button>
+                          <button
+                            onClick={() => gameMode === 'solo' ? testDeck(deck) : assignDeckToPlayer(deck)}
+                            style={{
+                              fontSize: 9, padding: '3px 8px',
+                              background: assigned ? '#1d4ed8' : '#1e293b',
+                              color: assigned ? '#fff' : '#94a3b8',
+                              border: 'none', borderRadius: 3, cursor: 'pointer',
+                            }}
+                          >{gameMode === 'solo' ? 'Test' : assigned ? 'Assigned' : 'Use'}</button>
+                        </div>
                       </div>
                     );
                   })}

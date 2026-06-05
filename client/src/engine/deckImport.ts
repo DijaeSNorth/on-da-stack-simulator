@@ -832,11 +832,51 @@ function createEmptyDeck(name: string): Deck {
 // ─── LocalStorage Persistence ─────────────────────────────────────────────────
 
 const DECKS_KEY = 'mtg_sim_decks';
+const FAVORITE_DECKS_KEY = 'mtg_sim_favorite_decks';
 export const MAX_STORED_DECKS = 3;
+export const MAX_FAVORITE_DECKS = 2;
+
+export function loadFavoriteDeckIds(): string[] {
+  try {
+    const raw = localStorage.getItem(FAVORITE_DECKS_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter((id): id is string => typeof id === 'string').slice(0, MAX_FAVORITE_DECKS)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveFavoriteDeckIds(deckIds: string[]): void {
+  try {
+    localStorage.setItem(FAVORITE_DECKS_KEY, JSON.stringify([...new Set(deckIds)].slice(0, MAX_FAVORITE_DECKS)));
+  } catch {
+    // Storage full or unavailable
+  }
+}
+
+export function toggleFavoriteDeck(deckId: string): string[] {
+  const favorites = loadFavoriteDeckIds();
+  if (favorites.includes(deckId)) {
+    const next = favorites.filter(id => id !== deckId);
+    saveFavoriteDeckIds(next);
+    return next;
+  }
+  if (favorites.length >= MAX_FAVORITE_DECKS) return favorites;
+  const next = [...favorites, deckId];
+  saveFavoriteDeckIds(next);
+  return next;
+}
 
 function limitStoredDecks(decks: Deck[]): Deck[] {
+  const favorites = new Set(loadFavoriteDeckIds());
   return [...decks]
-    .sort((a, b) => (b.importedAt || 0) - (a.importedAt || 0))
+    .sort((a, b) => {
+      const favoriteDelta = Number(favorites.has(b.id)) - Number(favorites.has(a.id));
+      if (favoriteDelta !== 0) return favoriteDelta;
+      return (b.importedAt || 0) - (a.importedAt || 0);
+    })
     .slice(0, MAX_STORED_DECKS);
 }
 
@@ -867,6 +907,7 @@ export function saveDeck(deck: Deck): void {
 
 export function deleteDeck(id: string): void {
   const decks = loadDecksFromStorage().filter(d => d.id !== id);
+  saveFavoriteDeckIds(loadFavoriteDeckIds().filter(deckId => deckId !== id));
   saveDecksToStorage(decks);
 }
 
