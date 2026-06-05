@@ -19,6 +19,21 @@ export interface ImportResult {
   cardCount: number;
 }
 
+export type DeckUrlSource = 'moxfield' | 'archidekt' | 'mtggoldfish' | 'tappedout' | 'unknown';
+
+export interface DeckUrlInfo {
+  source: DeckUrlSource;
+  id?: string;
+  url: string;
+}
+
+interface RemoteDecklist {
+  name?: string;
+  text: string;
+  source: DeckUrlSource;
+  warnings: string[];
+}
+
 // ─── Format Parsers ───────────────────────────────────────────────────────────
 
 interface ParsedEntry {
@@ -121,6 +136,254 @@ export interface DeckLogicParseResult {
   logicFile?: DeckLogic;
   errors: string[];
   warnings: string[];
+}
+
+export function detectDeckUrl(value: string): DeckUrlInfo | null {
+  const trimmed = value.trim();
+  if (!/^https?:\/\//i.test(trimmed)) return null;
+
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+
+  const host = url.hostname.replace(/^www\./i, '').toLowerCase();
+  const path = url.pathname;
+
+  if (host === 'moxfield.com') {
+    const id = path.match(/\/decks\/([^/?#]+)/i)?.[1];
+    return { source: 'moxfield', id, url: trimmed };
+  }
+  if (host === 'archidekt.com') {
+    const id = path.match(/\/decks\/(\d+)/i)?.[1];
+    return { source: 'archidekt', id, url: trimmed };
+  }
+  if (host === 'mtggoldfish.com') {
+    const id = path.match(/\/deck\/(?:arena_download\/)?(\d+)/i)?.[1];
+    return { source: 'mtggoldfish', id, url: trimmed };
+  }
+  if (host === 'tappedout.net') {
+    const id = path.match(/\/mtg-decks\/([^/?#]+)/i)?.[1];
+    return { source: 'tappedout', id, url: trimmed };
+  }
+
+  return { source: 'unknown', url: trimmed };
+}
+
+export async function importDeckFromUrl(
+  url: string,
+  deckName: string = '',
+  playerId?: string,
+  customRulesText?: string
+): Promise<ImportResult> {
+  const remote = await fetchDecklistFromUrl(url);
+  const fallbackName = remote.name || deckName || `${formatDeckSource(remote.source)} Import`;
+  const result = await importDecklist(remote.text, deckName || fallbackName, url, playerId, customRulesText);
+  return {
+    ...result,
+    warnings: [
+      `Imported from ${formatDeckSource(remote.source)} URL.`,
+      ...remote.warnings,
+      ...result.warnings,
+    ],
+  };
+}
+
+export async function fetchDecklistFromUrl(value: string): Promise<RemoteDecklist> {
+  const info = detectDeckUrl(value);
+  if (!info) {
+    throw new Error('Paste a full public deck URL beginning with http:// or https://.');
+  }
+  if (!info.id && info.source !== 'unknown') {
+    throw new Error(`Could not find a deck id in that ${formatDeckSource(info.source)} URL.`);
+  }
+
+  if (info.source === 'moxfield') return fetchMoxfieldDeck(info);
+  if (info.source === 'archidekt') return fetchArchidektDeck(info);
+  if (info.source === 'mtggoldfish') return fetchTextExportCandidates(info, [
+    `https://www.mtggoldfish.com/deck/download/${info.id}`,
+    `https://www.mtggoldfish.com/deck/arena_download/${info.id}`,
+    info.url,
+  ]);
+  if (info.source === 'tappedout') return fetchTextExportCandidates(info, [
+    `${info.url.replace(/\/?$/, '/')}\?fmt=txt`,
+    `${info.url.replace(/\/?$/, '/')}\?fmt=mtgo`,
+    info.url,
+  ]);
+
+  throw new Error('That deck site is not supported yet. Try Moxfield, Archidekt, MTGGoldfish, or TappedOut.');
+}
+
+function formatDeckSource(source: DeckUrlSource): string {
+  if (source === 'mtggoldfish') return 'MTGGoldfish';
+  if (source === 'tappedout') return 'TappedOut';
+  if (source === 'moxfield') return 'Moxfield';
+  if (source === 'archidekt') return 'Archidekt';
+  return 'Deck URL';
+}
+
+async function fetchMoxfieldDeck(info: DeckUrlInfo): Promise<RemoteDecklist> {
+  const data = await fetchJson(`https://api2.moxfield.com/v3/decks/all/${info.id}`);
+  const lines = [
+    ...boardToLines('Commander', data.commanders),
+    ...boardToLines('Deck', data.mainboard),
+    ...boardToLines('Sideboard', data.sideboard),
+    ...boardToLines('Maybeboard', data.maybeboard),
+  ];
+  return {
+    name: typeof data.name === 'string' ? data.name : undefined,
+    text: lines.join('\n'),
+    source: 'moxfield',
+    warnings: [],
+  };
+}
+
+async function fetchArchidektDeck(info: DeckUrlInfo): Promise<RemoteDecklist> {
+  const data = await fetchJson(`https://archidekt.com/api/decks/${info.id}/small/`);
+  const cards = Array.isArray(data.cards) ? data.cards : [];
+  const sections: Record<ParsedEntry['section'], string[]> = {
+    commander: [],
+    main: [],
+    sideboard: [],
+    maybeboard: [],
+  };
+
+  for (const entry of cards) {
+    const quantity = Number(entry.quantity ?? entry.qty ?? entry.count ?? 1) || 1;
+    const name = getArchidektCardName(entry);
+    if (!name) continue;
+    const section = getArchidektSection(entry);
+    sections[section].push(`${quantity} ${name}`);
+  }
+
+  const lines = [
+    ...sectionLines('Commander', sections.commander),
+    ...sectionLines('Deck', sections.main),
+    ...sectionLines('Sideboard', sections.sideboard),
+    ...sectionLines('Maybeboard', sections.maybeboard),
+  ];
+
+  return {
+    name: typeof data.name === 'string' ? data.name : undefined,
+    text: lines.join('\n'),
+    source: 'archidekt',
+    warnings: [],
+  };
+}
+
+async function fetchTextExportCandidates(info: DeckUrlInfo, urls: string[]): Promise<RemoteDecklist> {
+  const failures: string[] = [];
+  for (const url of urls) {
+    try {
+      const res = await fetch(url, { headers: { Accept: 'text/plain,text/html,*/*' } });
+      if (!res.ok) {
+        failures.push(`${res.status} ${url}`);
+        continue;
+      }
+      const raw = await res.text();
+      const text = normalizeRemoteDeckText(raw);
+      if (parseRaw(text).length > 0) {
+        return {
+          name: getTitleFromHtml(raw),
+          text,
+          source: info.source,
+          warnings: info.source === 'tappedout'
+            ? ['TappedOut URL imports are best-effort. If this deck imports oddly, use TappedOut Export -> MTGO and paste the text.']
+            : [],
+        };
+      }
+    } catch (err) {
+      failures.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+  throw new Error(`Could not read a decklist from ${formatDeckSource(info.source)}. The site may block browser imports; use its text/MTGO export and paste the list instead. ${failures.length ? `Tried: ${failures.join('; ')}` : ''}`);
+}
+
+async function fetchJson(url: string): Promise<any> {
+  const res = await fetch(url, { headers: { Accept: 'application/json' } });
+  if (!res.ok) throw new Error(`Deck URL fetch failed with HTTP ${res.status}. Make sure the deck is public.`);
+  return res.json();
+}
+
+function boardToLines(header: string, board: unknown): string[] {
+  const entries = Object.values((board && typeof board === 'object') ? board as Record<string, unknown> : {});
+  return sectionLines(header, entries.map(entry => {
+    const item = entry as Record<string, any>;
+    const quantity = Number(item.quantity ?? item.qty ?? item.count ?? 1) || 1;
+    const name = getRemoteCardName(item);
+    return name ? `${quantity} ${name}` : '';
+  }).filter(Boolean));
+}
+
+function sectionLines(header: string, lines: string[]): string[] {
+  if (lines.length === 0) return [];
+  return [header, ...lines, ''];
+}
+
+function getRemoteCardName(item: Record<string, any>): string {
+  return String(
+    item.card?.name ??
+    item.card?.oracleCard?.name ??
+    item.oracleCard?.name ??
+    item.name ??
+    ''
+  ).trim();
+}
+
+function getArchidektCardName(entry: Record<string, any>): string {
+  return String(
+    entry.card?.oracleCard?.name ??
+    entry.card?.name ??
+    entry.oracleCard?.name ??
+    entry.name ??
+    entry.cardName ??
+    ''
+  ).trim();
+}
+
+function getArchidektSection(entry: Record<string, any>): ParsedEntry['section'] {
+  const categories = [
+    ...(Array.isArray(entry.categories) ? entry.categories : []),
+    ...(Array.isArray(entry.category) ? entry.category : []),
+    entry.category,
+  ].map(value => String(value ?? '').toLowerCase());
+
+  if (categories.some(value => value.includes('commander'))) return 'commander';
+  if (categories.some(value => value.includes('sideboard'))) return 'sideboard';
+  if (categories.some(value => value.includes('maybeboard') || value.includes('maybe'))) return 'maybeboard';
+  return 'main';
+}
+
+function normalizeRemoteDeckText(raw: string): string {
+  const textarea = raw.match(/<textarea[^>]*>([\s\S]*?)<\/textarea>/i)?.[1];
+  const source = textarea || raw;
+  return decodeHtmlEntities(source)
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(div|p|tr|li|h\d)>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .split('\n')
+    .map(line => line.replace(/\s+/g, ' ').trim())
+    .filter(line => /^(\d+x?\s+|Commander$|Deck$|Mainboard$|Sideboard$|Maybeboard$|SB:)/i.test(line))
+    .map(line => line.replace(/^SB:\s*/i, 'Sideboard\n'))
+    .join('\n');
+}
+
+function getTitleFromHtml(raw: string): string | undefined {
+  const title = raw.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
+  if (!title) return undefined;
+  return decodeHtmlEntities(title).replace(/\s+-\s+.*$/, '').trim() || undefined;
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ');
 }
 
 /**

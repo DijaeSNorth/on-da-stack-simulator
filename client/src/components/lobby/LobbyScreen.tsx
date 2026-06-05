@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useGameStore } from '../../store/gameStore';
-import { importDecklist, saveDeck } from '../../engine/deckImport';
+import { importDeckFromUrl, importDecklist, saveDeck, type ImportResult } from '../../engine/deckImport';
 import { MultiplayerPanel } from '../multiplayer/MultiplayerPanel';
 import { getActiveProfile } from '../../engine/profileStorage';
 import type { Deck } from '../../types/game';
@@ -14,6 +14,7 @@ interface PlayerSetup {
 
 type GameMode = 'solo' | 'table';
 type PlayerCount = 1 | 2 | 3 | 4 | 5 | 6;
+type ImportMode = 'text' | 'url';
 
 const DEFAULT_COLORS = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899'];
 
@@ -37,11 +38,14 @@ export function LobbyScreen() {
   );
   const [startingLife, setStartingLife] = useState(40);
   const [activePlayerTab, setActivePlayerTab] = useState(0);
+  const [importMode, setImportMode] = useState<ImportMode>('text');
   const [deckText, setDeckText] = useState('');
+  const [deckUrl, setDeckUrl] = useState('');
   const [customLogicText, setCustomLogicText] = useState('');
   const [deckName, setDeckName] = useState('');
   const [importing, setImporting] = useState(false);
-  const [importResult, setImportResult] = useState<{ deck: Deck; errors: string[]; warnings: string[] } | null>(null);
+  const [importError, setImportError] = useState('');
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [houseRules, setHouseRules] = useState<Set<string>>(new Set());
 
   // Auto-populate seat 0 from active profile on mount
@@ -81,11 +85,18 @@ export function LobbyScreen() {
   }
 
   async function handleImport() {
-    if (!deckText.trim()) return;
+    if (importMode === 'text' && !deckText.trim()) return;
+    if (importMode === 'url' && !deckUrl.trim()) return;
     setImporting(true);
+    setImportError('');
+    setImportResult(null);
     try {
-      const result = await importDecklist(deckText, deckName || 'Imported Deck', undefined, undefined, customLogicText);
+      const result = importMode === 'url'
+        ? await importDeckFromUrl(deckUrl, deckName, undefined, customLogicText)
+        : await importDecklist(deckText, deckName || 'Imported Deck', undefined, undefined, customLogicText);
       setImportResult(result);
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : 'Deck import failed.');
     } finally {
       setImporting(false);
     }
@@ -95,7 +106,9 @@ export function LobbyScreen() {
     updatePlayer(activePlayerTab, { deckId: deck.id });
     await store.loadDeck(players[activePlayerTab].id, deck);
     setImportResult(null);
+    setImportError('');
     setDeckText('');
+    setDeckUrl('');
     setCustomLogicText('');
   }
 
@@ -440,7 +453,33 @@ export function LobbyScreen() {
             <div>
               <div style={{ fontSize: 10, color: '#64748b', marginBottom: 6 }}>
                 Import New Deck
-                <span style={{ color: '#334155' }}> · Supports Moxfield, Archidekt, MTGO, CSV</span>
+                <span style={{ color: '#334155' }}> · Supports URL, MTGO, CSV</span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}>
+                {(['url', 'text'] as const).map(mode => (
+                  <button
+                    key={mode}
+                    data-testid={`btn-import-mode-${mode}`}
+                    onClick={() => {
+                      setImportMode(mode);
+                      setImportError('');
+                      setImportResult(null);
+                    }}
+                    style={{
+                      padding: '6px 8px',
+                      background: importMode === mode ? '#1e3a5f' : '#1e293b',
+                      color: importMode === mode ? '#bfdbfe' : '#94a3b8',
+                      border: `1px solid ${importMode === mode ? '#60a5fa' : '#334155'}`,
+                      borderRadius: 5,
+                      cursor: 'pointer',
+                      fontSize: 10,
+                      fontWeight: 700,
+                      textTransform: 'uppercase',
+                    }}
+                  >
+                    {mode === 'url' ? 'Website URL' : 'Paste Text'}
+                  </button>
+                ))}
               </div>
               <input
                 placeholder="Deck name"
@@ -453,21 +492,46 @@ export function LobbyScreen() {
                   fontSize: 11, color: '#e2e8f0', outline: 'none',
                 }}
               />
-              <textarea
-                placeholder="Paste your decklist here...&#10;&#10;Example:&#10;Commander&#10;1 Atraxa, Praetors' Voice&#10;&#10;Deck&#10;1 Sol Ring&#10;1 Command Tower&#10;..."
-                value={deckText}
-                onChange={e => setDeckText(e.target.value)}
-                data-testid="input-decklist"
-                rows={8}
-                style={{
-                  width: '100%', boxSizing: 'border-box',
-                  background: '#1e293b', border: '1px solid #334155',
-                  borderRadius: 5, padding: '8px 10px',
-                  fontSize: 10, color: '#e2e8f0', outline: 'none',
-                  resize: 'vertical', fontFamily: 'monospace',
-                  lineHeight: 1.5,
-                }}
-              />
+              {importMode === 'url' ? (
+                <div>
+                  <input
+                    placeholder="https://www.moxfield.com/decks/... or Archidekt / MTGGoldfish / TappedOut"
+                    value={deckUrl}
+                    onChange={e => setDeckUrl(e.target.value)}
+                    data-testid="input-deck-url"
+                    style={{
+                      width: '100%',
+                      boxSizing: 'border-box',
+                      background: '#1e293b',
+                      border: '1px solid #334155',
+                      borderRadius: 5,
+                      padding: '8px 10px',
+                      fontSize: 11,
+                      color: '#e2e8f0',
+                      outline: 'none',
+                    }}
+                  />
+                  <div style={{ fontSize: 9, color: '#475569', marginTop: 5, lineHeight: 1.35 }}>
+                    Public Moxfield and Archidekt links import directly. MTGGoldfish and TappedOut use their public text exports when available.
+                  </div>
+                </div>
+              ) : (
+                <textarea
+                  placeholder="Paste your decklist here...&#10;&#10;Example:&#10;Commander&#10;1 Atraxa, Praetors' Voice&#10;&#10;Deck&#10;1 Sol Ring&#10;1 Command Tower&#10;..."
+                  value={deckText}
+                  onChange={e => setDeckText(e.target.value)}
+                  data-testid="input-decklist"
+                  rows={8}
+                  style={{
+                    width: '100%', boxSizing: 'border-box',
+                    background: '#1e293b', border: '1px solid #334155',
+                    borderRadius: 5, padding: '8px 10px',
+                    fontSize: 10, color: '#e2e8f0', outline: 'none',
+                    resize: 'vertical', fontFamily: 'monospace',
+                    lineHeight: 1.5,
+                  }}
+                />
+              )}
               <details open={gameMode === 'solo'} style={{ marginTop: 8 }}>
                 <summary style={{
                   fontSize: 10,
@@ -503,7 +567,7 @@ export function LobbyScreen() {
               <button
                 data-testid="btn-import-deck"
                 onClick={handleImport}
-                disabled={importing || !deckText.trim()}
+                disabled={importing || (importMode === 'text' ? !deckText.trim() : !deckUrl.trim())}
                 style={{
                   width: '100%', marginTop: 8, padding: '8px 0',
                   background: importing ? '#374151' : '#1d4ed8',
@@ -512,8 +576,22 @@ export function LobbyScreen() {
                   fontSize: 11, fontWeight: 700,
                 }}
               >
-                {importing ? 'Importing...' : 'Import & Validate'}
+                {importing ? 'Importing...' : importMode === 'url' ? 'Fetch & Validate' : 'Import & Validate'}
               </button>
+              {importError && (
+                <div data-testid="deck-import-error" style={{
+                  marginTop: 6,
+                  fontSize: 10,
+                  color: '#fca5a5',
+                  background: 'rgba(127,29,29,0.22)',
+                  border: '1px solid #7f1d1d',
+                  borderRadius: 5,
+                  padding: '6px 8px',
+                  lineHeight: 1.35,
+                }}>
+                  {importError}
+                </div>
+              )}
             </div>
 
             {/* Import result */}
