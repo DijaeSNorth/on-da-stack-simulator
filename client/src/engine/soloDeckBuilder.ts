@@ -1,4 +1,4 @@
-import type { CustomCardDefinition, CustomTrigger, Deck, DeckLogic, ReplacementEffect } from '../types/game';
+import type { CardDefinition, CustomCardDefinition, CustomTrigger, Deck, DeckLogic, ReplacementEffect } from '../types/game';
 
 export type DeckBuilderSection = 'commander' | 'main' | 'sideboard' | 'maybeboard';
 
@@ -128,6 +128,24 @@ export function upsertCustomCard(deck: Deck, customCard: CustomCardDefinition): 
   });
 }
 
+export function customCardFromDefinition(definition: CardDefinition): CustomCardDefinition {
+  return {
+    id: `scryfall-${definition.id}`,
+    name: definition.name,
+    manaCost: definition.manaCost,
+    cmc: definition.cmc,
+    typeLine: definition.typeLine,
+    oracleText: definition.oracleText,
+    power: definition.power,
+    toughness: definition.toughness,
+    loyalty: definition.loyalty,
+    colors: definition.colors,
+    colorIdentity: definition.colorIdentity,
+    keywords: definition.keywords,
+    imageUrl: definition.imageUrl,
+  };
+}
+
 export function removeCardLogic(deck: Deck, cardName: string, kind: 'note' | 'triggers' | 'replacements' | 'customCard'): Deck {
   const name = cleanName(cardName).toLowerCase();
   const logic = ensureDeckLogic(deck);
@@ -162,7 +180,7 @@ export function serializeDeckLogic(deck: Deck): string {
   for (const [card, note] of Object.entries(logic.cardNotes)) lines.push(`note: ${card} = ${note}`);
   for (const card of logic.customCards) {
     const stats = [card.power, card.toughness].filter(Boolean).join('/');
-    lines.push(`card: ${card.name} | ${card.typeLine || 'Creature'} | ${card.oracleText || ''}${stats ? ` | ${stats}` : ''}`);
+    lines.push(`card: ${card.name} | ${card.typeLine || 'Creature'} | ${singleLine(card.oracleText || '')}${stats ? ` | ${stats}` : ''}`);
   }
   for (const trigger of logic.triggers) lines.push(`trigger: ${trigger.sourceCard} | ${trigger.event} | ${trigger.effect} | ${trigger.reminderText}`);
   for (const replacement of logic.replacementEffects) lines.push(`replacement: ${replacement.sourceCard} | ${replacement.replaces} | ${replacement.replacement}`);
@@ -183,4 +201,8 @@ function setEntry(list: { name: string; count: number }[], rawName: string, coun
 
 function cleanName(name: string): string {
   return name.replace(/\s+/g, ' ').trim();
+}
+
+function singleLine(value: string): string {
+  return value.replace(/\s*\n+\s*/g, ' / ').replace(/\|/g, '/').trim();
 }

@@ -7,6 +7,7 @@
 import {
   addCardTrigger,
   addReplacement,
+  customCardFromDefinition,
   adjustDeckEntry,
   createBlankDeck,
   removeCardLogic,
@@ -16,6 +17,7 @@ import {
   summarizeCardLogic,
   upsertCustomCard,
 } from '../client/src/engine/soloDeckBuilder';
+import type { CardDefinition } from '../client/src/types/game';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -67,5 +69,33 @@ assert(serialized.includes('card: Stack Lab Adept'), 'expected serialized custom
 
 deck = removeCardLogic(deck, 'Sol Ring', 'triggers');
 assert(summarizeCardLogic(deck, 'Sol Ring').triggers === 0, 'expected trigger removal');
+
+const scryfallDef: CardDefinition = {
+  id: 'oracle-test-id',
+  name: 'Oracle Adept',
+  manaCost: { raw: '{1}{U}', cmc: 2, U: 1, generic: 1 },
+  cmc: 2,
+  typeLine: 'Creature - Human Wizard',
+  superTypes: [],
+  cardTypes: ['Creature'],
+  subTypes: ['Human', 'Wizard'],
+  oracleText: 'Whenever you draw your second card each turn, scry 1.\nThen investigate.',
+  power: '2',
+  toughness: '2',
+  colors: ['U'],
+  colorIdentity: ['U'],
+  keywords: [],
+  imageUrl: 'https://cards.scryfall.io/normal/front/test.jpg',
+  isDoubleFaced: false,
+  legalities: { commander: 'legal' },
+};
+
+deck = setDeckEntryCount(deck, 'main', scryfallDef.name, 1);
+deck = upsertCustomCard(deck, customCardFromDefinition(scryfallDef));
+assert(summarizeCardLogic(deck, 'Oracle Adept').customCard, 'expected fetched Scryfall card to become visible custom card logic');
+const scryfallSerialized = serializeDeckLogic(deck);
+assert(scryfallSerialized.includes('card: Oracle Adept | Creature - Human Wizard'), 'expected fetched type line in logic export');
+assert(scryfallSerialized.includes('scry 1. / Then investigate.'), 'expected multiline oracle text to serialize safely on one line');
+assert(!scryfallSerialized.includes('scry 1.\nThen investigate.'), 'expected logic export not to contain embedded oracle newlines');
 
 console.log('PASS solo deck builder edits cards, sections, and visible card logic');

@@ -7,11 +7,13 @@ import {
   loadFavoriteDeckIds,
   saveDeck,
 } from '../../engine/deckImport';
+import { fetchCardByName } from '../../data/cardDatabase';
 import {
   addCardTrigger,
   addReplacement,
   adjustDeckEntry,
   createBlankDeck,
+  customCardFromDefinition,
   removeCardLogic,
   serializeDeckLogic,
   setCardNote,
@@ -54,6 +56,7 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
   const [customType, setCustomType] = useState('Creature');
   const [customOracle, setCustomOracle] = useState('');
   const [customStats, setCustomStats] = useState('');
+  const [cardLookupLoading, setCardLookupLoading] = useState(false);
 
   const cardRows = useMemo(() => {
     const rows = [
@@ -72,10 +75,40 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
     if (!selectedCard && next.cards[0]) setSelectedCard(next.cards[0].name);
   }
 
-  function addCard() {
-    if (!newCardName.trim()) return;
-    replaceDraft(setDeckEntryCount(draft, newCardSection, newCardName, newCardSection === 'commander' ? 1 : newCardCount));
-    setSelectedCard(newCardName.trim());
+  async function syncDeckForTesting(next: Deck) {
+    if (!playerId) return;
+    if (onLoadDeck) {
+      await onLoadDeck(next);
+      return;
+    }
+    if (store.game.config.playerCount === 1 && store.game.status !== 'lobby') {
+      await store.loadDeck(playerId, next);
+    }
+  }
+
+  async function addCard() {
+    const requestedName = newCardName.trim();
+    if (!requestedName || cardLookupLoading) return;
+    setCardLookupLoading(true);
+    setStatus(`Searching Scryfall for "${requestedName}"...`);
+    try {
+      const definition = await fetchCardByName(requestedName);
+      const cardName = definition?.name ?? requestedName;
+      let next = setDeckEntryCount(draft, newCardSection, cardName, newCardSection === 'commander' ? 1 : newCardCount);
+      if (definition) {
+        next = upsertCustomCard(next, customCardFromDefinition(definition));
+      }
+      replaceDraft(next);
+      setSelectedCard(cardName);
+      setExchangeText(exportDeckAsText(next));
+      setLogicText(serializeDeckLogic(next));
+      await syncDeckForTesting(next);
+      setStatus(definition
+        ? `Added ${cardName} from Scryfall and refreshed the test deck.`
+        : `Added ${cardName}; Scryfall did not return a match, so it will test as a placeholder.`);
+    } finally {
+      setCardLookupLoading(false);
+    }
     setNewCardName('');
     setNewCardCount(1);
   }
@@ -175,7 +208,7 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
             data-testid="solo-add-card-name"
             value={newCardName}
             onChange={event => setNewCardName(event.target.value)}
-            onKeyDown={event => { if (event.key === 'Enter') addCard(); }}
+            onKeyDown={event => { if (event.key === 'Enter') void addCard(); }}
             placeholder="Card name"
             style={inputStyle}
           />
@@ -189,7 +222,14 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
           <select value={newCardSection} onChange={event => setNewCardSection(event.target.value as DeckBuilderSection)} style={inputStyle}>
             {Object.entries(SECTION_LABELS).map(([section, label]) => <option key={section} value={section}>{label}</option>)}
           </select>
-          <button data-testid="solo-add-card" onClick={addCard} style={buttonStyle('#14532d', '#86efac')}>Add</button>
+          <button
+            data-testid="solo-add-card"
+            onClick={() => void addCard()}
+            disabled={cardLookupLoading}
+            style={buttonStyle(cardLookupLoading ? '#1e293b' : '#14532d', cardLookupLoading ? '#64748b' : '#86efac')}
+          >
+            {cardLookupLoading ? '...' : 'Add'}
+          </button>
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 5, overflowY: 'auto', maxHeight: compact ? 260 : 390 }}>
