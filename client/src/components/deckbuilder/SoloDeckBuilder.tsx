@@ -1,16 +1,19 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import {
   deleteDeck,
   exportDeckAsText,
+  importDeckFromUrl,
   importDecklist,
   loadFavoriteDeckIds,
+  MAX_STORED_DECKS,
   saveDeck,
 } from '../../engine/deckImport';
-import { fetchCardByName } from '../../data/cardDatabase';
+import { fetchCardAutocomplete, fetchCardByName } from '../../data/cardDatabase';
 import {
   addCardTrigger,
   addReplacement,
+  analyzeDeckBuilderStats,
   adjustDeckEntry,
   createBlankDeck,
   customCardFromDefinition,
@@ -48,6 +51,7 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
   const [newCardSection, setNewCardSection] = useState<DeckBuilderSection>('main');
   const [exchangeText, setExchangeText] = useState('');
   const [logicText, setLogicText] = useState('');
+  const [deckSourceUrl, setDeckSourceUrl] = useState('');
   const [status, setStatus] = useState('');
   const [triggerEvent, setTriggerEvent] = useState('');
   const [triggerEffect, setTriggerEffect] = useState('');
@@ -57,6 +61,10 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
   const [customOracle, setCustomOracle] = useState('');
   const [customStats, setCustomStats] = useState('');
   const [cardLookupLoading, setCardLookupLoading] = useState(false);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [liveSyncEnabled, setLiveSyncEnabled] = useState(true);
+  const [saveLimitOpen, setSaveLimitOpen] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const cardRows = useMemo(() => {
     const rows = [
@@ -69,10 +77,35 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
   }, [draft]);
   const mainCount = draft.cards.reduce((sum, card) => sum + card.count, 0);
   const logicSummary = selectedCard ? summarizeCardLogic(draft, selectedCard) : undefined;
+  const stats = useMemo(() => analyzeDeckBuilderStats(draft), [draft]);
 
-  function replaceDraft(next: Deck) {
+  useEffect(() => {
+    let cancelled = false;
+    const q = newCardName.trim();
+    if (q.length < 2) {
+      setSuggestions([]);
+      return;
+    }
+    const timer = window.setTimeout(async () => {
+      const names = await fetchCardAutocomplete(q);
+      if (!cancelled) setSuggestions(names);
+    }, 180);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [newCardName]);
+
+  function refreshExchange(next: Deck) {
+    setExchangeText(exportDeckAsText(next));
+    setLogicText(serializeDeckLogic(next));
+  }
+
+  function replaceDraft(next: Deck, options: { refreshText?: boolean; sync?: boolean } = {}) {
     setDraft(next);
     if (!selectedCard && next.cards[0]) setSelectedCard(next.cards[0].name);
+    if (options.refreshText) refreshExchange(next);
+    if (options.sync && liveSyncEnabled) void syncDeckForTesting(next);
   }
 
   async function syncDeckForTesting(next: Deck) {
@@ -100,9 +133,9 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
       }
       replaceDraft(next);
       setSelectedCard(cardName);
-      setExchangeText(exportDeckAsText(next));
-      setLogicText(serializeDeckLogic(next));
-      await syncDeckForTesting(next);
+      refreshExchange(next);
+      if (liveSyncEnabled) await syncDeckForTesting(next);
+      setSuggestions([]);
       setStatus(definition
         ? `Added ${cardName} from Scryfall and refreshed the test deck.`
         : `Added ${cardName}; Scryfall did not return a match, so it will test as a placeholder.`);
@@ -114,16 +147,30 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
   }
 
   function handleSave() {
+    if (!savedDecks.some(deck => deck.id === draft.id) && savedDecks.length >= MAX_STORED_DECKS) {
+      setSaveLimitOpen(true);
+      setStatus('Saved deck slots are full. Export this build as a file or delete a stored deck first.');
+      return;
+    }
     saveDeck({ ...draft, importedAt: Date.now() });
     store.loadDecks();
+    setSaveLimitOpen(false);
     setStatus(`Saved "${draft.name}".`);
   }
 
   function handleSaveAs() {
     const copy = { ...draft, id: crypto.randomUUID(), name: `${draft.name} Copy`, importedAt: Date.now() };
+    if (savedDecks.length >= MAX_STORED_DECKS) {
+      setDraft(copy);
+      refreshExchange(copy);
+      setSaveLimitOpen(true);
+      setStatus('Saved deck slots are full. Export this copy as a file or delete a stored deck first.');
+      return;
+    }
     saveDeck(copy);
     store.loadDecks();
     setDraft(copy);
+    refreshExchange(copy);
     setStatus(`Saved as "${copy.name}".`);
   }
 
@@ -140,14 +187,74 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
     const result = await importDecklist(exchangeText, draft.name || 'Solo Lab Import', 'solo-builder', playerId, logicText);
     setDraft(result.deck);
     setSelectedCard(result.deck.commanders[0] ?? result.deck.cards[0]?.name ?? '');
-    store.saveDeckToStorage(result.deck);
+    refreshExchange(result.deck);
+    if (savedDecks.length >= MAX_STORED_DECKS) {
+      setSaveLimitOpen(true);
+    } else {
+      store.saveDeckToStorage(result.deck);
+    }
     setStatus(result.errors.length ? result.errors.join(' ') : `Imported ${result.cardCount} cards. ${result.warnings[0] ?? ''}`);
   }
 
+  async function handleImportUrl() {
+    if (!deckSourceUrl.trim()) return;
+    setStatus('Importing deck URL...');
+    const result = await importDeckFromUrl(deckSourceUrl, draft.name || 'Solo Lab Import', playerId, logicText);
+    setDraft(result.deck);
+    setSelectedCard(result.deck.commanders[0] ?? result.deck.cards[0]?.name ?? '');
+    refreshExchange(result.deck);
+    setDeckSourceUrl('');
+    if (savedDecks.length >= MAX_STORED_DECKS) setSaveLimitOpen(true);
+    if (liveSyncEnabled) await syncDeckForTesting(result.deck);
+    setStatus(result.errors.length ? result.errors.join(' ') : `Imported ${result.cardCount} cards from URL. ${result.warnings[0] ?? ''}`);
+  }
+
   function handleExport() {
-    setExchangeText(exportDeckAsText(draft));
-    setLogicText(serializeDeckLogic(draft));
+    refreshExchange(draft);
     setStatus('Export text refreshed.');
+  }
+
+  function handleExportFile(deckToExport = draft) {
+    const payload = JSON.stringify({
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      source: 'On-Da-Stack Solo Deck Builder',
+      deck: deckToExport,
+      deckText: exportDeckAsText(deckToExport),
+      logicText: serializeDeckLogic(deckToExport),
+    }, null, 2);
+    const blob = new Blob([payload], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${safeFileName(deckToExport.name)}.on-da-stack-deck.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    setSaveLimitOpen(false);
+    setStatus(`Exported "${deckToExport.name}" as a file.`);
+  }
+
+  async function handleImportFile(file: File | undefined) {
+    if (!file) return;
+    const text = await file.text();
+    try {
+      const parsed = JSON.parse(text);
+      const importedDeck = parsed?.deck as Deck | undefined;
+      if (importedDeck?.cards && importedDeck?.name) {
+        setDraft(importedDeck);
+        setSelectedCard(importedDeck.commanders[0] ?? importedDeck.cards[0]?.name ?? '');
+        refreshExchange(importedDeck);
+        if (liveSyncEnabled) await syncDeckForTesting(importedDeck);
+        setStatus(`Loaded "${importedDeck.name}" from file.`);
+        return;
+      }
+    } catch {
+      // Fall back to treating the file as a pasted decklist.
+    }
+    setExchangeText(text);
+    setStatus(`Loaded "${file.name}" into the importer.`);
   }
 
   function handleAddTrigger() {
@@ -157,7 +264,7 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
       event: triggerEvent,
       effect: triggerEffect,
       reminderText: triggerEffect,
-    }));
+    }), { refreshText: true, sync: true });
     setTriggerEvent('');
     setTriggerEffect('');
   }
@@ -168,7 +275,7 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
       sourceCard: selectedCard,
       replaces: replacementEvent,
       replacement: replacementEffect,
-    }));
+    }), { refreshText: true, sync: true });
     setReplacementEvent('');
     setReplacementEffect('');
   }
@@ -182,7 +289,7 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
       oracleText: customOracle,
       power,
       toughness,
-    }));
+    }), { refreshText: true, sync: true });
   }
 
   return (
@@ -203,15 +310,32 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
           onChange={event => replaceDraft({ ...draft, name: event.target.value })}
           style={inputStyle}
         />
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 58px 104px auto', gap: 6 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 58px 104px auto', gap: 6, position: 'relative' }}>
           <input
             data-testid="solo-add-card-name"
             value={newCardName}
             onChange={event => setNewCardName(event.target.value)}
             onKeyDown={event => { if (event.key === 'Enter') void addCard(); }}
-            placeholder="Card name"
+            placeholder="Search Scryfall card"
             style={inputStyle}
           />
+          {suggestions.length > 0 && (
+            <div style={suggestionBoxStyle}>
+              {suggestions.map(name => (
+                <button
+                  key={name}
+                  type="button"
+                  onClick={() => {
+                    setNewCardName(name);
+                    setSuggestions([]);
+                  }}
+                  style={suggestionStyle}
+                >
+                  {name}
+                </button>
+              ))}
+            </div>
+          )}
           <input
             type="number"
             min={1}
@@ -230,6 +354,20 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
           >
             {cardLookupLoading ? '...' : 'Add'}
           </button>
+        </div>
+
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, color: '#94a3b8' }}>
+            <input
+              type="checkbox"
+              checked={liveSyncEnabled}
+              onChange={event => setLiveSyncEnabled(event.target.checked)}
+            />
+            Live test sync
+          </label>
+          <span style={{ fontSize: 10, color: '#475569' }}>
+            {stats.totalCards}/100 cards · Avg MV {stats.avgManaValue.toFixed(2)} · {stats.landCount} lands
+          </span>
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 5, overflowY: 'auto', maxHeight: compact ? 260 : 390 }}>
@@ -269,12 +407,33 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
                   </span>
                 </span>
                 <span style={{ display: 'flex', gap: 3 }}>
-                  <span onClick={event => { event.stopPropagation(); replaceDraft(adjustDeckEntry(draft, row.section, row.name, 1)); }} style={miniButtonStyle}>+</span>
-                  <span onClick={event => { event.stopPropagation(); replaceDraft(adjustDeckEntry(draft, row.section, row.name, -1)); }} style={miniButtonStyle}>-</span>
+                  <span onClick={event => { event.stopPropagation(); replaceDraft(adjustDeckEntry(draft, row.section, row.name, 1), { refreshText: true, sync: true }); }} style={miniButtonStyle}>+</span>
+                  <span onClick={event => { event.stopPropagation(); replaceDraft(adjustDeckEntry(draft, row.section, row.name, -1), { refreshText: true, sync: true }); }} style={miniButtonStyle}>-</span>
                 </span>
               </button>
             );
           })}
+        </div>
+
+        <div style={statsPanelStyle}>
+          <StatChip label="Creatures" value={stats.creatureCount} />
+          <StatChip label="Noncreatures" value={stats.nonCreatureCount} />
+          <StatChip label="Commanders" value={stats.commanderCount} />
+          <StatChip label="Known types" value={Object.keys(stats.typeCounts).length} />
+          <div style={{ gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 3 }}>
+            {Array.from({ length: 8 }, (_, mv) => (
+              <div key={mv} title={`Mana value ${mv === 7 ? '7+' : mv}: ${stats.curve[mv] ?? 0}`} style={{ minWidth: 0 }}>
+                <div style={{ height: 28, display: 'flex', alignItems: 'end', background: '#0b0f12', borderRadius: 3, overflow: 'hidden' }}>
+                  <div style={{
+                    width: '100%',
+                    height: `${Math.min(100, (stats.curve[mv] ?? 0) * 12)}%`,
+                    background: '#0e7490',
+                  }} />
+                </div>
+                <div style={{ fontSize: 8, color: '#64748b', textAlign: 'center' }}>{mv === 7 ? '7+' : mv}</div>
+              </div>
+            ))}
+          </div>
         </div>
 
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
@@ -282,7 +441,33 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
           <button data-testid="solo-save-as-deck" onClick={handleSaveAs} style={buttonStyle('#312e81', '#c4b5fd')}>Save As</button>
           <button data-testid="solo-load-deck" onClick={handleLoad} style={buttonStyle('#14532d', '#86efac')}>{loadLabel}</button>
           <button onClick={handleExport} style={buttonStyle('#1e293b', '#fbbf24')}>Export</button>
+          <button onClick={() => handleExportFile()} style={buttonStyle('#3f2a08', '#fbbf24')}>Export File</button>
+          <button onClick={() => fileInputRef.current?.click()} style={buttonStyle('#0f172a', '#93c5fd')}>Import File</button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json,.txt,.dec,.dek"
+            onChange={event => void handleImportFile(event.target.files?.[0])}
+            style={{ display: 'none' }}
+          />
         </div>
+        {saveLimitOpen && (
+          <div style={{
+            fontSize: 10,
+            color: '#fde68a',
+            background: 'rgba(113,63,18,0.28)',
+            border: '1px solid #713f12',
+            borderRadius: 6,
+            padding: 8,
+            display: 'flex',
+            gap: 8,
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}>
+            <span>Saved deck slots are full. Keep building by exporting this deck as a file.</span>
+            <button onClick={() => handleExportFile()} style={buttonStyle('#713f12', '#fde68a')}>Export</button>
+          </div>
+        )}
         {status && <div style={{ fontSize: 10, color: '#93c5fd' }}>{status}</div>}
         {savedDecks.length > 0 && (
           <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
@@ -317,7 +502,7 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
           <>
             <textarea
               value={logicSummary?.note ?? ''}
-              onChange={event => replaceDraft(setCardNote(draft, selectedCard, event.target.value))}
+              onChange={event => replaceDraft(setCardNote(draft, selectedCard, event.target.value), { refreshText: true })}
               placeholder="Card note or table reminder"
               rows={2}
               style={textareaStyle}
@@ -339,10 +524,10 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
             </div>
             <textarea value={customOracle} onChange={event => setCustomOracle(event.target.value)} placeholder="Custom oracle text for this card" rows={3} style={textareaStyle} />
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              <button onClick={() => replaceDraft(removeCardLogic(draft, selectedCard, 'note'))} style={buttonStyle('#1e293b', '#94a3b8')}>Clear Note</button>
-              <button onClick={() => replaceDraft(removeCardLogic(draft, selectedCard, 'triggers'))} style={buttonStyle('#1e293b', '#94a3b8')}>Clear Triggers</button>
-              <button onClick={() => replaceDraft(removeCardLogic(draft, selectedCard, 'replacements'))} style={buttonStyle('#1e293b', '#94a3b8')}>Clear Replacements</button>
-              <button onClick={() => replaceDraft(removeCardLogic(draft, selectedCard, 'customCard'))} style={buttonStyle('#1e293b', '#94a3b8')}>Clear Custom</button>
+              <button onClick={() => replaceDraft(removeCardLogic(draft, selectedCard, 'note'), { refreshText: true, sync: true })} style={buttonStyle('#1e293b', '#94a3b8')}>Clear Note</button>
+              <button onClick={() => replaceDraft(removeCardLogic(draft, selectedCard, 'triggers'), { refreshText: true, sync: true })} style={buttonStyle('#1e293b', '#94a3b8')}>Clear Triggers</button>
+              <button onClick={() => replaceDraft(removeCardLogic(draft, selectedCard, 'replacements'), { refreshText: true, sync: true })} style={buttonStyle('#1e293b', '#94a3b8')}>Clear Replacements</button>
+              <button onClick={() => replaceDraft(removeCardLogic(draft, selectedCard, 'customCard'), { refreshText: true, sync: true })} style={buttonStyle('#1e293b', '#94a3b8')}>Clear Custom</button>
             </div>
           </>
         ) : (
@@ -352,6 +537,15 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
         <div style={headerStyle}>
           <span>Import / Export</span>
           <button onClick={handleImport} style={buttonStyle('#1d4ed8', '#dbeafe')}>Import Text</button>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 6 }}>
+          <input
+            value={deckSourceUrl}
+            onChange={event => setDeckSourceUrl(event.target.value)}
+            placeholder="Moxfield / Archidekt / MTGGoldfish / TappedOut URL"
+            style={inputStyle}
+          />
+          <button onClick={() => void handleImportUrl()} style={buttonStyle('#123642', '#67e8f9')}>Import URL</button>
         </div>
         <textarea
           data-testid="solo-import-export-text"
@@ -439,6 +633,66 @@ function chipStyle(active: boolean): React.CSSProperties {
     whiteSpace: 'nowrap',
   };
 }
+
+function StatChip({ label, value }: { label: string; value: number | string }) {
+  return (
+    <div style={{
+      background: '#0b0f12',
+      border: '1px solid #26323a',
+      borderRadius: 5,
+      padding: '5px 6px',
+      minWidth: 0,
+    }}>
+      <div style={{ fontSize: 9, color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{label}</div>
+      <div style={{ fontSize: 13, color: '#e2e8f0', fontWeight: 800 }}>{value}</div>
+    </div>
+  );
+}
+
+function safeFileName(value: string): string {
+  return (value || 'solo-lab-deck')
+    .replace(/[<>:"/\\|?*]+/g, '-')
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .slice(0, 80)
+    .replace(/^-|-$/g, '') || 'solo-lab-deck';
+}
+
+const suggestionBoxStyle: React.CSSProperties = {
+  position: 'absolute',
+  top: 34,
+  left: 0,
+  width: 'min(100%, 330px)',
+  zIndex: 20,
+  background: '#0b0f12',
+  border: '1px solid #334155',
+  borderRadius: 6,
+  boxShadow: '0 12px 28px rgba(0,0,0,0.35)',
+  overflow: 'hidden',
+};
+
+const suggestionStyle: React.CSSProperties = {
+  width: '100%',
+  display: 'block',
+  textAlign: 'left',
+  background: 'transparent',
+  border: 'none',
+  borderBottom: '1px solid #1e293b',
+  color: '#e2e8f0',
+  padding: '7px 9px',
+  cursor: 'pointer',
+  fontSize: 11,
+};
+
+const statsPanelStyle: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+  gap: 5,
+  background: 'rgba(255,255,255,0.025)',
+  border: '1px solid #1e293b',
+  borderRadius: 7,
+  padding: 7,
+};
 
 const miniButtonStyle: React.CSSProperties = {
   border: '1px solid #334155',

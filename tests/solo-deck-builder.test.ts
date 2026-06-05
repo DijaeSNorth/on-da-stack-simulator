@@ -7,6 +7,7 @@
 import {
   addCardTrigger,
   addReplacement,
+  analyzeDeckBuilderStats,
   customCardFromDefinition,
   adjustDeckEntry,
   createBlankDeck,
@@ -97,5 +98,11 @@ const scryfallSerialized = serializeDeckLogic(deck);
 assert(scryfallSerialized.includes('card: Oracle Adept | Creature - Human Wizard'), 'expected fetched type line in logic export');
 assert(scryfallSerialized.includes('scry 1. / Then investigate.'), 'expected multiline oracle text to serialize safely on one line');
 assert(!scryfallSerialized.includes('scry 1.\nThen investigate.'), 'expected logic export not to contain embedded oracle newlines');
+
+const stats = analyzeDeckBuilderStats(deck);
+assert(stats.totalCards >= 9, 'expected stats to count deck cards');
+assert(stats.creatureCount >= 1, 'expected stats to count fetched/custom creatures');
+assert(stats.curve[2] >= 1, 'expected stats to include Scryfall mana curve data');
+assert(stats.colorPips.U >= 1, 'expected stats to include Scryfall color identity data');
 
 console.log('PASS solo deck builder edits cards, sections, and visible card logic');

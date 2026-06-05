@@ -2,6 +2,18 @@ import type { CardDefinition, CustomCardDefinition, CustomTrigger, Deck, DeckLog
 
 export type DeckBuilderSection = 'commander' | 'main' | 'sideboard' | 'maybeboard';
 
+export interface DeckBuilderStats {
+  totalCards: number;
+  commanderCount: number;
+  landCount: number;
+  creatureCount: number;
+  nonCreatureCount: number;
+  avgManaValue: number;
+  curve: Record<number, number>;
+  colorPips: Record<string, number>;
+  typeCounts: Record<string, number>;
+}
+
 export function createBlankDeck(name = 'Untitled Solo Deck'): Deck {
   return {
     id: crypto.randomUUID(),
@@ -188,6 +200,54 @@ export function serializeDeckLogic(deck: Deck): string {
   return lines.join('\n');
 }
 
+export function analyzeDeckBuilderStats(deck: Deck): DeckBuilderStats {
+  const customCards = new Map((deck.logicFile?.customCards ?? []).map(card => [card.name.toLowerCase(), card]));
+  const curve: Record<number, number> = {};
+  const colorPips: Record<string, number> = { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 };
+  const typeCounts: Record<string, number> = {};
+  let totalManaValue = 0;
+  let manaValueCards = 0;
+  let landCount = 0;
+  let creatureCount = 0;
+
+  const commanderOnlyEntries = deck.commanders
+    .filter(name => !deck.cards.some(card => card.name.toLowerCase() === name.toLowerCase()))
+    .map(name => ({ name, count: 1 }));
+  const entries = [...deck.cards, ...commanderOnlyEntries];
+
+  for (const entry of entries) {
+    const card = customCards.get(entry.name.toLowerCase());
+    const typeLine = card?.typeLine ?? '';
+    const primaryType = getPrimaryType(typeLine);
+    typeCounts[primaryType] = (typeCounts[primaryType] ?? 0) + entry.count;
+    if (/\bLand\b/i.test(typeLine)) landCount += entry.count;
+    if (/\bCreature\b/i.test(typeLine)) creatureCount += entry.count;
+
+    if (typeof card?.cmc === 'number') {
+      const mv = Math.max(0, Math.min(7, Math.floor(card.cmc)));
+      curve[mv] = (curve[mv] ?? 0) + entry.count;
+      totalManaValue += card.cmc * entry.count;
+      manaValueCards += entry.count;
+    }
+
+    const colors = card?.colorIdentity ?? card?.colors ?? [];
+    for (const color of colors) colorPips[color] = (colorPips[color] ?? 0) + entry.count;
+  }
+
+  const totalCards = deck.cards.reduce((sum, card) => sum + card.count, 0) + commanderOnlyEntries.length;
+  return {
+    totalCards,
+    commanderCount: deck.commanders.length,
+    landCount,
+    creatureCount,
+    nonCreatureCount: Math.max(0, totalCards - landCount - creatureCount),
+    avgManaValue: manaValueCards ? totalManaValue / manaValueCards : 0,
+    curve,
+    colorPips,
+    typeCounts,
+  };
+}
+
 function withLogic(deck: Deck, logicFile: DeckLogic): Deck {
   return { ...deck, logicFile: { ...logicFile, deckId: deck.id }, importedAt: Date.now() };
 }
@@ -205,4 +265,9 @@ function cleanName(name: string): string {
 
 function singleLine(value: string): string {
   return value.replace(/\s*\n+\s*/g, ' / ').replace(/\|/g, '/').trim();
+}
+
+function getPrimaryType(typeLine: string): string {
+  const candidates = ['Creature', 'Land', 'Artifact', 'Enchantment', 'Planeswalker', 'Instant', 'Sorcery', 'Battle'];
+  return candidates.find(type => new RegExp(`\\b${type}\\b`, 'i').test(typeLine)) ?? 'Unknown';
 }

@@ -116,6 +116,21 @@ export async function fetchCardByName(name: string): Promise<CardDefinition | nu
   return request;
 }
 
+export async function fetchCardAutocomplete(query: string): Promise<string[]> {
+  const q = query.trim();
+  if (q.length < 2) return [];
+  try {
+    const res = await fetch(`${SCRYFALL_BASE}/cards/autocomplete?q=${encodeURIComponent(q)}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return Array.isArray(data.data)
+      ? data.data.filter((name: unknown): name is string => typeof name === 'string').slice(0, 10)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function fetchCardsByNames(names: string[]): Promise<Map<string, CardDefinition>> {
   const result = new Map<string, CardDefinition>();
   const toBatch: string[] = [];
