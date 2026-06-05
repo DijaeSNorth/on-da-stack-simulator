@@ -41,8 +41,9 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
 
-  const connected = multiplayer.status === 'host' || multiplayer.status === 'joined';
+  const connected = multiplayer.status === 'host' || multiplayer.status === 'joined' || multiplayer.status === 'migrating';
   const isHost = multiplayer.status === 'host';
+  const isMigrating = multiplayer.status === 'migrating';
   const isSpectator = multiplayer.isSpectator;
 
   // Init listeners once
@@ -197,6 +198,11 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
                   <span style={{ fontSize: 11, color: '#475569', marginLeft: 8 }}>
                     {p.isSpectator ? '👁 Spectating' : `Seat ${p.seatIndex + 1}`}
                   </span>
+                  {p.connectionQuality && (
+                    <span style={{ fontSize: 9, color: '#64748b', marginLeft: 6 }}>
+                      {p.connectionQuality.rttMs}ms
+                    </span>
+                  )}
                   {p.peerId === multiplayer.peerId && (
                     <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 4px', borderRadius: 3, background: '#1e3a5f', color: '#60a5fa', marginLeft: 6 }}>YOU</span>
                   )}
@@ -214,7 +220,9 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
           fontSize: 11, color: '#475569', display: 'flex', alignItems: 'center', gap: 6,
         }}>
           <div style={{ width: 6, height: 6, borderRadius: '50%', background: isSpectator ? '#a78bfa' : '#4ade80' }} />
-          {isHost
+          {isMigrating
+            ? 'Host migration in progress - reconnecting to the strongest available player.'
+            : isHost
             ? 'Hosting — game state syncs to all joined players in real time.'
             : isSpectator
               ? 'Spectating — lobby was full when you joined. You can see all game data.'

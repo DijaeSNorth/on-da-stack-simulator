@@ -363,7 +363,13 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       },
       // onStatusChange
       (status: SyncStatus) => {
-        set(s => ({ multiplayer: { ...s.multiplayer, status } }));
+        set(s => ({
+          multiplayer: {
+            ...s.multiplayer,
+            status,
+            isHost: status === 'host' ? true : status === 'joined' || status === 'migrating' ? false : s.multiplayer.isHost,
+          },
+        }));
       },
     );
   },

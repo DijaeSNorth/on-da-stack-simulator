@@ -22,8 +22,9 @@
  *   { type: 'PRESENCE', payload: RoomPresence }
  *   { type: 'GAME_STATE', payload: GameState }
  *   { type: 'PRESENCE_BROADCAST', payload: Record<string, RoomPresence> }
- *   { type: 'PING' }
- *   { type: 'PONG' }
+ *   { type: 'HOST_MIGRATION', payload: HostMigrationNotice }
+ *   { type: 'PING', payload: { sentAt: number } }
+ *   { type: 'PONG', payload: { sentAt: number } }
  */
 
 import Peer, { type DataConnection } from 'peerjs';
@@ -40,8 +41,25 @@ export interface RoomPresence {
   avatarImage?: PlayerAvatarImage;
   seatIndex: number;   // -1 = spectator
   isSpectator: boolean;
+  isHostPeer?: boolean;
   online: boolean;
   lastSeen: number;
+  connectionQuality?: ConnectionQuality;
+}
+
+export interface ConnectionQuality {
+  rttMs: number;
+  score: number;
+  samples: number;
+  updatedAt: number;
+}
+
+interface HostMigrationNotice {
+  candidatePeerId: string;
+  reason: 'host-disconnected' | 'host-quality';
+  roomCode: string;
+  game: GameState | null;
+  peers: Record<string, RoomPresence>;
 }
 
 export interface RoomMeta {
@@ -57,6 +75,7 @@ export type SyncStatus =
   | 'connected'
   | 'host'
   | 'joined'
+  | 'migrating'
   | 'error';
 
 // ─── PeerJS config ────────────────────────────────────────────────────────────
@@ -74,6 +93,7 @@ const CONNECT_TIMEOUT_MS = 12000;
 
 // Heartbeat interval to keep DataChannels alive through NAT (ms)
 const HEARTBEAT_MS = 20000;
+const HOST_MIGRATION_DELAY_MS = 1800;
 
 // ─── Internal state ───────────────────────────────────────────────────────────
 
@@ -83,6 +103,7 @@ let _peerId: string | null = null;
 let _isHost = false;
 let _status: SyncStatus = 'disconnected';
 let _heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let _migrationTimer: ReturnType<typeof setTimeout> | null = null;
 
 // Host-side: map of peerId → DataConnection for each joiner
 const _connections: Map<string, DataConnection> = new Map();
@@ -125,6 +146,61 @@ function hostPeerId(code: string): string {
   return `${ROOM_PREFIX}${code}`;
 }
 
+function migratedHostPeerId(code: string, candidatePeerId: string): string {
+  return `${ROOM_PREFIX}${code}-host-${candidatePeerId.slice(0, 12)}`;
+}
+
+function scoreForRtt(rttMs: number): number {
+  if (!Number.isFinite(rttMs)) return 0;
+  return Math.max(0, Math.round(1000 - Math.min(rttMs, 1000)));
+}
+
+function updatePeerQuality(peerId: string, rttMs: number): void {
+  const existing = _peers.get(peerId);
+  if (!existing) return;
+  const previous = existing.connectionQuality;
+  const samples = Math.min((previous?.samples ?? 0) + 1, 20);
+  const smoothed = previous
+    ? Math.round((previous.rttMs * (samples - 1) + rttMs) / samples)
+    : Math.round(rttMs);
+  _peers.set(peerId, {
+    ...existing,
+    lastSeen: Date.now(),
+    connectionQuality: {
+      rttMs: smoothed,
+      score: scoreForRtt(smoothed),
+      samples,
+      updatedAt: Date.now(),
+    },
+  });
+}
+
+function markKnownHostOffline(): void {
+  for (const [peerId, presence] of _peers.entries()) {
+    if (presence.isHostPeer) {
+      _peers.set(peerId, { ...presence, online: false, lastSeen: Date.now() });
+    }
+  }
+}
+
+export function chooseMigrationHost(
+  peers: Record<string, RoomPresence>,
+  currentPeerId?: string | null,
+): RoomPresence | null {
+  const candidates = Object.values(peers)
+    .filter(peer => peer.online && !peer.isSpectator && peer.seatIndex >= 0);
+  if (candidates.length === 0) return null;
+  return candidates.sort((a, b) => {
+    const scoreDelta = (b.connectionQuality?.score ?? 0) - (a.connectionQuality?.score ?? 0);
+    if (scoreDelta !== 0) return scoreDelta;
+    const selfDelta = Number(b.peerId === currentPeerId) - Number(a.peerId === currentPeerId);
+    if (selfDelta !== 0) return selfDelta;
+    const seatDelta = a.seatIndex - b.seatIndex;
+    if (seatDelta !== 0) return seatDelta;
+    return a.peerId.localeCompare(b.peerId);
+  })[0];
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
 export function initMultiplayer(
@@ -147,6 +223,201 @@ export function getSyncStatus(): SyncStatus  { return _status; }
 /** Always true — P2P needs no env vars or server config */
 export function isConfigured(): boolean { return true; }
 
+function attachHostConnectionHandlers(peer: Peer): void {
+  peer.on('connection', (conn: DataConnection) => {
+    _connections.set(conn.peer, conn);
+
+    conn.on('open', () => {
+      if (_latestGame) conn.send({ type: 'GAME_STATE', payload: _latestGame });
+      broadcastPresence();
+    });
+
+    conn.on('data', (raw: unknown) => {
+      const msg = raw as { type: string; payload?: unknown };
+      if (msg.type === 'PRESENCE') {
+        const presence = msg.payload as RoomPresence;
+
+        const takenSeats = new Set(
+          [..._peers.values()]
+            .filter(p => p.online && !p.isSpectator && p.peerId !== presence.peerId)
+            .map(p => p.seatIndex),
+        );
+        const isSpectator =
+          presence.isSpectator ||
+          takenSeats.has(presence.seatIndex);
+
+        _peers.set(presence.peerId, {
+          ...presence,
+          isHostPeer: false,
+          isSpectator,
+          seatIndex: isSpectator ? -1 : presence.seatIndex,
+          online: true,
+          lastSeen: Date.now(),
+        });
+
+        broadcastPresence();
+      }
+      if (msg.type === 'PING') {
+        const payload = msg.payload as { sentAt?: number } | undefined;
+        conn.send({ type: 'PONG', payload: { sentAt: payload?.sentAt ?? Date.now() } });
+      }
+      if (msg.type === 'PONG') {
+        const payload = msg.payload as { sentAt?: number } | undefined;
+        if (typeof payload?.sentAt === 'number') {
+          updatePeerQuality(conn.peer, Date.now() - payload.sentAt);
+          broadcastPresence();
+        }
+      }
+    });
+
+    conn.on('close', () => {
+      const p = _peers.get(conn.peer);
+      if (p) _peers.set(conn.peer, { ...p, online: false });
+      _connections.delete(conn.peer);
+      broadcastPresence();
+    });
+
+    conn.on('error', () => {
+      _connections.delete(conn.peer);
+    });
+  });
+}
+
+function startHostMigration(reason: HostMigrationNotice['reason'] = 'host-disconnected'): void {
+  if (_isHost || !_roomCode || !_peerId) return;
+  if (_migrationTimer) return;
+  setStatus('migrating');
+  markKnownHostOffline();
+
+  _migrationTimer = setTimeout(() => {
+    _migrationTimer = null;
+    const peerRecord = Object.fromEntries(_peers);
+    const candidate = chooseMigrationHost(peerRecord, _peerId);
+    if (!candidate) {
+      setStatus('disconnected');
+      return;
+    }
+    if (candidate.peerId === _peerId) {
+      becomeMigratedHost(reason);
+    } else {
+      connectToMigratedHost(candidate.peerId);
+    }
+  }, HOST_MIGRATION_DELAY_MS);
+}
+
+function becomeMigratedHost(reason: HostMigrationNotice['reason']): void {
+  if (!_roomCode || !_peerId) return;
+  _isHost = true;
+  _stopHeartbeat();
+  if (_hostConn) { _hostConn.close(); _hostConn = null; }
+  _connections.clear();
+  if (_peer) { _peer.destroy(); _peer = null; }
+
+  for (const [peerId, presence] of _peers.entries()) {
+    _peers.set(peerId, { ...presence, isHostPeer: peerId === _peerId });
+  }
+  const self = _peers.get(_peerId);
+  if (self) _peers.set(_peerId, { ...self, isHostPeer: true, online: true, lastSeen: Date.now() });
+
+  const peer = new Peer(migratedHostPeerId(_roomCode, _peerId), PEER_CONFIG);
+  _peer = peer;
+  attachHostConnectionHandlers(peer);
+
+  peer.on('open', () => {
+    setStatus('host');
+    const notice: HostMigrationNotice = {
+      candidatePeerId: _peerId!,
+      reason,
+      roomCode: _roomCode!,
+      game: _latestGame,
+      peers: Object.fromEntries(_peers),
+    };
+    for (const conn of _connections.values()) {
+      if (conn.open) conn.send({ type: 'HOST_MIGRATION', payload: notice });
+    }
+    broadcastPresence();
+    if (_latestGame) broadcastState(_latestGame);
+    _startHeartbeat();
+  });
+
+  peer.on('error', () => {
+    setStatus('error');
+  });
+}
+
+function connectToMigratedHost(candidatePeerId: string): void {
+  if (!_peer || !_roomCode || !_peerId) return;
+  const self = _peers.get(_peerId);
+  const conn = _peer.connect(migratedHostPeerId(_roomCode, candidatePeerId), {
+    reliable: true,
+    serialization: 'json',
+  });
+  _hostConn = conn;
+
+  conn.on('open', () => {
+    conn.send({
+      type: 'PRESENCE',
+      payload: {
+        ...(self ?? {}),
+        peerId: _peerId!,
+        online: true,
+        lastSeen: Date.now(),
+      },
+    });
+    setStatus('joined');
+    _startHeartbeat();
+  });
+
+  conn.on('data', (raw: unknown) => handleJoinerMessage(conn, raw));
+  conn.on('close', () => startHostMigration('host-disconnected'));
+  conn.on('error', () => startHostMigration('host-disconnected'));
+}
+
+function handleJoinerMessage(conn: DataConnection, raw: unknown): void {
+  const msg = raw as { type: string; payload?: unknown };
+
+  if (msg.type === 'PRESENCE_BROADCAST') {
+    const players = msg.payload as Record<string, RoomPresence>;
+    _peers.clear();
+    for (const [peerId, presence] of Object.entries(players)) {
+      _peers.set(peerId, presence);
+    }
+    _onPresenceUpdate?.(players);
+  }
+
+  if (msg.type === 'GAME_STATE') {
+    _latestGame = msg.payload as GameState;
+    if (_latestGame) _onGameUpdate?.(_latestGame);
+  }
+
+  if (msg.type === 'HOST_MIGRATION') {
+    const notice = msg.payload as HostMigrationNotice;
+    _latestGame = notice.game;
+    _peers.clear();
+    for (const [peerId, presence] of Object.entries(notice.peers)) {
+      _peers.set(peerId, presence);
+    }
+    if (notice.candidatePeerId === _peerId) {
+      becomeMigratedHost(notice.reason);
+    } else {
+      connectToMigratedHost(notice.candidatePeerId);
+    }
+  }
+
+  if (msg.type === 'PONG') {
+    const payload = msg.payload as { sentAt?: number } | undefined;
+    if (typeof payload?.sentAt === 'number' && _peerId) {
+      updatePeerQuality(_peerId, Date.now() - payload.sentAt);
+      updatePresence({ connectionQuality: _peers.get(_peerId)?.connectionQuality });
+    }
+  }
+
+  if (msg.type === 'PING') {
+    const payload = msg.payload as { sentAt?: number } | undefined;
+    conn.send({ type: 'PONG', payload: { sentAt: payload?.sentAt ?? Date.now() } });
+  }
+}
+
 // ─── Create Room (host) ───────────────────────────────────────────────────────
 
 export async function createRoom(
@@ -166,6 +437,7 @@ export async function createRoom(
   // Register our own presence
   _peers.set(_peerId, {
     ...hostPresence,
+    isHostPeer: true,
     isSpectator: false,
     online: true,
     lastSeen: Date.now(),
@@ -221,6 +493,7 @@ export async function createRoom(
 
           _peers.set(presence.peerId, {
             ...presence,
+            isHostPeer: false,
             isSpectator,
             seatIndex: isSpectator ? -1 : presence.seatIndex,
             online: true,
@@ -230,7 +503,15 @@ export async function createRoom(
           broadcastPresence();
         }
         if (msg.type === 'PING') {
-          conn.send({ type: 'PONG' });
+          const payload = msg.payload as { sentAt?: number } | undefined;
+          conn.send({ type: 'PONG', payload: { sentAt: payload?.sentAt ?? Date.now() } });
+        }
+        if (msg.type === 'PONG') {
+          const payload = msg.payload as { sentAt?: number } | undefined;
+          if (typeof payload?.sentAt === 'number') {
+            updatePeerQuality(conn.peer, Date.now() - payload.sentAt);
+            broadcastPresence();
+          }
         }
       });
 
@@ -291,6 +572,11 @@ export async function joinRoom(
       conn.on('data', (raw: unknown) => {
         const msg = raw as { type: string; payload: unknown };
 
+        if (msg.type === 'HOST_MIGRATION') {
+          handleJoinerMessage(conn, raw);
+          return;
+        }
+
         if (msg.type === 'PRESENCE_BROADCAST') {
           const players = msg.payload as Record<string, RoomPresence>;
           _peers.clear();
@@ -320,26 +606,36 @@ export async function joinRoom(
         }
 
         if (msg.type === 'GAME_STATE') {
-          _onGameUpdate?.(msg.payload as GameState);
+          _latestGame = msg.payload as GameState;
+          _onGameUpdate?.(_latestGame);
         }
 
         if (msg.type === 'PONG') {
-          // heartbeat acknowledged
+          const payload = msg.payload as { sentAt?: number } | undefined;
+          if (typeof payload?.sentAt === 'number' && _peerId) {
+            updatePeerQuality(_peerId, Date.now() - payload.sentAt);
+            updatePresence({ connectionQuality: _peers.get(_peerId)?.connectionQuality });
+          }
         }
 
         if (msg.type === 'PING') {
-          conn.send({ type: 'PONG' });
+          const payload = msg.payload as { sentAt?: number } | undefined;
+          conn.send({ type: 'PONG', payload: { sentAt: payload?.sentAt ?? Date.now() } });
         }
       });
 
       conn.on('close', () => {
-        setStatus('disconnected');
+        startHostMigration('host-disconnected');
       });
 
       conn.on('error', (err: Error) => {
         clearTimeout(timeout);
-        setStatus('error');
-        reject(new Error(`Connection error: ${err.message}`));
+        if ((conn as any)._joinResolved === true) {
+          startHostMigration('host-disconnected');
+        } else {
+          setStatus('error');
+          reject(new Error(`Connection error: ${err.message}`));
+        }
       });
     });
 
@@ -394,6 +690,7 @@ export function updatePresence(fields: Partial<RoomPresence>): void {
 
 export function leaveRoom(): void {
   _stopHeartbeat();
+  if (_migrationTimer) { clearTimeout(_migrationTimer); _migrationTimer = null; }
   if (_hostConn) { _hostConn.close(); _hostConn = null; }
   for (const conn of _connections.values()) conn.close();
   _connections.clear();
@@ -411,12 +708,14 @@ export function leaveRoom(): void {
 function _startHeartbeat() {
   _stopHeartbeat();
   _heartbeatTimer = setInterval(() => {
+    const ping = { type: 'PING', payload: { sentAt: Date.now() } };
     if (_isHost) {
       for (const conn of _connections.values()) {
-        if (conn.open) conn.send({ type: 'PING' });
+        if (conn.open) conn.send(ping);
       }
     } else {
-      if (_hostConn?.open) _hostConn.send({ type: 'PING' });
+      if (_hostConn?.open) _hostConn.send(ping);
+      else startHostMigration('host-disconnected');
     }
   }, HEARTBEAT_MS);
 }

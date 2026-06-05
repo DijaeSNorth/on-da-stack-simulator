@@ -12,17 +12,18 @@ export function MultiplayerBadge() {
   const store = useGameStore();
   const { multiplayer } = store;
 
-  const connected = multiplayer.status === 'host' || multiplayer.status === 'joined';
+  const connected = multiplayer.status === 'host' || multiplayer.status === 'joined' || multiplayer.status === 'migrating';
   if (!connected) return null;
 
   const peers = Object.values(multiplayer.peers);
   const onlineCount = peers.filter(p => p.online).length;
   const isHost = multiplayer.status === 'host';
+  const isMigrating = multiplayer.status === 'migrating';
   const isSpectator = multiplayer.isSpectator;
 
-  const borderColor = isSpectator ? '#4c1d95' : isHost ? '#166534' : '#1e3a5f';
-  const bgColor     = isSpectator ? '#1a0a2e' : isHost ? '#0f2d1a' : '#0f1a2d';
-  const textColor   = isSpectator ? '#a78bfa' : isHost ? '#4ade80' : '#60a5fa';
+  const borderColor = isMigrating ? '#92400e' : isSpectator ? '#4c1d95' : isHost ? '#166534' : '#1e3a5f';
+  const bgColor     = isMigrating ? '#2b1708' : isSpectator ? '#1a0a2e' : isHost ? '#0f2d1a' : '#0f1a2d';
+  const textColor   = isMigrating ? '#fbbf24' : isSpectator ? '#a78bfa' : isHost ? '#4ade80' : '#60a5fa';
 
   return (
     <button
