@@ -22,10 +22,11 @@ import {
   loadProfiles, saveProfile, deleteProfile,
   getActiveProfileId, setActiveProfileId, clearActiveProfile, getActiveProfile,
   createProfile, fetchCardPrints, setArtOverride, removeArtOverride,
+  ACHIEVEMENT_OPTIONS, PROFILE_LIMITS,
   type PlayerProfile, type ScryfallPrint, type ArtOverride,
 } from '../../engine/profileStorage';
 import { PlayerAvatar } from './PlayerAvatar';
-import type { PlayerAvatarImage } from '../../types/game';
+import type { Deck, PlayerAvatarImage } from '../../types/game';
 
 const MAX_AVATAR_SOURCE_BYTES = 2 * 1024 * 1024;
 const MAX_AVATAR_STORED_BYTES = 96 * 1024;
@@ -143,6 +144,11 @@ function MtgCardFrame({ profile, onChange }: {
   onChange: (p: PlayerProfile) => void;
 }) {
   const { frame, symbols, textColor } = colorToManaSymbols(profile.color);
+  const card = profile.card;
+  const artUrl = card.artUrl || profile.avatarImage?.url;
+  const cardSymbols = card.manaCost.match(/\{[^}]+\}/g) ?? symbols;
+  const updateCard = (update: Partial<PlayerProfile['card']>) =>
+    onChange({ ...profile, card: { ...profile.card, ...update } });
 
   // Derive creature stats from profile settings
   const power = profile.assistantMode === 'ON' ? '5' : profile.assistantMode === 'LIMITED' ? '3' : '1';
@@ -185,10 +191,10 @@ function MtgCardFrame({ profile, onChange }: {
       }}>
         <input
           data-testid="profile-name-input"
-          value={profile.displayName}
-          onChange={e => onChange({ ...profile, displayName: e.target.value })}
-          maxLength={28}
-          placeholder="Card Name"
+          value={card.name}
+          onChange={e => updateCard({ name: e.target.value.slice(0, PROFILE_LIMITS.cardName) })}
+          maxLength={PROFILE_LIMITS.cardName}
+          placeholder="Card name"
           style={{
             background: 'transparent',
             border: 'none',
@@ -204,7 +210,7 @@ function MtgCardFrame({ profile, onChange }: {
         />
         {/* Mana symbols */}
         <div style={{ display: 'flex', gap: 2, flexShrink: 0 }}>
-          {symbols.map((s, i) => <ManaSymbol key={i} sym={s} />)}
+          {cardSymbols.slice(0, 5).map((s, i) => <ManaSymbol key={i} sym={s} />)}
         </div>
       </div>
 
@@ -220,10 +226,10 @@ function MtgCardFrame({ profile, onChange }: {
           ? `radial-gradient(ellipse at 30% 40%, ${profile.color}cc, ${profile.color}44 60%, #0a0a1a)`
           : `radial-gradient(ellipse at center, ${profile.color}88, #0a0a1a)`,
       }}>
-        {profile.avatarImage?.url && (
+        {artUrl && (
           <img
-            src={profile.avatarImage.url}
-            alt={`${profile.displayName} avatar art`}
+            src={artUrl}
+            alt={`${card.name} card art`}
             style={{
               position: 'absolute',
               inset: 0,
@@ -240,9 +246,9 @@ function MtgCardFrame({ profile, onChange }: {
           position: 'absolute', inset: 0,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           flexDirection: 'column', gap: 6,
-          background: profile.avatarImage?.url ? 'linear-gradient(180deg, rgba(0,0,0,0.1), rgba(0,0,0,0.34))' : 'transparent',
+          background: artUrl ? 'linear-gradient(180deg, rgba(0,0,0,0.1), rgba(0,0,0,0.34))' : 'transparent',
         }}>
-          {!profile.avatarImage?.url && (
+          {!artUrl && (
             <div style={{
               fontSize: 52, lineHeight: 1,
               textShadow: '0 2px 12px rgba(0,0,0,0.7)',
@@ -252,7 +258,7 @@ function MtgCardFrame({ profile, onChange }: {
             </div>
           )}
           {/* Color pick dots overlay */}
-          <div style={{ display: 'flex', gap: 3, position: profile.avatarImage?.url ? 'absolute' : 'static', bottom: 8 }}>
+          <div style={{ display: 'flex', gap: 3, position: artUrl ? 'absolute' : 'static', bottom: 8 }}>
             {COLOR_PRESETS.slice(0, 8).map(c => (
               <button key={c} onClick={() => onChange({ ...profile, color: c })} style={{
                 width: 10, height: 10, borderRadius: '50%', cursor: 'pointer',
@@ -268,7 +274,7 @@ function MtgCardFrame({ profile, onChange }: {
         <div style={{
           position: 'absolute', top: 6, right: 8,
           fontSize: 9, color: 'rgba(255,255,255,0.5)', fontStyle: 'italic',
-        }}>Commander</div>
+        }}>{profile.title || 'Commander'}</div>
       </div>
 
       {/* ── Type line ── */}
@@ -281,7 +287,7 @@ function MtgCardFrame({ profile, onChange }: {
         fontWeight: 600,
         letterSpacing: '0.03em',
       }}>
-        <span>Legendary Creature — Human Judge</span>
+        <span>{card.typeLine || 'Legendary Player'}</span>
         <div style={{
           width: 14, height: 14, borderRadius: '50%',
           background: 'linear-gradient(135deg, #c8a800, #f5d020, #8b6914)',
@@ -294,7 +300,7 @@ function MtgCardFrame({ profile, onChange }: {
       {/* ── Text box ── */}
       <div style={{
         margin: '0 6px 4px',
-        minHeight: 90,
+        minHeight: 112,
         borderRadius: 4,
         background: 'rgba(255,252,240,0.92)',
         border: '1px solid rgba(0,0,0,0.3)',
@@ -306,24 +312,27 @@ function MtgCardFrame({ profile, onChange }: {
         flexDirection: 'column',
         gap: 4,
       }}>
-        {abilities.length === 0 ? (
+        {card.bio && <p style={{ margin: 0, fontSize: 9 }}>{card.bio}</p>}
+        {card.triggers.length === 0 ? (
           <span style={{ color: '#888', fontStyle: 'italic', fontSize: 9 }}>
-            Turn on Judge Assistant or Trigger Reminders to gain abilities.
+            Add up to three profile triggers.
           </span>
-        ) : (
-          abilities.map((ab, i) => {
-            const isFlavor = ab.startsWith('Flavor Text:');
-            return (
-              <p key={i} style={{
-                margin: 0,
-                fontStyle: isFlavor ? 'italic' : 'normal',
-                color: isFlavor ? '#555' : '#1a1208',
-                borderTop: isFlavor && i > 0 ? '1px solid #ccc' : 'none',
-                paddingTop: isFlavor && i > 0 ? 4 : 0,
-                fontSize: isFlavor ? 8 : 9,
-              }}>{ab}</p>
-            );
-          })
+        ) : card.triggers.map((trigger, i) => (
+          <p key={i} style={{
+            margin: 0,
+            borderTop: i === 0 ? '1px solid #d6ccb5' : 'none',
+            paddingTop: i === 0 ? 4 : 0,
+          }}>{trigger}</p>
+        ))}
+        {card.flavorText && (
+          <p style={{
+            margin: 0,
+            borderTop: '1px solid #d6ccb5',
+            paddingTop: 4,
+            fontSize: 8,
+            fontStyle: 'italic',
+            color: '#555',
+          }}>"{card.flavorText}"</p>
         )}
       </div>
 
@@ -383,7 +392,7 @@ function MtgCardFrame({ profile, onChange }: {
           minWidth: 28, textAlign: 'center',
           boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
         }}>
-          {power}/{toughness}
+          {card.stats || '0/0'}
         </div>
       </div>
     </div>
@@ -712,13 +721,44 @@ function ProfileEditorView({
   const [avatarCardQuery, setAvatarCardQuery] = useState('');
   const [avatarPrints, setAvatarPrints] = useState<ScryfallPrint[]>([]);
   const [avatarLoading, setAvatarLoading] = useState(false);
+  const savedDecks = useGameStore().decks;
+  const winRate = profile.stats.gamesPlayed > 0 ? Math.round((profile.stats.wins / profile.stats.gamesPlayed) * 100) : 0;
+
+  function updateCard(update: Partial<PlayerProfile['card']>) {
+    onChange({ ...profile, card: { ...profile.card, ...update } });
+  }
+
+  function updateTrigger(index: number, value: string) {
+    const triggers = [...profile.card.triggers];
+    triggers[index] = value.slice(0, PROFILE_LIMITS.trigger);
+    updateCard({ triggers: triggers.filter(Boolean).slice(0, PROFILE_LIMITS.maxTriggers) });
+  }
+
+  function toggleAchievement(name: string) {
+    const achievements = profile.achievements.includes(name)
+      ? profile.achievements.filter(item => item !== name)
+      : [...profile.achievements, name];
+    onChange({ ...profile, achievements });
+  }
+
+  function toggleFeaturedDeck(deck: Deck) {
+    const exists = profile.featuredDecks.some(item => item.deckId === deck.id);
+    const featuredDecks = exists
+      ? profile.featuredDecks.filter(item => item.deckId !== deck.id)
+      : [...profile.featuredDecks, { deckId: deck.id }].slice(0, PROFILE_LIMITS.featuredDecks);
+    onChange({ ...profile, featuredDecks });
+  }
 
   async function handleAvatarUpload(file: File | undefined) {
     if (!file) return;
     setAvatarError('');
     try {
       const avatarImage = await compressAvatarImage(file);
-      onChange({ ...profile, avatarImage });
+      onChange({
+        ...profile,
+        avatarImage,
+        card: profile.card.artUrl ? profile.card : { ...profile.card, artUrl: avatarImage.url, artSource: 'custom' },
+      });
     } catch (err) {
       setAvatarError(err instanceof Error ? err.message : 'Could not use that image.');
     }
@@ -742,10 +782,11 @@ function ProfileEditorView({
   function useCardArt(print: ScryfallPrint) {
     onChange({
       ...profile,
-      avatarImage: {
-        source: 'card',
-        url: print.artCropUrl || print.imageUrl,
-        label: `${print.name} - ${print.setName}`,
+      card: {
+        ...profile.card,
+        artUrl: print.artCropUrl || print.imageUrl,
+        artSource: 'scryfall',
+        scryfallName: print.name,
       },
     });
   }
@@ -770,6 +811,53 @@ function ProfileEditorView({
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <div style={{ flex: 1, overflowY: 'auto', padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 16 }}>
 
+          <section>
+            <SectionLabel>Profile Identity</SectionLabel>
+            {profile.bannerUrl && (
+              <div style={{
+                height: 62,
+                borderRadius: 7,
+                background: `linear-gradient(90deg, rgba(0,0,0,0.6), rgba(0,0,0,0.12)), url(${profile.bannerUrl}) center/cover`,
+                border: '1px solid #334155',
+                marginBottom: 8,
+              }} />
+            )}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <LabeledInput label="Display Name" testId="profile-display-name-input" value={profile.displayName} maxLength={PROFILE_LIMITS.displayName} onChange={value => onChange({ ...profile, displayName: value })} />
+              <LabeledInput label="Player Title" testId="profile-title-input" value={profile.title} maxLength={PROFILE_LIMITS.title} onChange={value => onChange({ ...profile, title: value })} />
+            </div>
+            <LabeledInput label="Optional Banner URL" testId="profile-banner-input" value={profile.bannerUrl} maxLength={2048} onChange={value => onChange({ ...profile, bannerUrl: value })} />
+          </section>
+
+          <section>
+            <SectionLabel>Commander Profile Card</SectionLabel>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 110px', gap: 8 }}>
+              <LabeledInput label="Card Name" testId="profile-card-name-input" value={profile.card.name} maxLength={PROFILE_LIMITS.cardName} onChange={value => updateCard({ name: value })} />
+              <LabeledInput label="Mana Cost" testId="profile-card-mana-input" value={profile.card.manaCost} maxLength={PROFILE_LIMITS.manaCost} onChange={value => updateCard({ manaCost: value })} />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 90px', gap: 8 }}>
+              <LabeledInput label="Type Line" testId="profile-card-type-input" value={profile.card.typeLine} maxLength={PROFILE_LIMITS.typeLine} onChange={value => updateCard({ typeLine: value })} />
+              <LabeledInput label="P/T" testId="profile-card-stats-input" value={profile.card.stats} maxLength={PROFILE_LIMITS.stats} onChange={value => updateCard({ stats: value })} />
+            </div>
+            <LabeledTextarea label="Bio" testId="profile-card-bio-input" value={profile.card.bio} maxLength={PROFILE_LIMITS.bio} rows={2} onChange={value => updateCard({ bio: value })} />
+            <div>
+              <FieldLabel>Trigger Text</FieldLabel>
+              {[0, 1, 2].map(index => (
+                <textarea
+                  key={index}
+                  data-testid={`profile-card-trigger-${index}`}
+                  value={profile.card.triggers[index] ?? ''}
+                  maxLength={PROFILE_LIMITS.trigger}
+                  rows={2}
+                  onChange={event => updateTrigger(index, event.target.value)}
+                  placeholder={index === 0 ? 'Whenever you cast your commander, gain 1 Focus.' : 'Optional trigger'}
+                  style={{ ...inputStyle, resize: 'vertical', marginBottom: 6, lineHeight: 1.35 }}
+                />
+              ))}
+            </div>
+            <LabeledTextarea label="Flavor Text" testId="profile-card-flavor-input" value={profile.card.flavorText} maxLength={PROFILE_LIMITS.flavorText} rows={2} onChange={value => updateCard({ flavorText: value })} />
+          </section>
+
           {/* ── Avatar style ── */}
           <section>
             <SectionLabel>Art Background Style</SectionLabel>
@@ -791,7 +879,7 @@ function ProfileEditorView({
           </section>
 
           <section>
-            <SectionLabel>Player Picture</SectionLabel>
+            <SectionLabel>Avatar and Card Art</SectionLabel>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <PlayerAvatar
                 name={profile.displayName}
@@ -807,7 +895,7 @@ function ProfileEditorView({
                 <input
                   data-testid="profile-avatar-upload"
                   type="file"
-                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  accept="image/png,image/jpeg,image/webp"
                   onChange={e => handleAvatarUpload(e.target.files?.[0])}
                   style={{ display: 'none' }}
                 />
@@ -827,7 +915,7 @@ function ProfileEditorView({
             </div>
             {profile.avatarImage && (
               <div style={{ marginTop: 6, fontSize: 10, color: '#64748b' }}>
-                Current: {profile.avatarImage.label ?? profile.avatarImage.source}
+                Avatar: {profile.avatarImage.label ?? profile.avatarImage.source}
                 {profile.avatarImage.byteSize ? ` (${Math.round(profile.avatarImage.byteSize / 1024)} KB)` : ''}
               </div>
             )}
@@ -842,7 +930,7 @@ function ProfileEditorView({
                 value={avatarCardQuery}
                 onChange={e => setAvatarCardQuery(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') searchAvatarCardArt(); }}
-                placeholder="Pull card art, e.g. Sol Ring"
+                placeholder="Pull profile card art, e.g. Sol Ring"
                 style={{ ...inputStyle, flex: 1, fontSize: 11 }}
               />
               <button
@@ -851,7 +939,7 @@ function ProfileEditorView({
                 disabled={avatarLoading || !avatarCardQuery.trim()}
                 style={pillBtnStyle(avatarLoading ? '#111827' : '#1e3a5f', avatarLoading ? '#475569' : '#93c5fd')}
               >
-                {avatarLoading ? 'Searching...' : 'Find Art'}
+                {avatarLoading ? 'Searching...' : 'Find Card Art'}
               </button>
             </div>
             {avatarPrints.length > 0 && (
@@ -950,6 +1038,87 @@ function ProfileEditorView({
             </div>
           </section>
 
+          <section>
+            <SectionLabel>Quick Stats</SectionLabel>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(64px, 1fr))', gap: 6 }}>
+              <StatInput label="Games" value={profile.stats.gamesPlayed} onChange={gamesPlayed => onChange({ ...profile, stats: { ...profile.stats, gamesPlayed } })} />
+              <StatInput label="Wins" value={profile.stats.wins} onChange={wins => onChange({ ...profile, stats: { ...profile.stats, wins } })} />
+              <StatInput label="Losses" value={profile.stats.losses} onChange={losses => onChange({ ...profile, stats: { ...profile.stats, losses } })} />
+              <StatInput label="Streak" value={profile.stats.currentStreak} onChange={currentStreak => onChange({ ...profile, stats: { ...profile.stats, currentStreak } })} />
+              <div style={miniStatStyle}>
+                <span style={{ fontSize: 9, color: '#64748b' }}>Win Rate</span>
+                <strong style={{ fontSize: 13, color: '#e2e8f0' }}>{winRate}%</strong>
+              </div>
+            </div>
+          </section>
+
+          <section>
+            <SectionLabel>Featured Decks</SectionLabel>
+            {savedDecks.length === 0 ? (
+              <div style={{ fontSize: 11, color: '#475569' }}>Import or save decks to feature up to three here.</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                {savedDecks.map(deck => {
+                  const featured = profile.featuredDecks.some(item => item.deckId === deck.id);
+                  const entry = profile.featuredDecks.find(item => item.deckId === deck.id);
+                  const disabled = !featured && profile.featuredDecks.length >= PROFILE_LIMITS.featuredDecks;
+                  return (
+                    <div key={deck.id} style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'auto 1fr 70px 54px 54px',
+                      gap: 6,
+                      alignItems: 'center',
+                      padding: '6px 8px',
+                      borderRadius: 6,
+                      border: `1px solid ${featured ? '#f59e0b66' : '#1e293b'}`,
+                      background: featured ? 'rgba(245,158,11,0.08)' : '#0a0f1a',
+                    }}>
+                      <input type="checkbox" checked={featured} disabled={disabled} onChange={() => toggleFeaturedDeck(deck)} />
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 11, color: '#e2e8f0', fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{deck.name}</div>
+                        <div style={{ fontSize: 9, color: '#64748b' }}>{deck.commanders[0] ?? 'No commander'} - {deck.colorIdentity.join('')}</div>
+                      </div>
+                      <input value={entry?.powerLevel ?? ''} disabled={!featured} placeholder="Power" maxLength={8} onChange={event => onChange({ ...profile, featuredDecks: profile.featuredDecks.map(item => item.deckId === deck.id ? { ...item, powerLevel: event.target.value } : item) })} style={{ ...inputStyle, fontSize: 9, padding: '4px 6px' }} />
+                      <input type="number" min={0} value={entry?.wins ?? 0} disabled={!featured} onChange={event => onChange({ ...profile, featuredDecks: profile.featuredDecks.map(item => item.deckId === deck.id ? { ...item, wins: Number(event.target.value) || 0 } : item) })} style={{ ...inputStyle, fontSize: 9, padding: '4px 6px' }} />
+                      <input type="number" min={0} value={entry?.losses ?? 0} disabled={!featured} onChange={event => onChange({ ...profile, featuredDecks: profile.featuredDecks.map(item => item.deckId === deck.id ? { ...item, losses: Number(event.target.value) || 0 } : item) })} style={{ ...inputStyle, fontSize: 9, padding: '4px 6px' }} />
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          <section>
+            <SectionLabel>Achievement Badges</SectionLabel>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {ACHIEVEMENT_OPTIONS.map(name => {
+                const active = profile.achievements.includes(name);
+                return (
+                  <button key={name} type="button" onClick={() => toggleAchievement(name)} style={{ ...pillBtnStyle(active ? '#713f12' : '#111827', active ? '#fde68a' : '#64748b'), borderColor: active ? '#f59e0b66' : '#1e293b' }}>
+                    {name}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
+          <section>
+            <SectionLabel>Recent Matches</SectionLabel>
+            {profile.recentMatches.length === 0 ? (
+              <div style={{ fontSize: 11, color: '#475569' }}>No match history yet.</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {profile.recentMatches.slice(0, PROFILE_LIMITS.recentMatches).map(match => (
+                  <div key={match.id} style={{ display: 'grid', gridTemplateColumns: '1fr auto auto', gap: 8, fontSize: 10, color: '#94a3b8', padding: '5px 8px', background: '#0a0f1a', border: '1px solid #1e293b', borderRadius: 5 }}>
+                    <span>{match.commanderUsed || 'Unknown commander'}</span>
+                    <span>{match.placement}</span>
+                    <span>{match.result || match.date}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
           {/* ── Art overrides ── */}
           <section>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
@@ -1016,8 +1185,7 @@ function ProfileEditorView({
           display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center',
         }}>
           <span style={{ flex: 1, fontSize: 9, color: '#334155' }}>
-            P/T = {profile.assistantMode === 'ON' ? '5' : profile.assistantMode === 'LIMITED' ? '3' : '1'}
-            /{profile.assistantVerbosity === 'verbose' ? '6' : profile.assistantVerbosity === 'normal' ? '4' : '2'}
+            P/T = {profile.card.stats || '0/0'} · {profile.featuredDecks.length}/{PROFILE_LIMITS.featuredDecks} featured decks
           </span>
           <button
             data-testid="profile-save-btn"
@@ -1256,6 +1424,82 @@ const inputStyle: React.CSSProperties = {
   fontSize: 11, padding: '5px 8px',
   outline: 'none', width: '100%', boxSizing: 'border-box',
 };
+
+const miniStatStyle: React.CSSProperties = {
+  background: '#0a0f1a',
+  border: '1px solid #1e293b',
+  borderRadius: 6,
+  padding: '5px 7px',
+  display: 'flex',
+  flexDirection: 'column',
+  gap: 2,
+};
+
+function LabeledInput({
+  label, value, onChange, maxLength, testId,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  maxLength: number;
+  testId?: string;
+}) {
+  return (
+    <label style={{ display: 'block', marginBottom: 8 }}>
+      <FieldLabel>{label}</FieldLabel>
+      <input
+        data-testid={testId}
+        value={value}
+        maxLength={maxLength}
+        onChange={event => onChange(event.target.value.slice(0, maxLength))}
+        style={inputStyle}
+      />
+    </label>
+  );
+}
+
+function LabeledTextarea({
+  label, value, onChange, maxLength, rows, testId,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  maxLength: number;
+  rows: number;
+  testId?: string;
+}) {
+  return (
+    <label style={{ display: 'block', marginBottom: 8 }}>
+      <FieldLabel>{label}</FieldLabel>
+      <textarea
+        data-testid={testId}
+        value={value}
+        rows={rows}
+        maxLength={maxLength}
+        onChange={event => onChange(event.target.value.slice(0, maxLength))}
+        style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.35 }}
+      />
+      <div style={{ fontSize: 9, color: '#334155', textAlign: 'right', marginTop: 2 }}>
+        {value.length}/{maxLength}
+      </div>
+    </label>
+  );
+}
+
+function StatInput({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }) {
+  return (
+    <label style={miniStatStyle}>
+      <span style={{ fontSize: 9, color: '#64748b' }}>{label}</span>
+      <input
+        type="number"
+        min={0}
+        value={value}
+        onChange={event => onChange(Number(event.target.value) || 0)}
+        style={{ ...inputStyle, padding: 0, border: 'none', background: 'transparent', fontSize: 13, fontWeight: 800 }}
+      />
+    </label>
+  );
+}
 
 function SectionLabel({ children, style }: { children: React.ReactNode; style?: React.CSSProperties }) {
   return (
