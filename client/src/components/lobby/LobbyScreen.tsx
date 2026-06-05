@@ -14,6 +14,7 @@ import { MultiplayerPanel } from '../multiplayer/MultiplayerPanel';
 import { getActiveProfile } from '../../engine/profileStorage';
 import { BrandMark } from '../branding/BrandMark';
 import { PlayerAvatar } from '../profile/PlayerAvatar';
+import { ExitGameModal } from '../exit/ExitGameModal';
 import type { Deck, PlayerAvatarImage } from '../../types/game';
 
 interface PlayerSetup {
@@ -62,6 +63,7 @@ export function LobbyScreen() {
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [houseRules, setHouseRules] = useState<Set<string>>(new Set());
   const [favoriteDeckIds, setFavoriteDeckIds] = useState<string[]>(() => loadFavoriteDeckIds());
+  const [exitOpen, setExitOpen] = useState(false);
 
   function applyActiveProfileToSeat0() {
     const profile = getActiveProfile();
@@ -881,6 +883,7 @@ export function LobbyScreen() {
               name: `Seat ${index + 1}`,
             }))}
             onPrepareRoom={prepareTableRoomState}
+            onExitRoom={() => setExitOpen(true)}
           />
         </div>
         )}
@@ -917,6 +920,7 @@ export function LobbyScreen() {
           Card data powered by Scryfall · Official rules apply by default
         </div>
       </div>
+      <ExitGameModal open={exitOpen} onClose={() => setExitOpen(false)} />
     </div>
   );
 }

@@ -23,9 +23,10 @@ interface MultiplayerPanelProps {
   seatCount?: number;
   seats?: { id: string; name: string }[];
   onPrepareRoom?: () => void;
+  onExitRoom?: () => void;
 }
 
-export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: configuredSeats, onPrepareRoom }: MultiplayerPanelProps) {
+export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: configuredSeats, onPrepareRoom, onExitRoom }: MultiplayerPanelProps) {
   const store = useGameStore();
   const { multiplayer, game } = store;
 
@@ -102,6 +103,10 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
   }
 
   function handleLeave() {
+    if (onExitRoom) {
+      onExitRoom();
+      return;
+    }
     store.leaveMultiplayerRoom();
     setMode('idle');
     setJoinCode('');

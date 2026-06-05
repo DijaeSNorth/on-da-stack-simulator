@@ -688,6 +688,40 @@ export function updatePresence(fields: Partial<RoomPresence>): void {
 
 // ─── Leave ────────────────────────────────────────────────────────────────────
 
+export function requestHostMigrationBeforeLeave(): boolean {
+  if (!_isHost || !_roomCode || !_peerId) return false;
+  const candidates = Object.fromEntries(
+    [..._peers.entries()].filter(([peerId, presence]) =>
+      peerId !== _peerId && presence.online && !presence.isSpectator && presence.seatIndex >= 0
+    )
+  );
+  const candidate = chooseMigrationHost(candidates);
+  if (!candidate) return false;
+
+  for (const [peerId, presence] of _peers.entries()) {
+    _peers.set(peerId, {
+      ...presence,
+      isHostPeer: peerId === candidate.peerId,
+      online: peerId === _peerId ? false : presence.online,
+      lastSeen: Date.now(),
+    });
+  }
+
+  const notice: HostMigrationNotice = {
+    candidatePeerId: candidate.peerId,
+    reason: 'host-disconnected',
+    roomCode: _roomCode,
+    game: _latestGame,
+    peers: Object.fromEntries(_peers),
+  };
+
+  for (const conn of _connections.values()) {
+    if (conn.open) conn.send({ type: 'HOST_MIGRATION', payload: notice });
+  }
+  broadcastPresence();
+  return true;
+}
+
 export function leaveRoom(): void {
   _stopHeartbeat();
   if (_migrationTimer) { clearTimeout(_migrationTimer); _migrationTimer = null; }

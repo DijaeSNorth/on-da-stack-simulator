@@ -1,4 +1,5 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import type { CSSProperties } from 'react';
 import { useGameStore } from '../store/gameStore';
 import { MultiplayerBadge } from './multiplayer/MultiplayerBadge';
 import { useTutorial } from '../store/tutorialStore';
@@ -8,11 +9,13 @@ import { PulseBeacon } from './tutorial/TutorialOverlay';
 import { getPhaseLabel } from '../engine/phaseMeta';
 import { BrandMark } from './branding/BrandMark';
 import { PlayerAvatar } from './profile/PlayerAvatar';
+import { ExitGameModal } from './exit/ExitGameModal';
 
 export function TopBar() {
   const store = useGameStore();
   const { game, ui } = store;
   const tutorial = useTutorial();
+  const [exitOpen, setExitOpen] = useState(false);
 
   // Global keyboard shortcut: / or Ctrl+F → open card search panel
   useEffect(() => {
@@ -35,6 +38,7 @@ export function TopBar() {
   const pendingTriggers = game.triggerQueue.filter(t => !t.acknowledged).length;
 
   return (
+    <>
     <div
       data-testid="top-bar"
       style={{
@@ -205,6 +209,13 @@ export function TopBar() {
         >👤</button>
         <MultiplayerBadge />
         <button
+          data-testid="btn-exit-game"
+          aria-label="Exit game"
+          onClick={() => setExitOpen(true)}
+          style={topBtnStyle('none', '#f87171')}
+          title="Exit game"
+        >Exit</button>
+        <button
           data-testid="btn-open-lobby"
           aria-label="Open lobby for a new game"
           onClick={() => store.setLobbyOpen(true)}
@@ -257,10 +268,12 @@ export function TopBar() {
         )}
       </div>
     </div>
+    <ExitGameModal open={exitOpen} onClose={() => setExitOpen(false)} />
+    </>
   );
 }
 
-function topBtnStyle(bg: string, color: string): React.CSSProperties {
+function topBtnStyle(bg: string, color: string): CSSProperties {
   return {
     background: bg,
     color,
