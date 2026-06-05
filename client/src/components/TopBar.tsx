@@ -6,6 +6,7 @@ import { TutorialTooltip } from './tutorial/TutorialTooltip';
 import { TOOLTIPS } from '../store/tutorialStore';
 import { PulseBeacon } from './tutorial/TutorialOverlay';
 import { getPhaseLabel } from '../engine/phaseMeta';
+import { BrandMark } from './branding/BrandMark';
 
 export function TopBar() {
   const store = useGameStore();
@@ -37,8 +38,8 @@ export function TopBar() {
       data-testid="top-bar"
       style={{
         height: 44,
-        background: '#0f172a',
-        borderBottom: '1px solid #1e293b',
+        background: '#0b0f12',
+        borderBottom: '1px solid #26323a',
         display: 'flex',
         alignItems: 'center',
         padding: '0 12px',
@@ -49,16 +50,13 @@ export function TopBar() {
     >
       {/* Logo */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-        <svg width="20" height="20" viewBox="0 0 32 32" fill="none" aria-label="Commander Table">
-          <polygon points="16,2 30,28 2,28" stroke="#7c3aed" strokeWidth="2" fill="#1e1b4b" />
-          <circle cx="16" cy="18" r="5" fill="#7c3aed" />
-        </svg>
-        <span style={{ fontSize: 11, fontWeight: 800, color: '#e2e8f0', letterSpacing: '0.05em' }}>
-          COMMANDER TABLE
+        <BrandMark size={22} compact />
+        <span style={{ fontSize: 11, fontWeight: 800, color: '#f1f5f9', letterSpacing: '0.04em' }}>
+          ON-DA-STACK
         </span>
       </div>
 
-      <div style={{ width: 1, height: 20, background: '#1e293b' }} />
+      <div style={{ width: 1, height: 20, background: '#26323a' }} />
 
       {/* Turn & Phase */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
@@ -67,7 +65,8 @@ export function TopBar() {
         </div>
         <div style={{
           fontSize: 10, fontWeight: 700, color: '#e2e8f0',
-          background: '#1e293b',
+          background: '#182127',
+          border: '1px solid #26323a',
           borderRadius: 4,
           padding: '2px 8px',
         }}>
@@ -111,15 +110,15 @@ export function TopBar() {
           onClick={() => store.setRightPanelTab('stack')}
           style={{
             display: 'flex', alignItems: 'center', gap: 4,
-            background: '#1e3a5f', border: '1px solid #3b82f6',
+            background: '#123642', border: '1px solid #22d3ee',
             borderRadius: 4, padding: '2px 8px', cursor: 'pointer', flexShrink: 0,
           }}
         >
-          <span style={{ fontSize: 9, color: '#60a5fa', fontWeight: 700 }}>
+          <span style={{ fontSize: 9, color: '#67e8f9', fontWeight: 700 }}>
             STACK
           </span>
           <span style={{
-            background: '#3b82f6', color: '#fff',
+            background: '#0e7490', color: '#fff',
             borderRadius: '50%', width: 14, height: 14,
             fontSize: 9, display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontWeight: 700,
@@ -261,7 +260,7 @@ function topBtnStyle(bg: string, color: string): React.CSSProperties {
   return {
     background: bg,
     color,
-    border: '1px solid #1e293b',
+    border: '1px solid #26323a',
     borderRadius: 4,
     padding: '3px 8px',
     fontSize: 10,

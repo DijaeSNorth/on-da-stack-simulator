@@ -36,7 +36,7 @@ export default function App() {
       <div style={{
         width: '100vw',
         height: '100vh',
-        background: '#0d1117',
+        background: '#080d11',
         overflow: 'hidden',
         fontFamily: '"Inter", "SF Pro Display", system-ui, sans-serif',
       }}>
@@ -52,7 +52,7 @@ export default function App() {
       flexDirection: 'column',
       width: '100vw',
       height: '100vh',
-      background: '#0d1117',
+      background: '#080d11',
       overflow: 'hidden',
       fontFamily: '"Inter", "SF Pro Display", system-ui, sans-serif',
     }}>
@@ -130,10 +130,10 @@ function CollapseHandle({ side }: { side: 'left' | 'right' }) {
       onClick={side === 'left' ? store.toggleLeftPanel : store.toggleRightPanel}
       style={{
         width: 16,
-        background: '#0f172a',
+        background: '#0b0f12',
         border: 'none',
-        borderRight: side === 'left' ? '1px solid #1e293b' : 'none',
-        borderLeft: side === 'right' ? '1px solid #1e293b' : 'none',
+        borderRight: side === 'left' ? '1px solid #26323a' : 'none',
+        borderLeft: side === 'right' ? '1px solid #26323a' : 'none',
         cursor: 'pointer',
         color: '#475569',
         fontSize: 12,

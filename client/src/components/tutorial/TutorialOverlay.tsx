@@ -24,7 +24,7 @@ interface StepCard {
 
 const STEP_CARDS: Partial<Record<TutorialStep, StepCard>> = {
   welcome: {
-    title: 'Welcome to On Da Stack',
+    title: 'Welcome to On-Da-Stack',
     body: 'A Commander simulator designed to feel like a real game table — not a video game.\n\nYou always control the game flow. The built-in judge watches for rules issues and suggestions, but never blocks your actions.',
     tip: 'New player? Hit "Start Tour" for a quick 60-second walkthrough.',
     position: 'center',
@@ -116,10 +116,10 @@ export function WelcomeModal() {
       animation: 'tooltipFadeIn 0.2s ease',
     }}>
       <div style={{
-        background: 'linear-gradient(160deg, #1a1a2e 0%, #0f172a 100%)',
-        border: '1px solid #7c3aed',
+        background: 'linear-gradient(160deg, #10161a 0%, #0b0f12 100%)',
+        border: '1px solid #22d3ee',
         borderRadius: 16,
-        boxShadow: '0 24px 64px rgba(0,0,0,0.8), 0 0 0 1px rgba(124,58,237,0.3)',
+        boxShadow: '0 24px 64px rgba(0,0,0,0.8), 0 0 0 1px rgba(34,211,238,0.22)',
         padding: 32,
         maxWidth: 480,
         width: 'calc(100vw - 32px)',
@@ -129,15 +129,15 @@ export function WelcomeModal() {
           display: 'inline-flex',
           alignItems: 'center',
           gap: 6,
-          background: 'rgba(124,58,237,0.15)',
-          border: '1px solid rgba(124,58,237,0.4)',
+          background: 'rgba(34,211,238,0.12)',
+          border: '1px solid rgba(34,211,238,0.36)',
           borderRadius: 999,
           padding: '4px 12px',
           marginBottom: 16,
         }}>
           <span style={{ fontSize: 14 }}>⚔️</span>
-          <span style={{ fontSize: 11, fontWeight: 700, color: '#a78bfa', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
-            Commander Simulator
+          <span style={{ fontSize: 11, fontWeight: 700, color: '#67e8f9', letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+            On-Da-Stack
           </span>
         </div>
 
@@ -193,7 +193,7 @@ export function WelcomeModal() {
               padding: '11px 0',
               borderRadius: 10,
               border: 'none',
-              background: 'linear-gradient(135deg, #7c3aed, #6d28d9)',
+              background: 'linear-gradient(135deg, #0e7490, #f59e0b)',
               color: '#fff',
               fontSize: 14,
               fontWeight: 700,
@@ -273,10 +273,10 @@ export function CoachMark() {
       zIndex: 99998,
       ...positionStyle,
       width: 320,
-      background: 'linear-gradient(145deg, #1a1a2e 0%, #16213e 100%)',
-      border: '1px solid #7c3aed',
+      background: 'linear-gradient(145deg, #10161a 0%, #0b0f12 100%)',
+      border: '1px solid #22d3ee',
       borderRadius: 12,
-      boxShadow: '0 16px 48px rgba(0,0,0,0.75), 0 0 0 1px rgba(124,58,237,0.25)',
+      boxShadow: '0 16px 48px rgba(0,0,0,0.75), 0 0 0 1px rgba(34,211,238,0.22)',
       padding: '16px 18px',
       animation: 'tooltipFadeIn 0.2s ease',
     }}>
@@ -296,7 +296,7 @@ export function CoachMark() {
               width: 20,
               height: 3,
               borderRadius: 2,
-              background: tutorial.hasSeenStep(s) ? '#7c3aed' : s === step ? '#a78bfa' : '#1e293b',
+              background: tutorial.hasSeenStep(s) ? '#0e7490' : s === step ? '#67e8f9' : '#1e293b',
               transition: 'background 0.2s',
             }} />
           ))}
@@ -327,12 +327,12 @@ export function CoachMark() {
         <div style={{
           margin: '0 0 10px',
           padding: '5px 9px',
-          background: 'rgba(124,58,237,0.1)',
-          borderLeft: '2px solid #7c3aed',
+          background: 'rgba(34,211,238,0.1)',
+          borderLeft: '2px solid #22d3ee',
           borderRadius: '0 5px 5px 0',
           fontFamily: '"JetBrains Mono", "Fira Code", monospace',
           fontSize: 10.5,
-          color: '#7c3aed',
+          color: '#67e8f9',
           lineHeight: 1.5,
         }}>
           {card.example}
@@ -365,7 +365,7 @@ export function CoachMark() {
               padding: '8px 0',
               borderRadius: 8,
               border: 'none',
-              background: 'linear-gradient(135deg, #7c3aed, #6d28d9)',
+              background: 'linear-gradient(135deg, #0e7490, #f59e0b)',
               color: '#fff',
               fontSize: 13,
               fontWeight: 700,
@@ -383,7 +383,7 @@ export function CoachMark() {
               padding: '8px 0',
               borderRadius: 8,
               border: 'none',
-              background: 'linear-gradient(135deg, #7c3aed, #6d28d9)',
+              background: 'linear-gradient(135deg, #0e7490, #f59e0b)',
               color: '#fff',
               fontSize: 13,
               fontWeight: 600,
@@ -439,14 +439,14 @@ export function PulseBeacon({ step, style }: { step: TutorialStep; style?: React
         position: 'absolute',
         inset: 0,
         borderRadius: '50%',
-        background: '#7c3aed',
+        background: '#0e7490',
         animation: 'beaconPulse 1.4s ease-out infinite',
       }} />
       <span style={{
         position: 'absolute',
         inset: 2,
         borderRadius: '50%',
-        background: '#a78bfa',
+        background: '#67e8f9',
       }} />
     </span>
   );

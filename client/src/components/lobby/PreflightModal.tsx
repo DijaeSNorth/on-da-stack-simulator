@@ -26,7 +26,7 @@ export function PreflightModal({ result, onProceed, onCancel }: Props) {
     }}>
       <div style={{
         width: '100%', maxWidth: 560,
-        background: '#0d1117',
+        background: '#080d11',
         border: `1px solid ${blocked ? '#7f1d1d' : warnings.length > 0 ? '#78350f' : '#166534'}`,
         borderRadius: 12,
         boxShadow: '0 20px 60px rgba(0,0,0,0.8)',
@@ -36,7 +36,7 @@ export function PreflightModal({ result, onProceed, onCancel }: Props) {
         <div style={{
           padding: '14px 20px',
           background: blocked ? '#1c0a0a' : warnings.length > 0 ? '#1c1500' : '#0a1a0f',
-          borderBottom: '1px solid #1e293b',
+          borderBottom: '1px solid #26323a',
           display: 'flex', alignItems: 'center', gap: 10,
         }}>
           <span style={{ fontSize: 20 }}>
@@ -47,7 +47,7 @@ export function PreflightModal({ result, onProceed, onCancel }: Props) {
               {blocked ? 'Cannot Start — Fix Required' : warnings.length > 0 ? 'Review Before Starting' : 'Ready to Start'}
             </div>
             <div style={{ fontSize: 11, color: '#475569', marginTop: 2 }}>
-              Pre-game safety check · Judge Assistant
+              On-Da-Stack pre-game safety check
             </div>
           </div>
         </div>
@@ -119,7 +119,7 @@ export function PreflightModal({ result, onProceed, onCancel }: Props) {
         {/* Actions */}
         <div style={{
           padding: '12px 20px',
-          borderTop: '1px solid #1e293b',
+          borderTop: '1px solid #26323a',
           display: 'flex', gap: 10, justifyContent: 'flex-end',
         }}>
           <button
@@ -141,10 +141,10 @@ export function PreflightModal({ result, onProceed, onCancel }: Props) {
                 padding: '8px 22px', borderRadius: 6, cursor: 'pointer',
                 background: warnings.length > 0
                   ? 'linear-gradient(135deg, #92400e, #78350f)'
-                  : 'linear-gradient(135deg, #1d4ed8, #7c3aed)',
+                  : 'linear-gradient(135deg, #0e7490, #f59e0b)',
                 color: '#fff', border: 'none',
                 fontSize: 13, fontWeight: 800,
-                boxShadow: '0 2px 10px rgba(124,58,237,0.3)',
+                boxShadow: '0 2px 10px rgba(34,211,238,0.22)',
               }}
             >
               {warnings.length > 0 ? 'Start Anyway' : 'Start Game'}
@@ -207,8 +207,8 @@ function PowerRow({ analysis }: { analysis: PowerAnalysis }) {
 
   return (
     <div style={{
-      background: '#111827',
-      border: '1px solid #1e293b',
+      background: '#10161a',
+      border: '1px solid #26323a',
       borderRadius: 7, padding: '10px 12px',
     }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }}>

@@ -119,10 +119,10 @@ export function TutorialTooltip({
             left: coords.left,
             width: 260,
             zIndex: 999999,
-            background: 'linear-gradient(145deg, #1a1a2e 0%, #16213e 100%)',
-            border: '1px solid #7c3aed',
+            background: 'linear-gradient(145deg, #10161a 0%, #0b0f12 100%)',
+            border: '1px solid #22d3ee',
             borderRadius: 10,
-            boxShadow: '0 8px 32px rgba(0,0,0,0.7), 0 0 0 1px rgba(124,58,237,0.2)',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.7), 0 0 0 1px rgba(34,211,238,0.18)',
             padding: '10px 13px',
             pointerEvents: 'none',
             animation: 'tooltipFadeIn 0.15s ease',
@@ -138,11 +138,11 @@ export function TutorialTooltip({
             gap: 6,
             marginBottom: 6,
           }}>
-            <span style={{ fontSize: 13, color: '#a78bfa', userSelect: 'none' }}>📖</span>
+            <span style={{ fontSize: 13, color: '#67e8f9', userSelect: 'none' }}>📖</span>
             <span style={{
               fontSize: 11,
               fontWeight: 700,
-              color: '#a78bfa',
+              color: '#67e8f9',
               letterSpacing: '0.04em',
               textTransform: 'uppercase',
             }}>
@@ -165,8 +165,8 @@ export function TutorialTooltip({
             <div style={{
               marginTop: 7,
               padding: '4px 8px',
-              background: 'rgba(124,58,237,0.12)',
-              borderLeft: '2px solid #7c3aed',
+              background: 'rgba(34,211,238,0.1)',
+              borderLeft: '2px solid #22d3ee',
               borderRadius: '0 4px 4px 0',
               fontFamily: '"JetBrains Mono", "Fira Code", "Courier New", monospace',
               fontSize: 10,
@@ -189,9 +189,9 @@ function ArrowIndicator({ placement }: { placement: string }) {
     height: 0,
     borderStyle: 'solid',
   };
-  if (placement === 'top') return <div style={{ ...base, bottom: -7, left: '50%', transform: 'translateX(-50%)', borderWidth: '7px 6px 0 6px', borderColor: '#7c3aed transparent transparent transparent' }} />;
-  if (placement === 'bottom') return <div style={{ ...base, top: -7, left: '50%', transform: 'translateX(-50%)', borderWidth: '0 6px 7px 6px', borderColor: 'transparent transparent #7c3aed transparent' }} />;
-  if (placement === 'left') return <div style={{ ...base, right: -7, top: '50%', transform: 'translateY(-50%)', borderWidth: '6px 0 6px 7px', borderColor: 'transparent transparent transparent #7c3aed' }} />;
-  if (placement === 'right') return <div style={{ ...base, left: -7, top: '50%', transform: 'translateY(-50%)', borderWidth: '6px 7px 6px 0', borderColor: 'transparent #7c3aed transparent transparent' }} />;
+  if (placement === 'top') return <div style={{ ...base, bottom: -7, left: '50%', transform: 'translateX(-50%)', borderWidth: '7px 6px 0 6px', borderColor: '#22d3ee transparent transparent transparent' }} />;
+  if (placement === 'bottom') return <div style={{ ...base, top: -7, left: '50%', transform: 'translateX(-50%)', borderWidth: '0 6px 7px 6px', borderColor: 'transparent transparent #22d3ee transparent' }} />;
+  if (placement === 'left') return <div style={{ ...base, right: -7, top: '50%', transform: 'translateY(-50%)', borderWidth: '6px 0 6px 7px', borderColor: 'transparent transparent transparent #22d3ee' }} />;
+  if (placement === 'right') return <div style={{ ...base, left: -7, top: '50%', transform: 'translateY(-50%)', borderWidth: '6px 7px 6px 0', borderColor: 'transparent #22d3ee transparent transparent' }} />;
   return null;
 }

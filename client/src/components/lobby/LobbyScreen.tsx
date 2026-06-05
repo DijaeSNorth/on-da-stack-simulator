@@ -3,6 +3,7 @@ import { useGameStore } from '../../store/gameStore';
 import { importDeckFromUrl, importDecklist, saveDeck, type ImportResult } from '../../engine/deckImport';
 import { MultiplayerPanel } from '../multiplayer/MultiplayerPanel';
 import { getActiveProfile } from '../../engine/profileStorage';
+import { BrandMark } from '../branding/BrandMark';
 import type { Deck } from '../../types/game';
 
 interface PlayerSetup {
@@ -185,7 +186,7 @@ export function LobbyScreen() {
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 20000,
-      background: '#0d1117',
+      background: 'linear-gradient(135deg, #080d11 0%, #10161a 54%, #0b0f12 100%)',
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
@@ -203,17 +204,13 @@ export function LobbyScreen() {
         {/* Header */}
         <div style={{ textAlign: 'center' }}>
           <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-            <svg width="32" height="32" viewBox="0 0 32 32" fill="none" aria-label="MTG Sim logo">
-              <polygon points="16,2 30,28 2,28" stroke="#7c3aed" strokeWidth="2" fill="#1e1b4b" />
-              <circle cx="16" cy="18" r="5" fill="#7c3aed" opacity="0.8" />
-              <line x1="16" y1="8" x2="16" y2="13" stroke="#a78bfa" strokeWidth="1.5" />
-            </svg>
-            <h1 style={{ fontSize: 22, fontWeight: 800, color: '#e2e8f0', margin: 0, letterSpacing: '-0.02em' }}>
-              Commander Table
+            <BrandMark size={36} />
+            <h1 style={{ fontSize: 24, fontWeight: 800, color: '#f1f5f9', margin: 0, letterSpacing: 0 }}>
+              On-Da-Stack
             </h1>
           </div>
-          <div style={{ fontSize: 12, color: '#475569' }}>
-            Digital MTG Tabletop · Judge Assistant · Sandbox & Replay
+          <div style={{ fontSize: 12, color: '#8aa0ad' }}>
+            Commander sandbox | judge assistant | replay review
           </div>
         </div>
 
@@ -222,8 +219,8 @@ export function LobbyScreen() {
           {/* Left: Game setup */}
           <div style={{
             flex: '1 1 340px',
-            background: '#111827',
-            border: '1px solid #1e293b',
+            background: '#10161a',
+            border: '1px solid #26323a',
             borderRadius: 10,
             padding: 16,
           }}>
@@ -242,9 +239,9 @@ export function LobbyScreen() {
                   onClick={() => updateMode('solo')}
                   style={{
                     padding: '8px 10px',
-                    background: gameMode === 'solo' ? '#14532d' : '#1e293b',
+                    background: gameMode === 'solo' ? '#113a2b' : '#182127',
                     color: gameMode === 'solo' ? '#bbf7d0' : '#94a3b8',
-                    border: `1px solid ${gameMode === 'solo' ? '#22c55e' : '#334155'}`,
+                    border: `1px solid ${gameMode === 'solo' ? '#22c55e' : '#34414a'}`,
                     borderRadius: 5, cursor: 'pointer', fontSize: 12, fontWeight: 700,
                   }}
                 >
@@ -255,9 +252,9 @@ export function LobbyScreen() {
                   onClick={() => updateMode('table')}
                   style={{
                     padding: '8px 10px',
-                    background: gameMode === 'table' ? '#1d4ed8' : '#1e293b',
-                    color: gameMode === 'table' ? '#fff' : '#94a3b8',
-                    border: `1px solid ${gameMode === 'table' ? '#3b82f6' : '#334155'}`,
+                    background: gameMode === 'table' ? '#123642' : '#182127',
+                    color: gameMode === 'table' ? '#cffafe' : '#94a3b8',
+                    border: `1px solid ${gameMode === 'table' ? '#22d3ee' : '#34414a'}`,
                     borderRadius: 5, cursor: 'pointer', fontSize: 12, fontWeight: 700,
                   }}
                 >
@@ -396,8 +393,8 @@ export function LobbyScreen() {
           {/* Right: Deck import */}
           <div style={{
             flex: '1 1 340px',
-            background: '#111827',
-            border: '1px solid #1e293b',
+            background: '#10161a',
+            border: '1px solid #26323a',
             borderRadius: 10,
             padding: 16,
             display: 'flex',
@@ -666,8 +663,8 @@ export function LobbyScreen() {
         {/* Multiplayer */}
         {gameMode === 'table' && (
         <div style={{
-          background: '#111827',
-          border: '1px solid #1e293b',
+          background: '#10161a',
+          border: '1px solid #26323a',
           borderRadius: 10,
           padding: 16,
         }}>
@@ -684,11 +681,11 @@ export function LobbyScreen() {
           onClick={() => startGame()}
           style={{
             width: '100%', padding: '14px 0',
-            background: 'linear-gradient(135deg, #1d4ed8, #7c3aed)',
+            background: 'linear-gradient(135deg, #0e7490, #f59e0b)',
             color: '#fff', border: 'none', borderRadius: 8,
             fontSize: 15, fontWeight: 800, cursor: 'pointer',
             letterSpacing: '0.05em', textTransform: 'uppercase',
-            boxShadow: '0 4px 20px rgba(124,58,237,0.3)',
+            boxShadow: '0 4px 20px rgba(34,211,238,0.18), 0 2px 18px rgba(245,158,11,0.16)',
             transition: 'opacity 0.15s',
           }}
           onMouseEnter={e => { (e.target as HTMLElement).style.opacity = '0.9'; }}

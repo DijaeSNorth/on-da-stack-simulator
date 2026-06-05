@@ -3,7 +3,7 @@
 @tailwind components;
 @tailwind utilities;
 
-/* ─── MTG Commander Simulator — Dark Tabletop Theme ─── */
+/* On-Da-Stack — Dark Tabletop Theme */
 
 :root {
   --button-outline: rgba(0, 0, 0, 0.2);
@@ -13,39 +13,39 @@
   --elevate-2: rgba(255, 255, 255, 0.06);
 
   /* Dark tabletop palette */
-  --background: 222 47% 5%;
+  --background: 200 36% 5%;
   --foreground: 213 31% 91%;
-  --border: 217 33% 12%;
-  --card: 222 47% 7%;
+  --border: 200 20% 18%;
+  --card: 200 20% 8%;
   --card-foreground: 213 31% 91%;
-  --card-border: 217 33% 10%;
-  --sidebar: 222 47% 7%;
+  --card-border: 200 20% 16%;
+  --sidebar: 200 20% 8%;
   --sidebar-foreground: 213 31% 91%;
-  --sidebar-border: 217 33% 12%;
-  --sidebar-primary: 262 83% 58%;
+  --sidebar-border: 200 20% 18%;
+  --sidebar-primary: 188 95% 43%;
   --sidebar-primary-foreground: 0 0% 98%;
-  --sidebar-accent: 222 47% 10%;
+  --sidebar-accent: 195 20% 13%;
   --sidebar-accent-foreground: 213 31% 91%;
-  --sidebar-ring: 262 83% 58%;
-  --popover: 222 47% 7%;
+  --sidebar-ring: 188 95% 43%;
+  --popover: 200 20% 8%;
   --popover-foreground: 213 31% 91%;
-  --popover-border: 217 33% 12%;
-  --primary: 262 83% 58%;
+  --popover-border: 200 20% 18%;
+  --primary: 188 95% 43%;
   --primary-foreground: 0 0% 98%;
-  --secondary: 222 47% 11%;
+  --secondary: 38 92% 50%;
   --secondary-foreground: 213 31% 80%;
-  --muted: 222 47% 9%;
+  --muted: 200 20% 10%;
   --muted-foreground: 215 20% 40%;
-  --accent: 217 33% 15%;
+  --accent: 195 20% 15%;
   --accent-foreground: 213 31% 91%;
   --destructive: 0 72% 51%;
   --destructive-foreground: 0 0% 98%;
-  --input: 217 33% 18%;
-  --ring: 262 83% 58%;
-  --chart-1: 262 83% 58%;
-  --chart-2: 195 83% 48%;
+  --input: 200 20% 20%;
+  --ring: 188 95% 43%;
+  --chart-1: 188 95% 43%;
+  --chart-2: 38 92% 50%;
   --chart-3: 142 58% 49%;
-  --chart-4: 43 74% 49%;
+  --chart-4: 262 70% 62%;
   --chart-5: 0 72% 51%;
   --font-sans: Inter, system-ui, sans-serif;
   --font-serif: Georgia, serif;
@@ -60,7 +60,7 @@
 
 /* Always dark */
 html, body {
-  background: #0d1117;
+  background: #080d11;
   color: #e2e8f0;
   margin: 0;
   padding: 0;
@@ -87,11 +87,11 @@ html, body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #1e293b;
+  background: #26323a;
   border-radius: 2px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #334155;
+  background: #3a4750;
 }
 
 /* Card hover glow */
@@ -121,7 +121,7 @@ html, body {
 
 /* Tutorial highlight ring on active walkthrough elements */
 [data-tutorial-active="true"] {
-  outline: 2px solid rgba(124,58,237,0.7) !important;
+  outline: 2px solid rgba(34,211,238,0.7) !important;
   outline-offset: 3px;
   border-radius: 6px;
 }

@@ -1,4 +1,4 @@
-# On Da Stack — MTG Commander Simulator
+# On-Da-Stack — MTG Commander Simulator
 
 A browser-based Magic: The Gathering Commander simulator built for desktop browsers and iPad landscape. Designed to feel like a real Commander table with judge assistance, sandbox testing, and replay functionality.
 
