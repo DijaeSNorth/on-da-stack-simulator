@@ -14,11 +14,14 @@ import { CommandInput } from './components/command/CommandInput';
 import { CardSearchPanel } from './components/panels/CardSearchPanel';
 import { ReplayPanel } from './components/replay/ReplayPanel';
 import { ProfilePanel } from './components/profile/ProfilePanel';
+import { SoloDeckBuilder } from './components/deckbuilder/SoloDeckBuilder';
 import { WelcomeModal, CoachMark } from './components/tutorial/TutorialOverlay';
 import { useIsMobile } from './hooks/use-mobile';
 
 export default function App() {
   const ui = useGameStore(s => s.ui);
+  const game = useGameStore(s => s.game);
+  const localPlayerId = useGameStore(s => s.localPlayerId);
   const rightPanelOpen = useGameStore(s => s.ui.rightPanelOpen);
   const toggleRightPanel = useGameStore(s => s.toggleRightPanel);
   const isMobile = useIsMobile();
@@ -99,6 +102,20 @@ export default function App() {
         </div>
 
         {/* Right panel */}
+        {ui.deckBuilderOpen && game.config.playerCount === 1 && (
+          <div style={{
+            width: 430,
+            maxWidth: '42vw',
+            minWidth: 340,
+            borderLeft: '1px solid #26323a',
+            background: '#080d11',
+            overflow: 'auto',
+            padding: 10,
+          }}>
+            <SoloDeckBuilder playerId={localPlayerId || game.players[0]?.id} compact loadLabel="Reload Test Deck" />
+          </div>
+        )}
+
         {ui.rightPanelOpen && <RightPanel />}
 
         {/* Collapsed right panel handle */}

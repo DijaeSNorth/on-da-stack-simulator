@@ -200,6 +200,15 @@ export function TopBar() {
           title="Replay — save & review game history"
           style={topBtnStyle(ui.replayOpen ? '#1e293b' : 'none', ui.replayOpen ? '#a78bfa' : '#64748b')}
         >⏺</button>
+        {game.config.playerCount === 1 && (
+          <button
+            data-testid="btn-deck-lab"
+            aria-label={ui.deckBuilderOpen ? 'Hide deck lab' : 'Show deck lab'}
+            onClick={() => store.setDeckBuilderOpen(!ui.deckBuilderOpen)}
+            title="Solo Deck Lab"
+            style={topBtnStyle(ui.deckBuilderOpen ? '#123642' : 'none', ui.deckBuilderOpen ? '#67e8f9' : '#64748b')}
+          >Deck Lab</button>
+        )}
         <button
           data-testid="btn-profile"
           aria-label="Open player profile"

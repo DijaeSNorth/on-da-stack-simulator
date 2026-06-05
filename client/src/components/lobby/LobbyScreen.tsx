@@ -15,6 +15,7 @@ import { getActiveProfile } from '../../engine/profileStorage';
 import { BrandMark } from '../branding/BrandMark';
 import { PlayerAvatar } from '../profile/PlayerAvatar';
 import { ExitGameModal } from '../exit/ExitGameModal';
+import { SoloDeckBuilder } from '../deckbuilder/SoloDeckBuilder';
 import type { Deck, PlayerAvatarImage } from '../../types/game';
 
 interface PlayerSetup {
@@ -278,6 +279,7 @@ export function LobbyScreen() {
       store.startGame();
       if (gameMode === 'solo') {
         store.setRightPanelTab('debug');
+        store.setDeckBuilderOpen(true);
       }
     })();
   }
@@ -864,6 +866,24 @@ export function LobbyScreen() {
             )}
           </div>
         </div>
+
+        {gameMode === 'solo' && (
+          <div style={{
+            background: '#0b0f12',
+            border: '1px solid #26323a',
+            borderRadius: 10,
+            padding: 12,
+          }}>
+            <SoloDeckBuilder
+              playerId={activeSetupPlayer.id}
+              loadLabel="Load for Test"
+              onLoadDeck={async deck => {
+                updatePlayer(setupPlayerIndex, { deckId: deck.id });
+                await store.loadDeck(activeSetupPlayer.id, deck);
+              }}
+            />
+          </div>
+        )}
 
         {/* Multiplayer */}
         {gameMode === 'table' && (
