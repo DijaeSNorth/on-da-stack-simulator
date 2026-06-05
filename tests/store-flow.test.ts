@@ -105,6 +105,40 @@ test('startGame draws opening hands from loaded libraries', () => {
   assert(player.library.length === 3, `expected 3 cards left in library, got ${player.library.length}`);
 });
 
+test('prepareLoadedTableGame preserves loaded occupied-seat decks', () => {
+  const game = makeGame(3);
+  const p1Card = createCardState({ ...vanillaCreature, id: 'p1-card', name: 'P1 Card' }, 'p1', 'library');
+  const p2Card = createCardState({ ...vanillaCreature, id: 'p2-card', name: 'P2 Card' }, 'p2', 'library');
+  const p3Card = createCardState({ ...vanillaCreature, id: 'p3-card', name: 'P3 Card' }, 'p3', 'library');
+  resetStore({
+    ...game,
+    cards: {
+      [p1Card.instanceId]: p1Card,
+      [p2Card.instanceId]: p2Card,
+      [p3Card.instanceId]: p3Card,
+    },
+    players: game.players.map(player => {
+      if (player.id === 'p1') return { ...player, deckId: 'deck-p1', library: [p1Card.instanceId] };
+      if (player.id === 'p2') return { ...player, deckId: 'deck-p2', library: [p2Card.instanceId] };
+      if (player.id === 'p3') return { ...player, deckId: 'deck-p3', library: [p3Card.instanceId] };
+      return player;
+    }),
+  });
+
+  useGameStore.getState().prepareLoadedTableGame(createDefaultGameConfig(2), [
+    { id: 'p3', name: 'Seat Three', color: '#22c55e' },
+    { id: 'p1', name: 'Seat One', color: '#3b82f6' },
+  ]);
+
+  const next = useGameStore.getState().game;
+  assert(next.players.length === 2, `expected 2 occupied players, got ${next.players.length}`);
+  assert(next.players[0].id === 'p3' && next.players[0].deckId === 'deck-p3', 'expected p3 deck to be preserved in seat 1');
+  assert(next.players[1].id === 'p1' && next.players[1].deckId === 'deck-p1', 'expected p1 deck to be preserved in seat 2');
+  assert(Boolean(next.cards[p3Card.instanceId]), 'expected p3 library card to remain');
+  assert(Boolean(next.cards[p1Card.instanceId]), 'expected p1 library card to remain');
+  assert(!next.cards[p2Card.instanceId], 'expected unoccupied p2 card to be removed');
+});
+
 test('passPriority updates lastUpdatedAt for multiplayer broadcasting', () => {
   const game = makeGame(3);
   resetStore({ ...game, lastUpdatedAt: 100 });

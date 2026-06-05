@@ -1,0 +1,62 @@
+/**
+ * Saved deck storage regression checks.
+ *
+ * Run with: npx tsx tests/deck-storage.test.ts
+ */
+
+import {
+  loadDecksFromStorage,
+  MAX_STORED_DECKS,
+  saveDeck,
+  saveDecksToStorage,
+} from '../client/src/engine/deckImport';
+import type { Deck } from '../client/src/types/game';
+
+const storage = new Map<string, string>();
+(globalThis as any).localStorage = {
+  getItem: (key: string) => storage.get(key) ?? null,
+  setItem: (key: string, value: string) => { storage.set(key, value); },
+  removeItem: (key: string) => { storage.delete(key); },
+  clear: () => { storage.clear(); },
+};
+
+function makeDeck(id: string, importedAt: number): Deck {
+  return {
+    id,
+    name: `Deck ${id}`,
+    format: 'commander',
+    commanders: ['Test Commander'],
+    cards: [{ name: 'Forest', count: 99 }, { name: 'Test Commander', count: 1 }],
+    sideboard: [],
+    maybeboard: [],
+    colorIdentity: ['G'],
+    importedAt,
+  };
+}
+
+function assert(condition: boolean, message: string): void {
+  if (!condition) throw new Error(message);
+}
+
+storage.clear();
+
+saveDeck(makeDeck('oldest', 100));
+saveDeck(makeDeck('middle', 200));
+saveDeck(makeDeck('newer', 300));
+saveDeck(makeDeck('newest', 400));
+
+let decks = loadDecksFromStorage();
+assert(decks.length === MAX_STORED_DECKS, `expected ${MAX_STORED_DECKS} saved decks, got ${decks.length}`);
+assert(decks.map(deck => deck.id).join(',') === 'newest,newer,middle', 'expected newest 3 decks to be retained');
+
+saveDeck(makeDeck('middle', 500));
+decks = loadDecksFromStorage();
+assert(decks.length === MAX_STORED_DECKS, 'expected updating an existing deck to keep the storage cap');
+assert(decks[0].id === 'middle', 'expected updated deck to move to the front by importedAt');
+
+saveDecksToStorage([makeDeck('a', 1), makeDeck('b', 2), makeDeck('c', 3), makeDeck('d', 4)]);
+decks = loadDecksFromStorage();
+assert(decks.length === MAX_STORED_DECKS, 'expected bulk storage writes to enforce the cap');
+assert(decks.map(deck => deck.id).join(',') === 'd,c,b', 'expected bulk write to keep newest 3 decks');
+
+console.log('PASS saved deck storage is capped at 3 decks');

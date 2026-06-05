@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useGameStore } from '../../store/gameStore';
-import { importDeckFromUrl, importDecklist, saveDeck, type ImportResult } from '../../engine/deckImport';
+import { importDeckFromUrl, importDecklist, saveDeck, MAX_STORED_DECKS, type ImportResult } from '../../engine/deckImport';
 import { MultiplayerPanel } from '../multiplayer/MultiplayerPanel';
 import { getActiveProfile } from '../../engine/profileStorage';
 import { BrandMark } from '../branding/BrandMark';
@@ -83,7 +83,33 @@ export function LobbyScreen() {
   const occupiedSeats = new Set(seatedPeers.map(peer => peer.seatIndex));
   const isTableHost = gameMode === 'table' && store.multiplayer.status === 'host';
   const minimumTablePlayers = 2;
-  const canStartTable = gameMode !== 'table' || (isTableHost && occupiedSeats.size >= minimumTablePlayers);
+  const tableDeckStatus = seatedPeers
+    .map(peer => {
+      const seat = players[peer.seatIndex];
+      const loadedPlayer = seat ? store.game.players.find(player => player.id === seat.id) : undefined;
+      const hasLoadedDeck = Boolean(
+        loadedPlayer?.deckId &&
+        (loadedPlayer.library.length > 0 || loadedPlayer.commandZone.length > 0)
+      );
+      const hasAssignedSavedDeck = Boolean(seat?.deckId && savedDecks.some(deck => deck.id === seat.deckId));
+      return {
+        peer,
+        seat,
+        ready: hasLoadedDeck || hasAssignedSavedDeck,
+      };
+    });
+  const missingDeckPlayers = tableDeckStatus
+    .filter(status => !status.ready)
+    .map(status => status.peer.name);
+  const tableDecksReady = gameMode !== 'table' || (
+    occupiedSeats.size >= minimumTablePlayers &&
+    missingDeckPlayers.length === 0
+  );
+  const canStartTable = gameMode !== 'table' || (
+    isTableHost &&
+    occupiedSeats.size >= minimumTablePlayers &&
+    tableDecksReady
+  );
 
   function updateMode(mode: GameMode) {
     setGameMode(mode);
@@ -214,18 +240,25 @@ export function LobbyScreen() {
     const gamePlayers = getPlayersForGame();
     const actualPlayerCount = (gameMode === 'table' ? gamePlayers.length : playerCount) as PlayerCount;
     const config = getGameConfig(actualPlayerCount, gamePlayers);
-    store.initGame(config, gamePlayers);
+    if (gameMode === 'table') {
+      store.prepareLoadedTableGame(config, gamePlayers);
+    } else {
+      store.initGame(config, gamePlayers);
+    }
 
     // Load saved decks for players who have them
     (async () => {
-      for (let i = 0; i < players.length; i++) {
-        const override = deckOverrides[players[i].id];
+      const setupPlayers = gameMode === 'table'
+        ? [...occupiedSeats].sort((a, b) => a - b).map(index => players[index]).filter(Boolean)
+        : players;
+      for (const setupPlayer of setupPlayers) {
+        const override = deckOverrides[setupPlayer.id];
         if (override) {
-          await store.loadDeck(players[i].id, override);
-        } else if (players[i].deckId) {
-          const deck = savedDecks.find(d => d.id === players[i].deckId);
+          await store.loadDeck(setupPlayer.id, override);
+        } else if (setupPlayer.deckId) {
+          const deck = savedDecks.find(d => d.id === setupPlayer.deckId);
           if (deck) {
-            await store.loadDeck(players[i].id, deck);
+            await store.loadDeck(setupPlayer.id, deck);
           }
         }
       }
@@ -532,9 +565,12 @@ export function LobbyScreen() {
             </div>
 
             {/* Saved decks */}
-            {savedDecks.length > 0 && (
-              <div>
-                <div style={{ fontSize: 10, color: '#64748b', marginBottom: 6 }}>Saved Decks</div>
+            <div>
+              <div style={{ fontSize: 10, color: '#64748b', marginBottom: 6 }}>
+                Saved Decks ({savedDecks.length}/{MAX_STORED_DECKS})
+                <span style={{ color: '#334155' }}> | newest decks stay stored</span>
+              </div>
+              {savedDecks.length > 0 ? (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                   {savedDecks.map(deck => {
                     const assigned = activeSetupPlayer?.deckId === deck.id;
@@ -569,8 +605,12 @@ export function LobbyScreen() {
                     );
                   })}
                 </div>
-              </div>
-            )}
+              ) : (
+                <div style={{ fontSize: 10, color: '#475569', padding: '6px 0' }}>
+                  No saved decks yet.
+                </div>
+              )}
+            </div>
 
             {/* Import new deck */}
             <div>
@@ -831,6 +871,8 @@ export function LobbyScreen() {
               ? 'Create Room to Start'
               : occupiedSeats.size < minimumTablePlayers
                 ? `Waiting for Players (${occupiedSeats.size}/${minimumTablePlayers} Minimum)`
+                : !tableDecksReady
+                  ? `Waiting for Decks (${missingDeckPlayers.join(', ')})`
                 : `Start Game (${occupiedSeats.size}/${playerCount} Seats)`}
         </button>
 

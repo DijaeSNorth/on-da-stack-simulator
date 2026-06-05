@@ -832,10 +832,17 @@ function createEmptyDeck(name: string): Deck {
 // ─── LocalStorage Persistence ─────────────────────────────────────────────────
 
 const DECKS_KEY = 'mtg_sim_decks';
+export const MAX_STORED_DECKS = 3;
+
+function limitStoredDecks(decks: Deck[]): Deck[] {
+  return [...decks]
+    .sort((a, b) => (b.importedAt || 0) - (a.importedAt || 0))
+    .slice(0, MAX_STORED_DECKS);
+}
 
 export function saveDecksToStorage(decks: Deck[]): void {
   try {
-    localStorage.setItem(DECKS_KEY, JSON.stringify(decks));
+    localStorage.setItem(DECKS_KEY, JSON.stringify(limitStoredDecks(decks)));
   } catch {
     // Storage full or unavailable
   }
@@ -844,7 +851,7 @@ export function saveDecksToStorage(decks: Deck[]): void {
 export function loadDecksFromStorage(): Deck[] {
   try {
     const raw = localStorage.getItem(DECKS_KEY);
-    return raw ? JSON.parse(raw) : [];
+    return raw ? limitStoredDecks(JSON.parse(raw)) : [];
   } catch {
     return [];
   }
@@ -855,7 +862,7 @@ export function saveDeck(deck: Deck): void {
   const idx = decks.findIndex(d => d.id === deck.id);
   if (idx >= 0) decks[idx] = deck;
   else decks.push(deck);
-  saveDecksToStorage(decks);
+  saveDecksToStorage(limitStoredDecks(decks));
 }
 
 export function deleteDeck(id: string): void {

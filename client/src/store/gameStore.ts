@@ -150,6 +150,14 @@ export interface GameStore {
     avatarStyle?: Player['avatarStyle'];
     avatarImage?: PlayerAvatarImage;
   }[]) => void;
+  prepareLoadedTableGame: (config: GameConfig, players: {
+    id: string;
+    name: string;
+    color: string;
+    avatarInitial?: string;
+    avatarStyle?: Player['avatarStyle'];
+    avatarImage?: PlayerAvatarImage;
+  }[]) => void;
   loadDeck: (playerId: string, deck: Deck) => Promise<void>;
   startGame: () => void;
   resetGame: () => void;
@@ -451,6 +459,52 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     g.players[0].isActive = true;
     g.players[0].hasPriority = true;
     set({ game: g, localPlayerId: players[0].id, ui: { ...get().ui, screen: 'lobby', lobbyOpen: true } });
+  },
+
+  prepareLoadedTableGame: (config, players) => {
+    const current = get().game;
+    const keptIds = new Set(players.map(p => p.id));
+    const nextPlayers = players.map((p, i) => {
+      const existing = current.players.find(player => player.id === p.id);
+      const base = existing ?? createPlayer(p.id, p.name, i, p.color || PLAYER_COLORS[i], config, {
+        initial: p.avatarInitial,
+        style: p.avatarStyle,
+        image: p.avatarImage,
+      });
+      return {
+        ...base,
+        name: p.name,
+        color: p.color,
+        avatarInitial: p.avatarInitial,
+        avatarStyle: p.avatarStyle,
+        avatarImage: p.avatarImage,
+        seatIndex: i,
+        isActive: i === 0,
+        hasPriority: i === 0,
+      };
+    });
+    const cards = Object.fromEntries(
+      Object.entries(current.cards).filter(([, card]) =>
+        keptIds.has(card.ownerId) || keptIds.has(card.controllerId)
+      )
+    );
+    set({
+      game: {
+        ...current,
+        config,
+        players: nextPlayers,
+        cards,
+        activePlayerId: nextPlayers[0]?.id ?? '',
+        priorityPlayerId: nextPlayers[0]?.id ?? '',
+        combat: createEmptyGameState(config).combat,
+        lastUpdatedAt: Date.now(),
+        status: 'lobby',
+      },
+      localPlayerId: nextPlayers.some(player => player.id === get().localPlayerId)
+        ? get().localPlayerId
+        : nextPlayers[0]?.id ?? '',
+      ui: { ...get().ui, screen: 'lobby', lobbyOpen: true },
+    });
   },
 
   loadDeck: async (playerId, deck) => {
