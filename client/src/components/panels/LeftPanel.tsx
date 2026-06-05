@@ -59,9 +59,8 @@ export function LeftPanel() {
     <div
       data-testid="left-panel"
       style={{
-        width: 200,
+        width: '100%',
         background: '#111827',
-        borderRight: '1px solid #1e293b',
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',

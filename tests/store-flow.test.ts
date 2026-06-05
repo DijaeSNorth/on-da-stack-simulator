@@ -187,5 +187,22 @@ test('screen and lobbyOpen stay synchronized', () => {
   assert(useGameStore.getState().ui.screen === 'game', 'expected screen game after closing lobby');
 });
 
+test('panel sizes clamp and reset for resizable touch layout', () => {
+  useGameStore.getState().setPanelSize('left', 999);
+  useGameStore.getState().setPanelSize('right', 10);
+  useGameStore.getState().setPanelSize('deckBuilder', 520);
+
+  let sizes = useGameStore.getState().ui.panelSizes;
+  assert(sizes.left === 360, `expected left panel max clamp 360, got ${sizes.left}`);
+  assert(sizes.right === 220, `expected right panel min clamp 220, got ${sizes.right}`);
+  assert(sizes.deckBuilder === 520, `expected deck builder size 520, got ${sizes.deckBuilder}`);
+
+  useGameStore.getState().resetPanelSizes();
+  sizes = useGameStore.getState().ui.panelSizes;
+  assert(sizes.left === 220, `expected left panel reset 220, got ${sizes.left}`);
+  assert(sizes.right === 280, `expected right panel reset 280, got ${sizes.right}`);
+  assert(sizes.deckBuilder === 430, `expected deck builder reset 430, got ${sizes.deckBuilder}`);
+});
+
 console.log(`\nStore flow tests: ${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

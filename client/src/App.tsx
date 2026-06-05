@@ -1,5 +1,6 @@
 import { useGameStore } from './store/gameStore';
 import { Suspense, lazy, useEffect, useRef } from 'react';
+import type { ReactNode } from 'react';
 import { TopBar } from './components/TopBar';
 import { PhaseGuideBar } from './components/PhaseGuideBar';
 import { LeftPanel } from './components/panels/LeftPanel';
@@ -32,6 +33,8 @@ export default function App() {
   const game = useGameStore(s => s.game);
   const localPlayerId = useGameStore(s => s.localPlayerId);
   const rightPanelOpen = useGameStore(s => s.ui.rightPanelOpen);
+  const setPanelSize = useGameStore(s => s.setPanelSize);
+  const resetPanelSizes = useGameStore(s => s.resetPanelSizes);
   const toggleRightPanel = useGameStore(s => s.toggleRightPanel);
   const isMobile = useIsMobile();
   const appliedMobileLayout = useRef(false);
@@ -84,7 +87,19 @@ export default function App() {
         minHeight: 0,
       }}>
         {/* Left panel */}
-        {ui.leftPanelOpen && <LeftPanel />}
+        {ui.leftPanelOpen && (
+          <>
+            <PanelShell width={ui.panelSizes.left} side="left">
+              <LeftPanel />
+            </PanelShell>
+            <ResizeHandle
+              ariaLabel="Resize players panel"
+              title="Drag to resize players panel. Double-click to reset panels."
+              onResize={delta => setPanelSize('left', ui.panelSizes.left + delta)}
+              onReset={resetPanelSizes}
+            />
+          </>
+        )}
 
         {/* Collapsed left panel handle */}
         {!ui.leftPanelOpen && (
@@ -114,22 +129,43 @@ export default function App() {
 
         {/* Right panel */}
         {ui.deckBuilderOpen && game.config.playerCount === 1 && (
+          <>
+          <ResizeHandle
+            ariaLabel="Resize deck lab panel"
+            title="Drag to resize deck lab panel. Double-click to reset panels."
+            onResize={delta => setPanelSize('deckBuilder', ui.panelSizes.deckBuilder - delta)}
+            onReset={resetPanelSizes}
+          />
           <div style={{
-            width: 430,
-            maxWidth: '42vw',
-            minWidth: 340,
+            width: ui.panelSizes.deckBuilder,
+            maxWidth: '55vw',
+            minWidth: 0,
             borderLeft: '1px solid #26323a',
             background: '#080d11',
             overflow: 'auto',
             padding: 10,
+            flexShrink: 0,
           }}>
             <Suspense fallback={null}>
               <SoloDeckBuilder playerId={localPlayerId || game.players[0]?.id} compact loadLabel="Reload Test Deck" />
             </Suspense>
           </div>
+          </>
         )}
 
-        {ui.rightPanelOpen && <RightPanel />}
+        {ui.rightPanelOpen && (
+          <>
+            <ResizeHandle
+              ariaLabel="Resize assistant panel"
+              title="Drag to resize assistant panel. Double-click to reset panels."
+              onResize={delta => setPanelSize('right', ui.panelSizes.right - delta)}
+              onReset={resetPanelSizes}
+            />
+            <PanelShell width={ui.panelSizes.right} side="right">
+              <RightPanel />
+            </PanelShell>
+          </>
+        )}
 
         {/* Collapsed right panel handle */}
         {!ui.rightPanelOpen && (
@@ -150,6 +186,93 @@ export default function App() {
       <WelcomeModal />
       <CoachMark />
     </div>
+  );
+}
+
+function PanelShell({ width, side, children }: { width: number; side: 'left' | 'right'; children: ReactNode }) {
+  return (
+    <div style={{
+      width,
+      minWidth: 0,
+      flexShrink: 0,
+      display: 'flex',
+      overflow: 'hidden',
+      borderRight: side === 'left' ? '1px solid #1e293b' : 'none',
+      borderLeft: side === 'right' ? '1px solid #1e293b' : 'none',
+    }}>
+      {children}
+    </div>
+  );
+}
+
+function ResizeHandle({
+  ariaLabel,
+  title,
+  onResize,
+  onReset,
+}: {
+  ariaLabel: string;
+  title: string;
+  onResize: (deltaX: number) => void;
+  onReset: () => void;
+}) {
+  const dragRef = useRef<{ startX: number; lastX: number; pointerId: number } | null>(null);
+
+  return (
+    <button
+      type="button"
+      aria-label={ariaLabel}
+      title={title}
+      onDoubleClick={onReset}
+      onPointerDown={event => {
+        dragRef.current = { startX: event.clientX, lastX: event.clientX, pointerId: event.pointerId };
+        event.currentTarget.setPointerCapture(event.pointerId);
+        event.preventDefault();
+      }}
+      onPointerMove={event => {
+        const drag = dragRef.current;
+        if (!drag || drag.pointerId !== event.pointerId) return;
+        const delta = event.clientX - drag.lastX;
+        drag.lastX = event.clientX;
+        if (delta !== 0) onResize(delta);
+      }}
+      onPointerUp={event => {
+        if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+      }}
+      onPointerCancel={event => {
+        if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
+      }}
+      style={{
+        width: 14,
+        minWidth: 14,
+        alignSelf: 'stretch',
+        border: 'none',
+        borderLeft: '1px solid rgba(148,163,184,0.08)',
+        borderRight: '1px solid rgba(148,163,184,0.08)',
+        background: 'linear-gradient(90deg, #0b0f12, #10161a, #0b0f12)',
+        cursor: 'col-resize',
+        touchAction: 'none',
+        padding: 0,
+        flexShrink: 0,
+        position: 'relative',
+      }}
+    >
+      <span style={{
+        position: 'absolute',
+        top: '50%',
+        left: '50%',
+        transform: 'translate(-50%, -50%)',
+        width: 3,
+        height: 38,
+        borderRadius: 999,
+        background: '#334155',
+        boxShadow: '5px 0 0 #26323a, -5px 0 0 #26323a',
+        pointerEvents: 'none',
+      }} />
+    </button>
   );
 }
 

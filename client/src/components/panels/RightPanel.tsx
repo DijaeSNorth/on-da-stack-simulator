@@ -449,9 +449,8 @@ export function RightPanel() {
     <div
       data-testid="right-panel"
       style={{
-        width: 240,
+        width: '100%',
         background: '#111827',
-        borderLeft: '1px solid #1e293b',
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',

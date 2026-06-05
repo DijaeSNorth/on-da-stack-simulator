@@ -53,6 +53,11 @@ export interface UIState {
   battlefieldView: 'normal' | 'overview';
   assistantMessages: AssistantMessage[];
   actionFilter: string;
+  panelSizes: {
+    left: number;
+    right: number;
+    deckBuilder: number;
+  };
 }
 
 export interface AssistantMessage {
@@ -89,6 +94,46 @@ const DEFAULT_MULTIPLAYER: MultiplayerState = {
   configured: false,
 };
 
+const PANEL_SIZES_KEY = 'mtg_sim_panel_sizes';
+const DEFAULT_PANEL_SIZES: UIState['panelSizes'] = {
+  left: 220,
+  right: 280,
+  deckBuilder: 430,
+};
+
+function clampPanelSize(panel: keyof UIState['panelSizes'], value: number): number {
+  const limits: Record<keyof UIState['panelSizes'], [number, number]> = {
+    left: [170, 360],
+    right: [220, 460],
+    deckBuilder: [320, 620],
+  };
+  const [min, max] = limits[panel];
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+function loadPanelSizes(): UIState['panelSizes'] {
+  if (typeof localStorage === 'undefined') return DEFAULT_PANEL_SIZES;
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PANEL_SIZES_KEY) || '{}') as Partial<UIState['panelSizes']>;
+    return {
+      left: clampPanelSize('left', parsed.left ?? DEFAULT_PANEL_SIZES.left),
+      right: clampPanelSize('right', parsed.right ?? DEFAULT_PANEL_SIZES.right),
+      deckBuilder: clampPanelSize('deckBuilder', parsed.deckBuilder ?? DEFAULT_PANEL_SIZES.deckBuilder),
+    };
+  } catch {
+    return DEFAULT_PANEL_SIZES;
+  }
+}
+
+function savePanelSizes(sizes: UIState['panelSizes']): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(PANEL_SIZES_KEY, JSON.stringify(sizes));
+  } catch {
+    // Storage may be unavailable; resizing should still work for this session.
+  }
+}
+
 const DEFAULT_UI: UIState = {
   screen: 'lobby',
   selectedCardId: null,
@@ -112,6 +157,7 @@ const DEFAULT_UI: UIState = {
   battlefieldView: 'normal',
   assistantMessages: [],
   actionFilter: '',
+  panelSizes: loadPanelSizes(),
 };
 
 // ─── Store Interface ──────────────────────────────────────────────────────────
@@ -221,6 +267,8 @@ export interface GameStore {
   setHoveredCard: (instanceId: string | null) => void;
   setFocusedPlayer: (playerId: string | null) => void;
   setRightPanelTab: (tab: UIState['rightPanelTab']) => void;
+  setPanelSize: (panel: keyof UIState['panelSizes'], size: number) => void;
+  resetPanelSizes: () => void;
   toggleLeftPanel: () => void;
   toggleRightPanel: () => void;
   openZoneDrawer: (zone: 'graveyard' | 'exile' | 'library' | 'hand', playerId: string) => void;
@@ -1232,6 +1280,15 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   setHoveredCard: (id) => set(s => ({ ui: { ...s.ui, hoveredCardId: id } })),
   setFocusedPlayer: (id) => set(s => ({ ui: { ...s.ui, focusedPlayerId: id } })),
   setRightPanelTab: (tab) => set(s => ({ ui: { ...s.ui, rightPanelTab: tab } })),
+  setPanelSize: (panel, size) => set(s => {
+    const panelSizes = { ...s.ui.panelSizes, [panel]: clampPanelSize(panel, size) };
+    savePanelSizes(panelSizes);
+    return { ui: { ...s.ui, panelSizes } };
+  }),
+  resetPanelSizes: () => set(s => {
+    savePanelSizes(DEFAULT_PANEL_SIZES);
+    return { ui: { ...s.ui, panelSizes: DEFAULT_PANEL_SIZES } };
+  }),
   toggleLeftPanel: () => set(s => ({ ui: { ...s.ui, leftPanelOpen: !s.ui.leftPanelOpen } })),
   toggleRightPanel: () => set(s => ({ ui: { ...s.ui, rightPanelOpen: !s.ui.rightPanelOpen } })),
   openZoneDrawer: (zone, playerId) => set(s => ({ ui: { ...s.ui, zoneDrawer: { zone, playerId } } })),
