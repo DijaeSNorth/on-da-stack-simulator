@@ -82,7 +82,8 @@ export function LobbyScreen() {
     .filter(peer => peer.online && !peer.isSpectator && peer.seatIndex >= 0 && peer.seatIndex < playerCount);
   const occupiedSeats = new Set(seatedPeers.map(peer => peer.seatIndex));
   const isTableHost = gameMode === 'table' && store.multiplayer.status === 'host';
-  const canStartTable = gameMode !== 'table' || (isTableHost && occupiedSeats.size >= playerCount);
+  const minimumTablePlayers = 2;
+  const canStartTable = gameMode !== 'table' || (isTableHost && occupiedSeats.size >= minimumTablePlayers);
 
   function updateMode(mode: GameMode) {
     setGameMode(mode);
@@ -143,18 +144,18 @@ export function LobbyScreen() {
     await assignDeckToPlayer(importResult.deck);
   }
 
-  function getGameConfig() {
+  function getGameConfig(configPlayerCount: PlayerCount = playerCount, votePlayers: { id: string }[] = players) {
     const selectedHouseRules = HOUSE_RULE_PRESETS
       .filter(rule => houseRules.has(rule.id))
       .map(rule => ({
         ...rule,
-        votes: Object.fromEntries(players.map(player => [player.id, true])),
+        votes: Object.fromEntries(votePlayers.map(player => [player.id, true])),
         approved: true,
         appliesTo: 'all' as const,
       }));
 
     return {
-      playerCount,
+      playerCount: configPlayerCount,
       format: 'commander' as const,
       startingLife,
       useCommanderDamage: true,
@@ -180,17 +181,19 @@ export function LobbyScreen() {
     }
 
     const peerBySeat = new Map(seatedPeers.map(peer => [peer.seatIndex, peer]));
-    return players.slice(0, playerCount).map((seat, index) => {
-      const peer = peerBySeat.get(index);
-      return {
-        id: seat.id,
-        name: peer?.name ?? seat.name,
-        color: peer?.color ?? seat.color,
-        avatarInitial: peer?.avatarInitial ?? seat.avatarInitial,
-        avatarStyle: peer?.avatarStyle ?? seat.avatarStyle,
-        avatarImage: peer?.avatarImage ?? seat.avatarImage,
-      };
-    });
+    return [...peerBySeat.entries()]
+      .sort(([a], [b]) => a - b)
+      .map(([seatIndex, peer]) => {
+        const seat = players[seatIndex] ?? players[0];
+        return {
+          id: seat.id,
+          name: peer.name,
+          color: peer.color,
+          avatarInitial: peer.avatarInitial ?? seat.avatarInitial,
+          avatarStyle: peer.avatarStyle ?? seat.avatarStyle,
+          avatarImage: peer.avatarImage ?? seat.avatarImage,
+        };
+      });
   }
 
   function prepareTableRoomState() {
@@ -200,9 +203,9 @@ export function LobbyScreen() {
 
   function startGame(deckOverrides: Record<string, Deck> = {}) {
     if (gameMode === 'table' && !canStartTable) return;
-    const config = getGameConfig();
-
     const gamePlayers = getPlayersForGame();
+    const actualPlayerCount = (gameMode === 'table' ? gamePlayers.length : playerCount) as PlayerCount;
+    const config = getGameConfig(actualPlayerCount, gamePlayers);
     store.initGame(config, gamePlayers);
 
     // Load saved decks for players who have them
@@ -818,9 +821,9 @@ export function LobbyScreen() {
             ? 'Start Deck Lab'
             : !isTableHost
               ? 'Create Room to Start'
-              : occupiedSeats.size < playerCount
-                ? `Waiting for Players (${occupiedSeats.size}/${playerCount})`
-                : `Start Game (${playerCount} Players)`}
+              : occupiedSeats.size < minimumTablePlayers
+                ? `Waiting for Players (${occupiedSeats.size}/${minimumTablePlayers} Minimum)`
+                : `Start Game (${occupiedSeats.size}/${playerCount} Seats)`}
         </button>
 
         <div style={{ textAlign: 'center', fontSize: 10, color: '#1e293b' }}>
