@@ -129,12 +129,14 @@ export interface GameStore {
     hostName: string,
     hostColor: string,
     seatIndex: number,
+    avatar?: { initial?: string; style?: Player['avatarStyle']; image?: PlayerAvatarImage },
   ) => Promise<string>;
   joinMultiplayerRoom: (
     code: string,
     peerName: string,
     peerColor: string,
     seatIndex: number,
+    avatar?: { initial?: string; style?: Player['avatarStyle']; image?: PlayerAvatarImage },
   ) => Promise<void>;
   leaveMultiplayerRoom: () => void;
   setMultiplayerStatus: (status: SyncStatus) => void;
@@ -358,13 +360,16 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     );
   },
 
-  createMultiplayerRoom: async (hostName, hostColor, seatIndex) => {
+  createMultiplayerRoom: async (hostName, hostColor, seatIndex, avatar) => {
     const { game } = get();
     const peerId = crypto.randomUUID();
     const code = await createRoom(game, {
       peerId,
       name: hostName,
       color: hostColor,
+      avatarInitial: avatar?.initial,
+      avatarStyle: avatar?.style,
+      avatarImage: avatar?.image,
       seatIndex,
       isSpectator: false,
     });
@@ -382,12 +387,15 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     return code;
   },
 
-  joinMultiplayerRoom: async (code, peerName, peerColor, seatIndex) => {
+  joinMultiplayerRoom: async (code, peerName, peerColor, seatIndex, avatar) => {
     const peerId = crypto.randomUUID();
     const { game: remoteGame, isSpectator } = await joinRoom(code, {
       peerId,
       name: peerName,
       color: peerColor,
+      avatarInitial: avatar?.initial,
+      avatarStyle: avatar?.style,
+      avatarImage: avatar?.image,
       seatIndex,
       isSpectator: false, // host decides; we send intent
     });

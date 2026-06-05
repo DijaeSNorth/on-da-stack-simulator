@@ -27,7 +27,7 @@
  */
 
 import Peer, { type DataConnection } from 'peerjs';
-import type { GameState } from '../types/game';
+import type { GameState, PlayerAvatarImage } from '../types/game';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -35,6 +35,9 @@ export interface RoomPresence {
   peerId: string;
   name: string;
   color: string;
+  avatarInitial?: string;
+  avatarStyle?: 'solid' | 'gradient' | 'outline';
+  avatarImage?: PlayerAvatarImage;
   seatIndex: number;   // -1 = spectator
   isSpectator: boolean;
   online: boolean;

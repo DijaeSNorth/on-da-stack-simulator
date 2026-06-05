@@ -4,6 +4,7 @@ import { importDeckFromUrl, importDecklist, saveDeck, type ImportResult } from '
 import { MultiplayerPanel } from '../multiplayer/MultiplayerPanel';
 import { getActiveProfile } from '../../engine/profileStorage';
 import { BrandMark } from '../branding/BrandMark';
+import { PlayerAvatar } from '../profile/PlayerAvatar';
 import type { Deck, PlayerAvatarImage } from '../../types/game';
 
 interface PlayerSetup {
@@ -36,7 +37,7 @@ export function LobbyScreen() {
   const [players, setPlayers] = useState<PlayerSetup[]>(() =>
     Array.from({ length: 1 }, (_, i) => ({
       id: crypto.randomUUID(),
-      name: i === 0 ? 'You' : `Player ${i + 1}`,
+      name: i === 0 ? 'You' : `Open Seat ${i + 1}`,
       color: DEFAULT_COLORS[i],
     }))
   );
@@ -52,24 +53,36 @@ export function LobbyScreen() {
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [houseRules, setHouseRules] = useState<Set<string>>(new Set());
 
+  function applyActiveProfileToSeat0() {
+    const profile = getActiveProfile();
+    if (!profile) return;
+    setPlayers(prev => prev.map((p, i) =>
+      i === 0 ? {
+        ...p,
+        name: profile.displayName,
+        color: profile.color,
+        avatarInitial: profile.avatarInitial,
+        avatarStyle: profile.avatarStyle,
+        avatarImage: profile.avatarImage,
+      } : p
+    ));
+  }
+
   // Auto-populate seat 0 from active profile on mount
   useEffect(() => {
-    const profile = getActiveProfile();
-    if (profile) {
-      setPlayers(prev => prev.map((p, i) =>
-        i === 0 ? {
-          ...p,
-          name: profile.displayName,
-          color: profile.color,
-          avatarInitial: profile.avatarInitial,
-          avatarStyle: profile.avatarStyle,
-          avatarImage: profile.avatarImage,
-        } : p
-      ));
-    }
+    applyActiveProfileToSeat0();
   }, []);
 
   const savedDecks = store.decks;
+  const localPresence = store.multiplayer.peerId ? store.multiplayer.peers[store.multiplayer.peerId] : undefined;
+  const localSeatIndex = gameMode === 'table' && localPresence && localPresence.seatIndex >= 0 ? localPresence.seatIndex : 0;
+  const setupPlayerIndex = gameMode === 'solo' ? activePlayerTab : localSeatIndex;
+  const activeSetupPlayer = players[setupPlayerIndex] ?? players[0];
+  const seatedPeers = Object.values(store.multiplayer.peers)
+    .filter(peer => peer.online && !peer.isSpectator && peer.seatIndex >= 0 && peer.seatIndex < playerCount);
+  const occupiedSeats = new Set(seatedPeers.map(peer => peer.seatIndex));
+  const isTableHost = gameMode === 'table' && store.multiplayer.status === 'host';
+  const canStartTable = gameMode !== 'table' || (isTableHost && occupiedSeats.size >= playerCount);
 
   function updateMode(mode: GameMode) {
     setGameMode(mode);
@@ -82,7 +95,7 @@ export function LobbyScreen() {
       if (n > prev.length) {
         return [...prev, ...Array.from({ length: n - prev.length }, (_, i) => ({
           id: crypto.randomUUID(),
-          name: `Player ${prev.length + i + 1}`,
+          name: `Open Seat ${prev.length + i + 1}`,
           color: DEFAULT_COLORS[prev.length + i],
         }))];
       }
@@ -114,8 +127,8 @@ export function LobbyScreen() {
   }
 
   async function assignDeckToPlayer(deck: Deck) {
-    updatePlayer(activePlayerTab, { deckId: deck.id });
-    await store.loadDeck(players[activePlayerTab].id, deck);
+    updatePlayer(setupPlayerIndex, { deckId: deck.id });
+    await store.loadDeck(activeSetupPlayer.id, deck);
     setImportResult(null);
     setImportError('');
     setDeckText('');
@@ -154,15 +167,43 @@ export function LobbyScreen() {
     };
   }
 
+  function getPlayersForGame() {
+    if (gameMode !== 'table') {
+      return players.map(p => ({
+        id: p.id,
+        name: p.name,
+        color: p.color,
+        avatarInitial: p.avatarInitial,
+        avatarStyle: p.avatarStyle,
+        avatarImage: p.avatarImage,
+      }));
+    }
+
+    const peerBySeat = new Map(seatedPeers.map(peer => [peer.seatIndex, peer]));
+    return players.slice(0, playerCount).map((seat, index) => {
+      const peer = peerBySeat.get(index);
+      return {
+        id: seat.id,
+        name: peer?.name ?? seat.name,
+        color: peer?.color ?? seat.color,
+        avatarInitial: peer?.avatarInitial ?? seat.avatarInitial,
+        avatarStyle: peer?.avatarStyle ?? seat.avatarStyle,
+        avatarImage: peer?.avatarImage ?? seat.avatarImage,
+      };
+    });
+  }
+
+  function prepareTableRoomState() {
+    const config = getGameConfig();
+    store.initGame(config, getPlayersForGame());
+  }
+
   function startGame(deckOverrides: Record<string, Deck> = {}) {
+    if (gameMode === 'table' && !canStartTable) return;
     const config = getGameConfig();
 
-    store.initGame(config, players.map(p => ({
-      id: p.id, name: p.name, color: p.color,
-      avatarInitial: p.avatarInitial,
-      avatarStyle: p.avatarStyle,
-      avatarImage: p.avatarImage,
-    })));
+    const gamePlayers = getPlayersForGame();
+    store.initGame(config, gamePlayers);
 
     // Load saved decks for players who have them
     (async () => {
@@ -185,8 +226,8 @@ export function LobbyScreen() {
   }
 
   function testDeck(deck: Deck) {
-    updatePlayer(activePlayerTab, { deckId: deck.id });
-    startGame({ [players[activePlayerTab].id]: deck });
+    updatePlayer(setupPlayerIndex, { deckId: deck.id });
+    startGame({ [activeSetupPlayer.id]: deck });
   }
 
   function saveDeckAndTest() {
@@ -325,48 +366,109 @@ export function LobbyScreen() {
             {/* Player setup tabs */}
             <div style={{ marginBottom: 12 }}>
               <label style={{ fontSize: 11, color: '#94a3b8', display: 'block', marginBottom: 6 }}>
-                {gameMode === 'solo' ? 'Solo Player' : 'Player Names & Colors'}
+                {gameMode === 'solo' ? 'Solo Player' : 'Lobby Seats'}
               </label>
-              <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
-                {players.map((p, i) => (
-                  <button
-                    key={p.id}
-                    onClick={() => setActivePlayerTab(i)}
-                    style={{
-                      padding: '4px 8px',
-                      background: activePlayerTab === i ? `${p.color}33` : '#1e293b',
-                      border: `1px solid ${activePlayerTab === i ? p.color : '#334155'}`,
-                      borderRadius: 4, cursor: 'pointer',
-                      fontSize: 10, color: activePlayerTab === i ? p.color : '#64748b',
-                      fontWeight: 600,
-                    }}
-                  >P{i + 1}</button>
-                ))}
-              </div>
+              {gameMode === 'solo' ? (
+                <>
+                  <div style={{ display: 'flex', gap: 4, marginBottom: 8, flexWrap: 'wrap' }}>
+                    {players.map((p, i) => (
+                      <button
+                        key={p.id}
+                        onClick={() => setActivePlayerTab(i)}
+                        style={{
+                          padding: '4px 8px',
+                          background: activePlayerTab === i ? `${p.color}33` : '#1e293b',
+                          border: `1px solid ${activePlayerTab === i ? p.color : '#334155'}`,
+                          borderRadius: 4, cursor: 'pointer',
+                          fontSize: 10, color: activePlayerTab === i ? p.color : '#64748b',
+                          fontWeight: 600,
+                        }}
+                      >P{i + 1}</button>
+                    ))}
+                  </div>
 
-              {/* Active player editor */}
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <input
-                  type="color"
-                  value={players[activePlayerTab]?.color || '#3b82f6'}
-                  onChange={e => updatePlayer(activePlayerTab, { color: e.target.value })}
-                  style={{ width: 32, height: 32, borderRadius: 4, border: 'none', cursor: 'pointer', background: 'none', padding: 0 }}
-                />
-                <input
-                  value={players[activePlayerTab]?.name || ''}
-                  onChange={e => updatePlayer(activePlayerTab, { name: e.target.value })}
-                  placeholder={`Player ${activePlayerTab + 1} name`}
-                  data-testid={`input-player-name-${activePlayerTab}`}
-                  style={{
-                    flex: 1,
-                    background: '#1e293b',
-                    border: '1px solid #334155',
-                    borderRadius: 5,
-                    padding: '6px 10px',
-                    fontSize: 12, color: '#e2e8f0', outline: 'none',
-                  }}
-                />
-              </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <PlayerAvatar
+                      name={players[activePlayerTab]?.name ?? 'Player'}
+                      color={players[activePlayerTab]?.color || '#3b82f6'}
+                      initial={players[activePlayerTab]?.avatarInitial ?? players[activePlayerTab]?.name?.slice(0, 1)}
+                      styleMode={players[activePlayerTab]?.avatarStyle}
+                      image={players[activePlayerTab]?.avatarImage}
+                      size={34}
+                      square
+                    />
+                    <input
+                      type="color"
+                      value={players[activePlayerTab]?.color || '#3b82f6'}
+                      onChange={e => updatePlayer(activePlayerTab, { color: e.target.value })}
+                      style={{ width: 32, height: 32, borderRadius: 4, border: 'none', cursor: 'pointer', background: 'none', padding: 0 }}
+                    />
+                    <input
+                      value={players[activePlayerTab]?.name || ''}
+                      onChange={e => updatePlayer(activePlayerTab, { name: e.target.value })}
+                      placeholder={`Player ${activePlayerTab + 1} name`}
+                      data-testid={`input-player-name-${activePlayerTab}`}
+                      style={{
+                        flex: 1,
+                        background: '#1e293b',
+                        border: '1px solid #334155',
+                        borderRadius: 5,
+                        padding: '6px 10px',
+                        fontSize: 12, color: '#e2e8f0', outline: 'none',
+                      }}
+                    />
+                    <button onClick={() => store.setProfileOpen(true)} style={smallBtnStyle}>
+                      Profile
+                    </button>
+                    <button onClick={applyActiveProfileToSeat0} style={smallBtnStyle}>
+                      Apply
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                  {players.slice(0, playerCount).map((seat, index) => {
+                    const peer = seatedPeers.find(p => p.seatIndex === index);
+                    const occupied = Boolean(peer);
+                    return (
+                      <div
+                        key={seat.id}
+                        data-testid={`lobby-seat-${index}`}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 8,
+                          padding: '7px 8px',
+                          borderRadius: 6,
+                          background: occupied ? `${peer!.color}18` : 'rgba(255,255,255,0.025)',
+                          border: `1px solid ${occupied ? peer!.color + '55' : '#26323a'}`,
+                        }}
+                      >
+                        <PlayerAvatar
+                          name={peer?.name ?? `Seat ${index + 1}`}
+                          color={peer?.color ?? seat.color}
+                          initial={peer?.avatarInitial ?? `${index + 1}`}
+                          styleMode={peer?.avatarStyle}
+                          image={peer?.avatarImage}
+                          size={28}
+                        />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 11, fontWeight: 700, color: occupied ? '#e2e8f0' : '#64748b' }}>
+                            Seat {index + 1}: {occupied ? peer!.name : 'Waiting for player'}
+                          </div>
+                          <div style={{ fontSize: 9, color: '#475569' }}>
+                            {occupied ? (peer!.peerId === store.multiplayer.peerId ? 'You' : 'Joined') : 'Open seat'}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                    <button onClick={() => store.setProfileOpen(true)} style={smallBtnStyle}>Edit Profile</button>
+                    <button onClick={applyActiveProfileToSeat0} style={smallBtnStyle}>Apply Profile</button>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* House Rules */}
@@ -415,7 +517,7 @@ export function LobbyScreen() {
             gap: 12,
           }}>
             <div style={{ fontSize: 11, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 700 }}>
-              Deck Import — {gameMode === 'solo' ? 'Solo Player' : `Player ${activePlayerTab + 1}`}
+              Deck Import — {gameMode === 'solo' ? 'Solo Player' : `Your Setup (Seat ${setupPlayerIndex + 1})`}
             </div>
 
             {/* Saved decks */}
@@ -424,7 +526,7 @@ export function LobbyScreen() {
                 <div style={{ fontSize: 10, color: '#64748b', marginBottom: 6 }}>Saved Decks</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
                   {savedDecks.map(deck => {
-                    const assigned = players[activePlayerTab]?.deckId === deck.id;
+                    const assigned = activeSetupPlayer?.deckId === deck.id;
                     return (
                       <div
                         key={deck.id}
@@ -684,7 +786,14 @@ export function LobbyScreen() {
           <div style={{ fontSize: 11, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 12, fontWeight: 700 }}>
             Multiplayer — Peer-to-Peer
           </div>
-          <MultiplayerPanel />
+          <MultiplayerPanel
+            seatCount={playerCount}
+            seats={players.slice(0, playerCount).map((player, index) => ({
+              id: player.id,
+              name: `Seat ${index + 1}`,
+            }))}
+            onPrepareRoom={prepareTableRoomState}
+          />
         </div>
         )}
 
@@ -692,11 +801,12 @@ export function LobbyScreen() {
         <button
           data-testid="btn-start-game"
           onClick={() => startGame()}
+          disabled={!canStartTable}
           style={{
             width: '100%', padding: '14px 0',
-            background: 'linear-gradient(135deg, #0e7490, #f59e0b)',
-            color: '#fff', border: 'none', borderRadius: 8,
-            fontSize: 15, fontWeight: 800, cursor: 'pointer',
+            background: canStartTable ? 'linear-gradient(135deg, #0e7490, #f59e0b)' : '#182127',
+            color: canStartTable ? '#fff' : '#475569', border: 'none', borderRadius: 8,
+            fontSize: 15, fontWeight: 800, cursor: canStartTable ? 'pointer' : 'not-allowed',
             letterSpacing: '0.05em', textTransform: 'uppercase',
             boxShadow: '0 4px 20px rgba(34,211,238,0.18), 0 2px 18px rgba(245,158,11,0.16)',
             transition: 'opacity 0.15s',
@@ -704,7 +814,13 @@ export function LobbyScreen() {
           onMouseEnter={e => { (e.target as HTMLElement).style.opacity = '0.9'; }}
           onMouseLeave={e => { (e.target as HTMLElement).style.opacity = '1'; }}
         >
-          {gameMode === 'solo' ? 'Start Deck Lab' : `Start Game (${playerCount} Players)`}
+          {gameMode === 'solo'
+            ? 'Start Deck Lab'
+            : !isTableHost
+              ? 'Create Room to Start'
+              : occupiedSeats.size < playerCount
+                ? `Waiting for Players (${occupiedSeats.size}/${playerCount})`
+                : `Start Game (${playerCount} Players)`}
         </button>
 
         <div style={{ textAlign: 'center', fontSize: 10, color: '#1e293b' }}>
@@ -714,3 +830,15 @@ export function LobbyScreen() {
     </div>
   );
 }
+
+const smallBtnStyle: React.CSSProperties = {
+  background: '#182127',
+  border: '1px solid #34414a',
+  borderRadius: 5,
+  color: '#93c5fd',
+  cursor: 'pointer',
+  fontSize: 10,
+  fontWeight: 700,
+  padding: '6px 9px',
+  whiteSpace: 'nowrap',
+};

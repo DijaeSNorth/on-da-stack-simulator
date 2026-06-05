@@ -11,18 +11,30 @@
 
 import { useState, useEffect } from 'react';
 import { useGameStore } from '../../store/gameStore';
+import { getActiveProfile } from '../../engine/profileStorage';
+import { PlayerAvatar } from '../profile/PlayerAvatar';
+import type { PlayerAvatarImage } from '../../types/game';
 
 const DEFAULT_COLORS = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899'];
 
 type Mode = 'idle' | 'host' | 'join';
 
-export function MultiplayerPanel() {
+interface MultiplayerPanelProps {
+  seatCount?: number;
+  seats?: { id: string; name: string }[];
+  onPrepareRoom?: () => void;
+}
+
+export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: configuredSeats, onPrepareRoom }: MultiplayerPanelProps) {
   const store = useGameStore();
   const { multiplayer, game } = store;
 
   const [mode, setMode] = useState<Mode>('idle');
   const [peerName, setPeerName] = useState('');
   const [peerColor, setPeerColor] = useState(DEFAULT_COLORS[0]);
+  const [avatarInitial, setAvatarInitial] = useState<string | undefined>();
+  const [avatarStyle, setAvatarStyle] = useState<'solid' | 'gradient' | 'outline' | undefined>();
+  const [avatarImage, setAvatarImage] = useState<PlayerAvatarImage | undefined>();
   const [seatIndex, setSeatIndex] = useState(0);
   const [joinCode, setJoinCode] = useState('');
   const [busy, setBusy] = useState(false);
@@ -38,12 +50,31 @@ export function MultiplayerPanel() {
     store.initMultiplayerListeners();
   }, []);
 
+  function applyActiveProfile() {
+    const profile = getActiveProfile();
+    if (!profile) return;
+    setPeerName(profile.displayName);
+    setPeerColor(profile.color);
+    setAvatarInitial(profile.avatarInitial);
+    setAvatarStyle(profile.avatarStyle);
+    setAvatarImage(profile.avatarImage);
+  }
+
+  useEffect(() => {
+    applyActiveProfile();
+  }, []);
+
   async function handleCreateRoom() {
     setError('');
     if (!peerName.trim()) { setError('Enter your name first.'); return; }
     setBusy(true);
     try {
-      await store.createMultiplayerRoom(peerName.trim(), peerColor, seatIndex);
+      onPrepareRoom?.();
+      await store.createMultiplayerRoom(peerName.trim(), peerColor, seatIndex, {
+        initial: avatarInitial,
+        style: avatarStyle,
+        image: avatarImage,
+      });
     } catch (e: any) {
       setError(e.message ?? 'Failed to create room');
     } finally {
@@ -57,7 +88,11 @@ export function MultiplayerPanel() {
     if (!joinCode.trim()) { setError('Enter the room code.'); return; }
     setBusy(true);
     try {
-      await store.joinMultiplayerRoom(joinCode.trim(), peerName.trim(), peerColor, seatIndex);
+      await store.joinMultiplayerRoom(joinCode.trim(), peerName.trim(), peerColor, seatIndex, {
+        initial: avatarInitial,
+        style: avatarStyle,
+        image: avatarImage,
+      });
     } catch (e: any) {
       setError(e.message ?? 'Failed to join room');
     } finally {
@@ -80,9 +115,11 @@ export function MultiplayerPanel() {
 
   const peers = Object.values(multiplayer.peers);
   const takenSeats = new Set(peers.map(p => p.seatIndex));
-  const availableSeats = game.players
-    .map((p, i) => ({ seat: i, name: p.name }))
-    .filter(s => !takenSeats.has(s.seat));
+  const seatCount = configuredSeatCount ?? game.config.playerCount ?? game.players.length ?? 4;
+  const seats = configuredSeats ?? Array.from({ length: seatCount }, (_, i) => ({
+    id: game.players[i]?.id ?? `seat-${i}`,
+    name: game.players[i]?.name ?? `Seat ${i + 1}`,
+  }));
 
   // ─── Connected state ──────────────────────────────────────────────────────
 
@@ -147,7 +184,14 @@ export function MultiplayerPanel() {
                   flexShrink: 0,
                 }} />
                 {/* Color swatch */}
-                <div style={{ width: 12, height: 12, borderRadius: 3, background: p.color, flexShrink: 0 }} />
+                <PlayerAvatar
+                  name={p.name}
+                  color={p.color}
+                  initial={p.avatarInitial ?? p.name.slice(0, 1)}
+                  styleMode={p.avatarStyle}
+                  image={p.avatarImage}
+                  size={28}
+                />
                 <div style={{ flex: 1 }}>
                   <span style={{ fontSize: 13, fontWeight: 600, color: '#e2e8f0' }}>{p.name}</span>
                   <span style={{ fontSize: 11, color: '#475569', marginLeft: 8 }}>
@@ -229,9 +273,14 @@ export function MultiplayerPanel() {
           <NameColorRow
             name={peerName} setName={setPeerName}
             color={peerColor} setColor={setPeerColor}
+            avatarInitial={avatarInitial}
+            avatarStyle={avatarStyle}
+            avatarImage={avatarImage}
+            onOpenProfile={() => store.setProfileOpen(true)}
+            onApplyProfile={applyActiveProfile}
           />
           <SeatPicker
-            players={game.players}
+            players={seats}
             selected={seatIndex}
             onSelect={setSeatIndex}
             takenSeats={new Set()}
@@ -256,6 +305,11 @@ export function MultiplayerPanel() {
           <NameColorRow
             name={peerName} setName={setPeerName}
             color={peerColor} setColor={setPeerColor}
+            avatarInitial={avatarInitial}
+            avatarStyle={avatarStyle}
+            avatarImage={avatarImage}
+            onOpenProfile={() => store.setProfileOpen(true)}
+            onApplyProfile={applyActiveProfile}
           />
           <div>
             <label style={labelStyle}>Room Code</label>
@@ -274,7 +328,7 @@ export function MultiplayerPanel() {
             />
           </div>
           <SeatPicker
-            players={game.players}
+            players={seats}
             selected={seatIndex}
             onSelect={setSeatIndex}
             takenSeats={takenSeats}
@@ -298,12 +352,30 @@ export function MultiplayerPanel() {
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-function NameColorRow({ name, setName, color, setColor }: {
+function NameColorRow({
+  name, setName, color, setColor,
+  avatarInitial, avatarStyle, avatarImage,
+  onOpenProfile, onApplyProfile,
+}: {
   name: string; setName: (v: string) => void;
   color: string; setColor: (v: string) => void;
+  avatarInitial?: string;
+  avatarStyle?: 'solid' | 'gradient' | 'outline';
+  avatarImage?: PlayerAvatarImage;
+  onOpenProfile: () => void;
+  onApplyProfile: () => void;
 }) {
   return (
-    <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end' }}>
+    <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+      <PlayerAvatar
+        name={name || 'Player'}
+        color={color}
+        initial={avatarInitial ?? name.slice(0, 1)}
+        styleMode={avatarStyle}
+        image={avatarImage}
+        size={42}
+        square
+      />
       <div style={{ flex: 1 }}>
         <label style={labelStyle}>Your Name</label>
         <input
@@ -333,6 +405,22 @@ function NameColorRow({ name, setName, color, setColor }: {
             />
           ))}
         </div>
+      </div>
+      <div style={{ display: 'flex', gap: 4 }}>
+        <button
+          type="button"
+          onClick={onOpenProfile}
+          style={{ ...cancelBtnStyle, padding: '7px 10px', fontSize: 11 }}
+        >
+          Edit Profile
+        </button>
+        <button
+          type="button"
+          onClick={onApplyProfile}
+          style={{ ...cancelBtnStyle, padding: '7px 10px', fontSize: 11, color: '#93c5fd' }}
+        >
+          Apply
+        </button>
       </div>
     </div>
   );
