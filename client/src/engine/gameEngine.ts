@@ -2,7 +2,8 @@
 import { v4 as uuid } from 'uuid';
 import type {
   GameState, Player, CardState, CardDefinition, ActionRecord, ActionType,
-  Phase, StackObject, TriggerItem, AssistantFlag, Deck, GameConfig, Counter, CombatState, CustomCardDefinition
+  Phase, StackObject, TriggerItem, AssistantFlag, Deck, GameConfig, Counter, CombatState, CustomCardDefinition,
+  PlayerAvatarImage,
 } from '../types/game';
 import { fetchCardsByNames } from '../data/cardDatabase';
 import { PHASE_ORDER } from './phaseMeta';
@@ -29,12 +30,16 @@ export function createPlayer(
   name: string,
   seatIndex: number,
   color: string,
-  config: GameConfig
+  config: GameConfig,
+  avatar?: { initial?: string; style?: Player['avatarStyle']; image?: PlayerAvatarImage }
 ): Player {
   return {
     id,
     name,
     color,
+    avatarInitial: avatar?.initial,
+    avatarStyle: avatar?.style,
+    avatarImage: avatar?.image,
     seatIndex,
     life: config.startingLife,
     commanderDamage: {},

@@ -3,7 +3,7 @@ import { create } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import type {
   GameState, Player, CardState, Phase, StackObject, TriggerItem,
-  AssistantFlag, Deck, GameConfig, ActionRecord
+  AssistantFlag, Deck, GameConfig, ActionRecord, PlayerAvatarImage
 } from '../types/game';
 import {
   createEmptyGameState, createPlayer, createAction, moveCard, tapCard,
@@ -140,7 +140,14 @@ export interface GameStore {
   setMultiplayerStatus: (status: SyncStatus) => void;
   setMultiplayerPeers: (peers: Record<string, RoomPresence>) => void;
 
-  initGame: (config: GameConfig, players: { id: string; name: string; color: string }[]) => void;
+  initGame: (config: GameConfig, players: {
+    id: string;
+    name: string;
+    color: string;
+    avatarInitial?: string;
+    avatarStyle?: Player['avatarStyle'];
+    avatarImage?: PlayerAvatarImage;
+  }[]) => void;
   loadDeck: (playerId: string, deck: Deck) => Promise<void>;
   startGame: () => void;
   resetGame: () => void;
@@ -425,7 +432,11 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   initGame: (config, players) => {
     const g = createEmptyGameState(config);
     g.players = players.map((p, i) =>
-      createPlayer(p.id, p.name, i, p.color || PLAYER_COLORS[i], config)
+      createPlayer(p.id, p.name, i, p.color || PLAYER_COLORS[i], config, {
+        initial: p.avatarInitial,
+        style: p.avatarStyle,
+        image: p.avatarImage,
+      })
     );
     g.activePlayerId = g.players[0].id;
     g.priorityPlayerId = g.players[0].id;

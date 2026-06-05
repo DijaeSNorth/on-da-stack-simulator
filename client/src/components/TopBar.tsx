@@ -7,6 +7,7 @@ import { TOOLTIPS } from '../store/tutorialStore';
 import { PulseBeacon } from './tutorial/TutorialOverlay';
 import { getPhaseLabel } from '../engine/phaseMeta';
 import { BrandMark } from './branding/BrandMark';
+import { PlayerAvatar } from './profile/PlayerAvatar';
 
 export function TopBar() {
   const store = useGameStore();
@@ -77,11 +78,14 @@ export function TopBar() {
       {/* Active player */}
       {activePlayer && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexShrink: 0 }}>
-          <div style={{
-            width: 8, height: 8, borderRadius: '50%',
-            background: activePlayer.color,
-            boxShadow: `0 0 6px ${activePlayer.color}`,
-          }} />
+          <PlayerAvatar
+            name={activePlayer.name}
+            color={activePlayer.color}
+            initial={activePlayer.avatarInitial ?? activePlayer.name.slice(0, 1)}
+            styleMode={activePlayer.avatarStyle}
+            image={activePlayer.avatarImage}
+            size={18}
+          />
           <span style={{ fontSize: 10, color: '#94a3b8' }}>
             {activePlayer.name}
           </span>

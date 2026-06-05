@@ -4,12 +4,15 @@ import { importDeckFromUrl, importDecklist, saveDeck, type ImportResult } from '
 import { MultiplayerPanel } from '../multiplayer/MultiplayerPanel';
 import { getActiveProfile } from '../../engine/profileStorage';
 import { BrandMark } from '../branding/BrandMark';
-import type { Deck } from '../../types/game';
+import type { Deck, PlayerAvatarImage } from '../../types/game';
 
 interface PlayerSetup {
   id: string;
   name: string;
   color: string;
+  avatarInitial?: string;
+  avatarStyle?: 'solid' | 'gradient' | 'outline';
+  avatarImage?: PlayerAvatarImage;
   deckId?: string;
 }
 
@@ -54,7 +57,14 @@ export function LobbyScreen() {
     const profile = getActiveProfile();
     if (profile) {
       setPlayers(prev => prev.map((p, i) =>
-        i === 0 ? { ...p, name: profile.displayName, color: profile.color } : p
+        i === 0 ? {
+          ...p,
+          name: profile.displayName,
+          color: profile.color,
+          avatarInitial: profile.avatarInitial,
+          avatarStyle: profile.avatarStyle,
+          avatarImage: profile.avatarImage,
+        } : p
       ));
     }
   }, []);
@@ -149,6 +159,9 @@ export function LobbyScreen() {
 
     store.initGame(config, players.map(p => ({
       id: p.id, name: p.name, color: p.color,
+      avatarInitial: p.avatarInitial,
+      avatarStyle: p.avatarStyle,
+      avatarImage: p.avatarImage,
     })));
 
     // Load saved decks for players who have them

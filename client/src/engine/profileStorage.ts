@@ -8,8 +8,9 @@
  * Extension points:
  *   - FUTURE: sync profiles to an account-backed cloud store for cross-device
  *   - FUTURE: import/export profile JSON
- *   - FUTURE: profile picture upload (base64 DataURL)
  */
+
+import type { PlayerAvatarImage } from '../types/game';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -36,6 +37,8 @@ export interface PlayerProfile {
   avatarInitial: string;
   /** Background style for avatar bubble */
   avatarStyle: 'solid' | 'gradient' | 'outline';
+  /** Optional small profile image, either compressed upload data or Scryfall art crop URL */
+  avatarImage?: PlayerAvatarImage;
   /** Per-card art preferences — keyed by oracle card name */
   artOverrides: Record<string, ArtOverride>;
   /** Judge/assistant preferences */
@@ -56,7 +59,16 @@ export function loadProfiles(): PlayerProfile[] {
   try {
     const raw = localStorage.getItem(PROFILES_KEY);
     if (!raw) return [];
-    return JSON.parse(raw) as PlayerProfile[];
+    const parsed = JSON.parse(raw) as PlayerProfile[];
+    return parsed.map(profile => ({
+      ...profile,
+      avatarInitial: profile.avatarInitial ?? '?',
+      avatarStyle: profile.avatarStyle ?? 'solid',
+      artOverrides: profile.artOverrides ?? {},
+      assistantMode: profile.assistantMode ?? 'ON',
+      assistantVerbosity: profile.assistantVerbosity ?? 'normal',
+      showTriggerReminders: profile.showTriggerReminders ?? true,
+    }));
   } catch {
     return [];
   }
@@ -133,6 +145,7 @@ export function createProfile(partial?: Partial<PlayerProfile>): PlayerProfile {
     color: '#3b82f6',
     avatarInitial: '?',
     avatarStyle: 'solid',
+    avatarImage: undefined,
     artOverrides: {},
     assistantMode: 'ON',
     assistantVerbosity: 'normal',

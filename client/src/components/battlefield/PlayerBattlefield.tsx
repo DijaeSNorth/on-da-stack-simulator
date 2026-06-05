@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import { CardImage } from '../cards/CardImage';
 import { useDragCombatContext } from '../../hooks/DragCombatContext';
+import { PlayerAvatar } from '../profile/PlayerAvatar';
 import type { CardState, Player } from '../../types/game';
 
 interface TokenCloud {
@@ -257,11 +258,14 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
         paddingBottom: compact ? 2 : 4,
         marginBottom: compact ? 2 : 4,
       }}>
-        <div style={{
-          width: compact ? 8 : 10, height: compact ? 8 : 10,
-          borderRadius: '50%', background: player.color, flexShrink: 0,
-          boxShadow: isActive ? `0 0 8px ${player.color}` : 'none',
-        }} />
+        <PlayerAvatar
+          name={player.name}
+          color={player.color}
+          initial={player.avatarInitial ?? player.name.slice(0, 1)}
+          styleMode={player.avatarStyle}
+          image={player.avatarImage}
+          size={compact ? 18 : 24}
+        />
         <span style={{
           fontSize: compact ? 9 : 11, fontWeight: 600,
           color: isActive ? '#e2e8f0' : '#94a3b8', letterSpacing: '0.03em',

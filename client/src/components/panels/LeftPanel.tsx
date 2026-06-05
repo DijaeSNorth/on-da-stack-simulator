@@ -3,6 +3,7 @@ import type { Player } from '../../types/game';
 import { TutorialTooltip } from '../tutorial/TutorialTooltip';
 import { TOOLTIPS } from '../../store/tutorialStore';
 import { getPhaseLabel } from '../../engine/phaseMeta';
+import { PlayerAvatar } from '../profile/PlayerAvatar';
 
 function LifeCounter({ player, onChange }: { player: Player; onChange: (delta: number) => void }) {
   return (
@@ -115,8 +116,16 @@ export function LeftPanel() {
                 transition: 'background 0.15s',
               }}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-                <span style={{ fontSize: 11, fontWeight: 700, color: '#e2e8f0', maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4, gap: 6 }}>
+                <PlayerAvatar
+                  name={player.name}
+                  color={player.color}
+                  initial={player.avatarInitial ?? player.name.slice(0, 1)}
+                  styleMode={player.avatarStyle}
+                  image={player.avatarImage}
+                  size={28}
+                />
+                <span style={{ fontSize: 11, fontWeight: 700, color: '#e2e8f0', maxWidth: 82, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 'auto' }}>
                   {player.name}
                   {player.id === localPlayerId && <span style={{ color: '#6b7280', fontWeight: 400 }}> (you)</span>}
                 </span>

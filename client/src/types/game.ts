@@ -121,6 +121,9 @@ export interface Player {
   id: string;
   name: string;
   color: string;           // hex display color (seat color)
+  avatarInitial?: string;
+  avatarStyle?: 'solid' | 'gradient' | 'outline';
+  avatarImage?: PlayerAvatarImage;
   seatIndex: number;       // 0 = local player (bottom)
   life: number;
   commanderDamage: Record<string, number>; // commanderId -> damage received
@@ -221,6 +224,13 @@ export interface DeckLogic {
   cardNotes: Record<string, string>;
   triggers: CustomTrigger[];
   customCards: CustomCardDefinition[];
+}
+
+export interface PlayerAvatarImage {
+  source: 'upload' | 'card';
+  url: string;
+  label?: string;
+  byteSize?: number;
 }
 
 export interface CustomCardDefinition {

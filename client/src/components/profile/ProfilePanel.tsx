@@ -24,6 +24,68 @@ import {
   createProfile, fetchCardPrints, setArtOverride, removeArtOverride,
   type PlayerProfile, type ScryfallPrint, type ArtOverride,
 } from '../../engine/profileStorage';
+import { PlayerAvatar } from './PlayerAvatar';
+import type { PlayerAvatarImage } from '../../types/game';
+
+const MAX_AVATAR_SOURCE_BYTES = 2 * 1024 * 1024;
+const MAX_AVATAR_STORED_BYTES = 96 * 1024;
+const AVATAR_CANVAS_SIZE = 256;
+
+function dataUrlByteSize(dataUrl: string): number {
+  const base64 = dataUrl.split(',')[1] ?? '';
+  return Math.ceil(base64.length * 0.75);
+}
+
+function loadImage(dataUrl: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Could not read image.'));
+    img.src = dataUrl;
+  });
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error('Could not read file.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function compressAvatarImage(file: File): Promise<PlayerAvatarImage> {
+  if (!file.type.startsWith('image/')) throw new Error('Choose an image file.');
+  if (file.size > MAX_AVATAR_SOURCE_BYTES) throw new Error('Image must be 2 MB or smaller before upload.');
+
+  const dataUrl = await readFileAsDataUrl(file);
+  const img = await loadImage(dataUrl);
+  const canvas = document.createElement('canvas');
+  canvas.width = AVATAR_CANVAS_SIZE;
+  canvas.height = AVATAR_CANVAS_SIZE;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Your browser could not resize the image.');
+
+  const sourceSize = Math.min(img.naturalWidth, img.naturalHeight);
+  const sourceX = (img.naturalWidth - sourceSize) / 2;
+  const sourceY = (img.naturalHeight - sourceSize) / 2;
+  ctx.drawImage(img, sourceX, sourceY, sourceSize, sourceSize, 0, 0, AVATAR_CANVAS_SIZE, AVATAR_CANVAS_SIZE);
+
+  for (const quality of [0.82, 0.72, 0.62, 0.52]) {
+    const url = canvas.toDataURL('image/webp', quality);
+    const byteSize = dataUrlByteSize(url);
+    if (byteSize <= MAX_AVATAR_STORED_BYTES) {
+      return { source: 'upload', url, byteSize, label: `Uploaded image (${Math.round(byteSize / 1024)} KB)` };
+    }
+  }
+
+  const fallback = canvas.toDataURL('image/jpeg', 0.58);
+  const byteSize = dataUrlByteSize(fallback);
+  if (byteSize > MAX_AVATAR_STORED_BYTES) {
+    throw new Error('Could not compress image under 96 KB. Try a simpler or smaller picture.');
+  }
+  return { source: 'upload', url: fallback, byteSize, label: `Uploaded image (${Math.round(byteSize / 1024)} KB)` };
+}
 
 // ─── MTG Color Identity mapping ──────────────────────────────────────────────
 
@@ -158,21 +220,39 @@ function MtgCardFrame({ profile, onChange }: {
           ? `radial-gradient(ellipse at 30% 40%, ${profile.color}cc, ${profile.color}44 60%, #0a0a1a)`
           : `radial-gradient(ellipse at center, ${profile.color}88, #0a0a1a)`,
       }}>
+        {profile.avatarImage?.url && (
+          <img
+            src={profile.avatarImage.url}
+            alt={`${profile.displayName} avatar art`}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              width: '100%',
+              height: '100%',
+              objectFit: 'cover',
+              objectPosition: '50% 35%',
+            }}
+            onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+          />
+        )}
         {/* Large avatar initial */}
         <div style={{
           position: 'absolute', inset: 0,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           flexDirection: 'column', gap: 6,
+          background: profile.avatarImage?.url ? 'linear-gradient(180deg, rgba(0,0,0,0.1), rgba(0,0,0,0.34))' : 'transparent',
         }}>
-          <div style={{
-            fontSize: 52, lineHeight: 1,
-            textShadow: '0 2px 12px rgba(0,0,0,0.7)',
-            filter: 'drop-shadow(0 0 12px ' + profile.color + '88)',
-          }}>
-            {profile.avatarInitial || '?'}
-          </div>
+          {!profile.avatarImage?.url && (
+            <div style={{
+              fontSize: 52, lineHeight: 1,
+              textShadow: '0 2px 12px rgba(0,0,0,0.7)',
+              filter: 'drop-shadow(0 0 12px ' + profile.color + '88)',
+            }}>
+              {profile.avatarInitial || '?'}
+            </div>
+          )}
           {/* Color pick dots overlay */}
-          <div style={{ display: 'flex', gap: 3 }}>
+          <div style={{ display: 'flex', gap: 3, position: profile.avatarImage?.url ? 'absolute' : 'static', bottom: 8 }}>
             {COLOR_PRESETS.slice(0, 8).map(c => (
               <button key={c} onClick={() => onChange({ ...profile, color: c })} style={{
                 width: 10, height: 10, borderRadius: '50%', cursor: 'pointer',
@@ -322,27 +402,16 @@ const COLOR_PRESETS = [
 
 function AvatarBubble({
   profile, size = 36,
-}: { profile: Pick<PlayerProfile, 'avatarInitial' | 'avatarStyle' | 'color'>; size?: number }) {
-  const bg =
-    profile.avatarStyle === 'gradient'
-      ? `linear-gradient(135deg, ${profile.color}, ${profile.color}88)`
-      : profile.avatarStyle === 'outline'
-        ? 'transparent'
-        : profile.color;
-
+}: { profile: Pick<PlayerProfile, 'displayName' | 'avatarInitial' | 'avatarStyle' | 'avatarImage' | 'color'>; size?: number }) {
   return (
-    <div style={{
-      width: size, height: size, borderRadius: '50%',
-      background: bg,
-      border: profile.avatarStyle === 'outline' ? `2px solid ${profile.color}` : 'none',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      fontSize: size * 0.45, fontWeight: 700,
-      color: profile.avatarStyle === 'outline' ? profile.color : '#fff',
-      flexShrink: 0,
-      userSelect: 'none',
-    }}>
-      {profile.avatarInitial || '?'}
-    </div>
+    <PlayerAvatar
+      name={profile.displayName}
+      color={profile.color}
+      initial={profile.avatarInitial}
+      styleMode={profile.avatarStyle}
+      image={profile.avatarImage}
+      size={size}
+    />
   );
 }
 
@@ -639,6 +708,47 @@ function ProfileEditorView({
   onRemoveArt: (cardName: string) => void;
 }) {
   const artEntries = Object.values(profile.artOverrides);
+  const [avatarError, setAvatarError] = useState('');
+  const [avatarCardQuery, setAvatarCardQuery] = useState('');
+  const [avatarPrints, setAvatarPrints] = useState<ScryfallPrint[]>([]);
+  const [avatarLoading, setAvatarLoading] = useState(false);
+
+  async function handleAvatarUpload(file: File | undefined) {
+    if (!file) return;
+    setAvatarError('');
+    try {
+      const avatarImage = await compressAvatarImage(file);
+      onChange({ ...profile, avatarImage });
+    } catch (err) {
+      setAvatarError(err instanceof Error ? err.message : 'Could not use that image.');
+    }
+  }
+
+  async function searchAvatarCardArt() {
+    const query = avatarCardQuery.trim();
+    if (!query) return;
+    setAvatarError('');
+    setAvatarLoading(true);
+    try {
+      const results = await fetchCardPrints(query);
+      const artPrints = results.filter(print => print.artCropUrl);
+      setAvatarPrints(artPrints);
+      if (artPrints.length === 0) setAvatarError(`No card art found for "${query}".`);
+    } finally {
+      setAvatarLoading(false);
+    }
+  }
+
+  function useCardArt(print: ScryfallPrint) {
+    onChange({
+      ...profile,
+      avatarImage: {
+        source: 'card',
+        url: print.artCropUrl || print.imageUrl,
+        label: `${print.name} - ${print.setName}`,
+      },
+    });
+  }
 
   return (
     <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
@@ -652,7 +762,7 @@ function ProfileEditorView({
       }}>
         <MtgCardFrame profile={profile} onChange={onChange} />
         <div style={{ fontSize: 9, color: '#334155', textAlign: 'center', maxWidth: 220 }}>
-          Card updates live as you edit. P/T scales with judge settings.
+          Card updates live as you edit. Avatar uploads are compressed under 96 KB.
         </div>
       </div>
 
@@ -678,6 +788,102 @@ function ProfileEditorView({
                 >{s}</button>
               ))}
             </div>
+          </section>
+
+          <section>
+            <SectionLabel>Player Picture</SectionLabel>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+              <PlayerAvatar
+                name={profile.displayName}
+                color={profile.color}
+                initial={profile.avatarInitial}
+                styleMode={profile.avatarStyle}
+                image={profile.avatarImage}
+                size={46}
+                square
+              />
+              <label style={pillBtnStyle('#1e293b', '#93c5fd')}>
+                Upload Image
+                <input
+                  data-testid="profile-avatar-upload"
+                  type="file"
+                  accept="image/png,image/jpeg,image/webp,image/gif"
+                  onChange={e => handleAvatarUpload(e.target.files?.[0])}
+                  style={{ display: 'none' }}
+                />
+              </label>
+              {profile.avatarImage && (
+                <button
+                  data-testid="profile-avatar-clear"
+                  onClick={() => onChange({ ...profile, avatarImage: undefined })}
+                  style={pillBtnStyle('#1e293b', '#fca5a5')}
+                >
+                  Use Initials
+                </button>
+              )}
+              <span style={{ fontSize: 10, color: '#475569' }}>
+                Max input 2 MB. Stored image cap 96 KB.
+              </span>
+            </div>
+            {profile.avatarImage && (
+              <div style={{ marginTop: 6, fontSize: 10, color: '#64748b' }}>
+                Current: {profile.avatarImage.label ?? profile.avatarImage.source}
+                {profile.avatarImage.byteSize ? ` (${Math.round(profile.avatarImage.byteSize / 1024)} KB)` : ''}
+              </div>
+            )}
+            {avatarError && (
+              <div data-testid="profile-avatar-error" style={{ marginTop: 6, fontSize: 10, color: '#fca5a5' }}>
+                {avatarError}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+              <input
+                data-testid="profile-avatar-card-input"
+                value={avatarCardQuery}
+                onChange={e => setAvatarCardQuery(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') searchAvatarCardArt(); }}
+                placeholder="Pull card art, e.g. Sol Ring"
+                style={{ ...inputStyle, flex: 1, fontSize: 11 }}
+              />
+              <button
+                data-testid="profile-avatar-card-search"
+                onClick={searchAvatarCardArt}
+                disabled={avatarLoading || !avatarCardQuery.trim()}
+                style={pillBtnStyle(avatarLoading ? '#111827' : '#1e3a5f', avatarLoading ? '#475569' : '#93c5fd')}
+              >
+                {avatarLoading ? 'Searching...' : 'Find Art'}
+              </button>
+            </div>
+            {avatarPrints.length > 0 && (
+              <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingTop: 8 }}>
+                {avatarPrints.slice(0, 10).map(print => (
+                  <button
+                    key={print.id}
+                    data-testid={`profile-avatar-print-${print.id}`}
+                    onClick={() => useCardArt(print)}
+                    title={`${print.name} - ${print.setName}`}
+                    style={{
+                      width: 74,
+                      height: 52,
+                      padding: 0,
+                      border: profile.avatarImage?.url === print.artCropUrl ? '2px solid #22d3ee' : '1px solid #334155',
+                      borderRadius: 5,
+                      overflow: 'hidden',
+                      background: '#0a0f1a',
+                      cursor: 'pointer',
+                      flexShrink: 0,
+                    }}
+                  >
+                    <img
+                      src={print.artCropUrl}
+                      alt={`${print.name} art`}
+                      loading="lazy"
+                      style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+                    />
+                  </button>
+                ))}
+              </div>
+            )}
           </section>
 
           {/* ── Extra color swatches ── */}
