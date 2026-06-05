@@ -6,7 +6,7 @@
  * per-card art overrides (card name → chosen Scryfall print URL).
  *
  * Extension points:
- *   - FUTURE: sync profiles to Firebase /profiles/{uid} for cross-device
+ *   - FUTURE: sync profiles to an account-backed cloud store for cross-device
  *   - FUTURE: import/export profile JSON
  *   - FUTURE: profile picture upload (base64 DataURL)
  */

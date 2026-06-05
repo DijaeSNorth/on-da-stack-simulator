@@ -88,7 +88,7 @@ const STEP_CARDS: Partial<Record<TutorialStep, StepCard>> = {
   },
   done: {
     title: 'You\'re All Set!',
-    body: 'That\'s the full tour. The simulator supports 2–6 players in Commander, with optional Firebase multiplayer.\n\nHover any element with a 📖 icon for quick tips at any time.',
+    body: 'That\'s the full tour. The simulator supports 2–6 players in Commander, with peer-to-peer multiplayer.\n\nHover any element with a 📖 icon for quick tips at any time.',
     tip: 'Use "?" in the top bar to restart the tour or toggle tooltips.',
     position: 'center',
   },

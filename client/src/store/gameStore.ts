@@ -1273,9 +1273,9 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 }));
 
 // ─── Broadcast subscriber ─────────────────────────────────────────────────────────────
-// Any time game state changes AND we’re in a room, push to Firebase.
-// This is outside the store so it runs once at module load time —
-// no need to patch every individual action.
+// Any time game state changes while connected, broadcast it over PeerJS.
+// This runs once at module load time, so individual actions do not need
+// transport-specific calls.
 useGameStore.subscribe(
   (state, prevState) => {
     const game = state.game;

@@ -27,10 +27,10 @@ A digital MTG tabletop — not a game in the Arena/Hearthstone sense. Players co
 | Graveyard / exile drawers (searchable) | ✅ |
 | LocalStorage deck persistence | ✅ |
 | Action log (source of truth for undo/replay) | ✅ |
-| Drag-to-attack / drag-to-block | 🔜 |
-| Natural language commands | 🔜 |
-| Multiplayer sync (Firebase / Supabase) | 🔜 |
-| Replay system | 🔜 |
+| Drag-to-attack / drag-to-block | ✅ |
+| Natural language commands | ✅ |
+| Peer-to-peer multiplayer sync | ✅ |
+| Replay system | ✅ |
 
 ---
 
@@ -54,7 +54,9 @@ Official rules are always the default. House rules layer on top without replacin
 
 Paste any of these directly into the deck importer:
 
+- **Moxfield / Archidekt public URLs**
 - **Moxfield / Archidekt export** (standard `1x Card Name` format)
+- **MTGGoldfish / TappedOut text exports**
 - **MTGO deck export**
 - **CSV** (`Name,Count` or `Count,Name`)
 - **Section headers**: `Commander`, `Deck`, `Sideboard`, `Maybeboard`
@@ -67,6 +69,7 @@ Card data is fetched from the [Scryfall API](https://scryfall.com/docs/api) — 
 
 - **React + Vite** — frontend only (no backend required)
 - **Zustand** — game state management
+- **PeerJS / WebRTC** — room-code multiplayer, with direct browser-to-browser game state sync
 - **Scryfall API** — card data, oracle text, rulings, legality
 - **LocalStorage** — deck and settings persistence
 - **GitHub Pages** — hosting
@@ -98,8 +101,8 @@ npx vite build --config vite.ghpages.config.ts
 - [ ] Drag attachment (equip / enchant)
 
 ### Multiplayer
-- [ ] Firebase Realtime Database or Supabase sync using action log as source of truth
-- [ ] Lobby with shareable room codes
+- [x] PeerJS room-code multiplayer
+- [x] Lobby with shareable room codes
 - [ ] Hidden information (hand visibility layers)
 
 ### Replay & Analysis

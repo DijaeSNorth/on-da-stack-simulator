@@ -2,8 +2,8 @@
  * multiplayer-sync.test.ts
  *
  * Critical tests for the multiplayer sync layer.
- * These run offline (no real Firebase connection) — they test:
- *   1.  sanitizeForFirebase strips undefined values (Firebase rejection prevention)
+ * These run offline (no real PeerJS connection) — they test:
+ *   1.  sanitizeForTransport strips undefined values before network send
  *   2.  Room code generation: 6 chars, alphanumeric, uppercase
  *   3.  Presence shape validation
  *   4.  MultiplayerState default shape
@@ -12,7 +12,7 @@
  *   7.  broadcastState not called when status is 'disconnected'
  *   8.  Join flow: remoteGame applied to store + localPlayerId set to chosen seat
  *   9.  leaveRoom resets multiplayer state to disconnected
- *  10.  isConfigured returns false when env vars absent
+ *  10.  isConfigured returns true because PeerJS needs no server env vars
  *  11.  Seat index bounds: out-of-range seat falls back to players[0]
  *  12.  Peer deduplication: same peerId updating presence doesn't double-add
  *  13.  Large game state (200 cards) survives sanitize round-trip
@@ -20,11 +20,11 @@
  *  15.  broadcastState subscriber fires only on lastUpdatedAt change
  */
 
-// ─── We test the pure logic offline, mocking Firebase ────────────────────────
+// ─── We test the pure multiplayer logic offline, without a real PeerJS room ──
 
-// ─── 1. sanitizeForFirebase ───────────────────────────────────────────────────
+// ─── 1. sanitizeForTransport ──────────────────────────────────────────────────
 
-console.log('=== 1. sanitizeForFirebase strips undefined ===');
+console.log('=== 1. sanitizeForTransport strips undefined ===');
 
 {
   // Replicate the function from multiplayerSync (tested in isolation)
@@ -53,11 +53,11 @@ console.log('=== 1. sanitizeForFirebase strips undefined ===');
   console.assert(!('d' in clean.nested.c), 'FAIL deep nested undefined not removed');
   console.assert(clean.nested.c.e === 'keep', 'FAIL good value was removed');
   console.assert(clean.id === 'game-1', 'FAIL id not preserved');
-  // Array: undefined becomes null (Firebase array behavior)
+  // Array: undefined becomes null, matching JSON serialization behavior.
   console.assert(Array.isArray(clean.arr), 'FAIL arr not an array');
   console.assert(clean.arr[1] === null, `FAIL arr[1] should be null, got ${clean.arr[1]}`);
   console.assert(clean.arr[2] === 3, 'FAIL arr[2] should be 3');
-  console.log('  PASS: sanitizeForFirebase removes all undefined values');
+  console.log('  PASS: sanitizeForTransport removes all undefined values');
 
   // Primitive passthrough
   console.assert(sanitize(null) === null, 'FAIL null');
@@ -323,13 +323,12 @@ console.log('\n=== 9. leaveRoom resets state ===');
 console.log('\n=== 10. isConfigured ===');
 
 {
-  function isConfiguredSim(databaseURL: string): boolean {
-    return !!databaseURL;
+  function isConfiguredSim(): boolean {
+    return true;
   }
 
-  console.assert(isConfiguredSim('') === false, 'FAIL empty string should be not configured');
-  console.assert(isConfiguredSim('https://my-project.firebaseio.com') === true, 'FAIL valid URL should be configured');
-  console.log('  PASS: isConfigured correctly detects presence of databaseURL');
+  console.assert(isConfiguredSim() === true, 'FAIL P2P should be configured without env vars');
+  console.log('  PASS: isConfigured returns true for PeerJS/P2P transport');
 }
 
 // ─── 11. Seat index out-of-range fallback ────────────────────────────────────

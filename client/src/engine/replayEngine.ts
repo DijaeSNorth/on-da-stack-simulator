@@ -18,7 +18,7 @@
  *
  * Extension points (marked with FUTURE):
  *   - FUTURE: LZ-string compression for large replays
- *   - FUTURE: Network share via Firebase /replays/{id}
+ *   - FUTURE: Network share via a replay cloud or room host export
  *   - FUTURE: Delta reconstruction instead of full snapshots
  *   - FUTURE: Video/GIF export
  */

@@ -672,7 +672,7 @@ export function LobbyScreen() {
           padding: 16,
         }}>
           <div style={{ fontSize: 11, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 12, fontWeight: 700 }}>
-            Multiplayer — Testing (Firebase)
+            Multiplayer — Peer-to-Peer
           </div>
           <MultiplayerPanel />
         </div>
