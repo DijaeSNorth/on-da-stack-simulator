@@ -492,7 +492,7 @@ export function ProfilePanel() {
       <div
         data-testid="profile-backdrop"
         onClick={close}
-        style={{ position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(3px)' }}
+        style={{ position: 'fixed', inset: 0, zIndex: 30000, background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(3px)' }}
       />
 
       {/* Panel */}
@@ -501,7 +501,7 @@ export function ProfilePanel() {
         style={{
           position: 'fixed', top: '50%', left: '50%',
           transform: 'translate(-50%, -50%)',
-          zIndex: 10001,
+          zIndex: 30001,
           width: panelWidth, maxWidth: 'calc(100vw - 32px)',
           height: panelHeight, maxHeight: 'calc(100vh - 80px)',
           background: '#0a0f1a',

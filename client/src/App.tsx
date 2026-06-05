@@ -41,6 +41,7 @@ export default function App() {
         fontFamily: '"Inter", "SF Pro Display", system-ui, sans-serif',
       }}>
         <LobbyScreen />
+        <ProfilePanel />
         <WelcomeModal />
       </div>
     );

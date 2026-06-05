@@ -197,8 +197,16 @@ export function LobbyScreen() {
   }
 
   function prepareTableRoomState() {
-    const config = getGameConfig();
-    store.initGame(config, getPlayersForGame());
+    const seatPlayers = players.slice(0, playerCount).map(p => ({
+      id: p.id,
+      name: p.name,
+      color: p.color,
+      avatarInitial: p.avatarInitial,
+      avatarStyle: p.avatarStyle,
+      avatarImage: p.avatarImage,
+    }));
+    const config = getGameConfig(playerCount, seatPlayers);
+    store.initGame(config, seatPlayers);
   }
 
   function startGame(deckOverrides: Record<string, Deck> = {}) {
