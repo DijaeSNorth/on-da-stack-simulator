@@ -277,6 +277,55 @@ test('resolving a commander spell puts it onto the battlefield as a permanent', 
   assert(player.commanders.includes(commander.instanceId), 'expected commander identity to stay tracked');
 });
 
+test('targeted spells stay visible on stack and resolve to graveyard', () => {
+  const game = makeGame(2);
+  const bolt = createCardState({
+    ...vanillaCreature,
+    id: 'bolt-card',
+    name: 'Lightning Bolt',
+    typeLine: 'Instant',
+    cardTypes: ['Instant'],
+    subTypes: [],
+    oracleText: 'Lightning Bolt deals 3 damage to any target.',
+    cmc: 1,
+    colors: ['R'],
+    colorIdentity: ['R'],
+    power: undefined,
+    toughness: undefined,
+  }, 'p1', 'hand');
+
+  resetStore({
+    ...game,
+    cards: { [bolt.instanceId]: bolt },
+    players: game.players.map(player =>
+      player.id === 'p1'
+        ? { ...player, hand: [bolt.instanceId] }
+        : player
+    ),
+  });
+
+  const parsed = parseCommand('cast lightning bolt targeting player 2');
+  assert(parsed.targetPlayerIndex === 2, 'expected target player to parse');
+  assert(parsed.targetText === 'Player 2', 'expected target text to be preserved');
+
+  useGameStore.getState().castCard('p1', bolt.instanceId, {
+    ids: ['p2'],
+    labels: ['Player 2'],
+  });
+
+  let next = useGameStore.getState().game;
+  assert(next.stack.length === 1, 'expected spell on stack before resolution');
+  assert(next.cards[bolt.instanceId].zone === 'stack', 'expected spell card zone to be stack');
+  assert(next.stack[0].targetLabels?.[0] === 'Player 2', 'expected stack target label');
+
+  useGameStore.getState().resolveStack();
+  next = useGameStore.getState().game;
+  const player = next.players.find(p => p.id === 'p1')!;
+  assert(next.stack.length === 0, 'expected stack empty after resolution');
+  assert(next.cards[bolt.instanceId].zone === 'graveyard', 'expected instant to resolve to graveyard');
+  assert(player.graveyard.includes(bolt.instanceId), 'expected instant in graveyard list');
+});
+
 test('hand can be manually reordered and sorted by workflow command', () => {
   const game = makeGame(2);
   const forest = createCardState({ ...vanillaCreature, id: 'forest', name: 'Forest', typeLine: 'Basic Land - Forest', cardTypes: ['Land'], subTypes: ['Forest'], cmc: 0, colors: [], colorIdentity: ['G'] }, 'p1', 'hand');

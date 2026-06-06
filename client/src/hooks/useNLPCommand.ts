@@ -62,8 +62,16 @@ export function useNLPCommand(onCombatIntent?: (intent: ResolvedIntent) => void)
     switch (intent.intent) {
       case 'CAST': {
         if (!intent.resolvedInstanceId) return { success: false, message: intent.error ?? `Card not found: ${intent.cardName}` };
-        store.castCard(localPlayerId, intent.resolvedInstanceId);
-        return { success: true, message: `Cast ${intent.cardName}` };
+        const targetIds = [intent.targetPlayerId, intent.targetInstanceId].filter(Boolean) as string[];
+        const playerTargetName = intent.targetPlayerId
+          ? game.players.find(player => player.id === intent.targetPlayerId)?.name
+          : undefined;
+        const targetLabels = [playerTargetName ?? intent.targetText].filter(Boolean) as string[];
+        store.castCard(localPlayerId, intent.resolvedInstanceId, targetIds.length || targetLabels.length ? {
+          ids: targetIds.length ? targetIds : undefined,
+          labels: targetLabels.length ? targetLabels : undefined,
+        } : undefined);
+        return { success: true, message: `Cast ${intent.cardName}${targetLabels.length ? ` targeting ${targetLabels.join(', ')}` : ''}` };
       }
 
       case 'PLAY_LAND': {

@@ -126,6 +126,16 @@ function StackTab() {
   const store = useGameStore();
   const { game } = store;
   const stack = game.stack;
+  const getTargetLabels = (obj: StackObject) => {
+    const labels = [...(obj.targetLabels ?? [])];
+    for (const id of obj.targets ?? []) {
+      const player = game.players.find(p => p.id === id);
+      const card = game.cards[id];
+      const label = player?.name ?? card?.definition.name;
+      if (label && !labels.includes(label)) labels.push(label);
+    }
+    return labels;
+  };
 
   return (
     <div style={{ flex: 1, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -147,6 +157,7 @@ function StackTab() {
       )}
       {stack.map((obj: StackObject, i) => {
         const player = game.players.find(p => p.id === obj.controllerId);
+        const targetLabels = getTargetLabels(obj);
         return (
           <div
             key={obj.id}
@@ -182,6 +193,11 @@ function StackTab() {
             <div style={{ fontSize: 10, color: '#64748b' }}>
               {player?.name || obj.controllerId}
             </div>
+            {targetLabels.length > 0 && (
+              <div style={{ fontSize: 10, color: '#fbbf24', marginTop: 3, fontWeight: 700 }}>
+                Target: {targetLabels.join(', ')}
+              </div>
+            )}
             {obj.text && (
               <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 3, lineHeight: 1.3 }}>
                 {obj.text.slice(0, 80)}{obj.text.length > 80 ? '…' : ''}

@@ -208,7 +208,7 @@ export interface GameStore {
   startGame: () => void;
   resetGame: () => void;
 
-  castCard: (castingPlayerId: string, cardInstanceId: string) => void;
+  castCard: (castingPlayerId: string, cardInstanceId: string, targets?: { ids?: string[]; labels?: string[] }) => void;
   playLand: (playerId: string, cardInstanceId: string) => void;
   moveCardToZone: (instanceId: string, toZone: CardState['zone'], toController?: string) => void;
   tapCard: (instanceId: string) => void;
@@ -617,7 +617,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
   // ── Card Actions ──────────────────────────────────────────────────────────
 
-  castCard: (castingPlayerId, cardInstanceId) => {
+  castCard: (castingPlayerId, cardInstanceId, targets) => {
     let g = get().game;
     const check = checkCastLegality(g, castingPlayerId, cardInstanceId);
     const flags = filterAssistantFlags(check.flags, get().ui);
@@ -634,6 +634,8 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       sourceDefinitionId: card.definitionId,
       sourceName: card.definition.name,
       controllerId: castingPlayerId,
+      targets: targets?.ids,
+      targetLabels: targets?.labels,
       text: card.definition.oracleText,
       timestamp: Date.now(),
     };
@@ -658,18 +660,24 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const castingPlayer = g.players.find(p => p.id === castingPlayerId);
     const commanderCastNumber = isCommanderBeingCast ? previousCommanderCastCount + 1 : undefined;
     const commanderTax = isCommanderBeingCast ? previousCommanderCastCount * 2 : undefined;
-
-    const action = createAction(g, castingPlayerId, 'CAST_SPELL',
-      `${card.definition.name} cast by ${castingPlayer?.name || castingPlayerId}`,
-      [cardInstanceId],
-      addReviewData(isCommanderBeingCast ? {
+    const castData: Record<string, unknown> = {
+      targets: targets?.labels,
+    };
+    if (isCommanderBeingCast) {
+      Object.assign(castData, {
         commanderCast: true,
         commanderCastNumber,
         commanderTax,
         playerName: castingPlayer?.name || castingPlayerId,
         playerColor: castingPlayer?.color,
         cardName: card.definition.name,
-      } : {}, flags),
+      });
+    }
+
+    const action = createAction(g, castingPlayerId, 'CAST_SPELL',
+      `${card.definition.name} cast by ${castingPlayer?.name || castingPlayerId}`,
+      [cardInstanceId],
+      addReviewData(castData, flags),
       flags);
     g = { ...g, actionLog: [...g.actionLog, action] };
 

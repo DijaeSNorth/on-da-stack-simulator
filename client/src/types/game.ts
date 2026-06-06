@@ -100,6 +100,7 @@ export interface StackObject {
   sourceName: string;
   controllerId: string;
   targets?: string[];
+  targetLabels?: string[];
   text: string;
   timestamp: number;
   parentId?: string;       // for triggered-in-response chains

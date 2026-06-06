@@ -2,7 +2,8 @@ import { useGameStore } from '../../store/gameStore';
 import { PlayerBattlefield } from './PlayerBattlefield';
 import { DragCombatProvider, useDragCombatContext } from '../../hooks/DragCombatContext';
 import { TriggerQueuePanel } from '../triggers/TriggerQueuePanel';
-import type { Player } from '../../types/game';
+import { CardImage } from '../cards/CardImage';
+import type { GameState, Player, StackObject } from '../../types/game';
 
 // ── Combat Summary Bar ────────────────────────────────────────────────────────
 // Shown during declareAttackers, declareBlockers, combatDamage, endOfCombat
@@ -129,6 +130,136 @@ function CombatSummaryBar() {
 }
 
 // Commander table layouts — local player (seatIndex 0) always at bottom
+function getStackTargetLabels(obj: StackObject, game: GameState): string[] {
+  const labels = [...(obj.targetLabels ?? [])];
+  for (const id of obj.targets ?? []) {
+    const player = game.players.find(p => p.id === id);
+    const card = game.cards[id];
+    const label = player?.name ?? card?.definition.name;
+    if (label && !labels.includes(label)) labels.push(label);
+  }
+  return labels;
+}
+
+function stackActionButton(background: string, color: string): React.CSSProperties {
+  return {
+    background,
+    color,
+    border: `1px solid ${color}55`,
+    borderRadius: 4,
+    padding: '4px 8px',
+    fontSize: 9,
+    fontWeight: 900,
+    cursor: 'pointer',
+  };
+}
+
+function BattlefieldStackShowcase() {
+  const store = useGameStore();
+  const { game } = store;
+  if (game.stack.length === 0) return null;
+
+  return (
+    <div
+      data-testid="battlefield-stack-showcase"
+      style={{
+        position: 'absolute',
+        top: '50%',
+        left: '50%',
+        transform: 'translate(-50%, -50%)',
+        zIndex: 18,
+        width: 'min(560px, calc(100% - 28px))',
+        pointerEvents: 'auto',
+      }}
+    >
+      <div style={{
+        padding: 10,
+        borderRadius: 8,
+        border: '1px solid rgba(96,165,250,0.65)',
+        background: 'linear-gradient(135deg, rgba(15,23,42,0.94), rgba(8,13,17,0.9))',
+        boxShadow: '0 20px 60px rgba(15,23,42,0.72), 0 0 24px rgba(59,130,246,0.22)',
+      }}>
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 8,
+          marginBottom: 8,
+        }}>
+          <span style={{ color: '#93c5fd', fontSize: 10, fontWeight: 900, letterSpacing: '0.14em', textTransform: 'uppercase' }}>
+            On the Stack
+          </span>
+          <span style={{ color: '#64748b', fontSize: 10 }}>Resolves top to bottom</span>
+        </div>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+          {game.stack.map((obj, index) => {
+            const card = obj.sourceInstanceId ? game.cards[obj.sourceInstanceId] : undefined;
+            const controller = game.players.find(p => p.id === obj.controllerId);
+            const targets = getStackTargetLabels(obj, game);
+            const isTop = index === 0;
+            return (
+              <div
+                key={obj.id}
+                data-testid={`battlefield-stack-item-${obj.id}`}
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: card ? '58px minmax(0, 1fr) auto' : 'minmax(0, 1fr) auto',
+                  gap: 10,
+                  alignItems: 'center',
+                  padding: 8,
+                  borderRadius: 7,
+                  border: `1px solid ${isTop ? '#60a5fa' : '#334155'}`,
+                  background: isTop ? 'rgba(59,130,246,0.16)' : 'rgba(15,23,42,0.72)',
+                }}
+              >
+                {card && (
+                  <div style={{ width: 54, transform: isTop ? 'rotate(-2deg)' : 'none' }}>
+                    <CardImage card={card} size="compact" />
+                  </div>
+                )}
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
+                    {isTop && (
+                      <span style={{ color: '#020617', background: '#60a5fa', borderRadius: 3, padding: '1px 5px', fontSize: 8, fontWeight: 900 }}>
+                        TOP
+                      </span>
+                    )}
+                    <span style={{ color: '#f8fafc', fontSize: 13, fontWeight: 900, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {obj.sourceName}
+                    </span>
+                    <span style={{ color: obj.type === 'spell' ? '#93c5fd' : '#a8a29e', fontSize: 9, fontWeight: 800, textTransform: 'uppercase' }}>
+                      {obj.type}
+                    </span>
+                  </div>
+                  <div style={{ marginTop: 3, fontSize: 10, color: '#94a3b8' }}>
+                    Cast by {controller?.name ?? obj.controllerId}
+                  </div>
+                  {targets.length > 0 && (
+                    <div style={{ marginTop: 3, fontSize: 10, color: '#fbbf24', fontWeight: 800 }}>
+                      Target: {targets.join(', ')}
+                    </div>
+                  )}
+                </div>
+                {isTop && (
+                  <div style={{ display: 'flex', gap: 5, flexDirection: 'column' }}>
+                    <button data-testid="battlefield-resolve-stack" onClick={store.resolveStack} style={stackActionButton('#14532d', '#86efac')}>
+                      Resolve
+                    </button>
+                    <button data-testid="battlefield-counter-stack" onClick={() => store.counterSpell(obj.id)} style={stackActionButton('#7f1d1d', '#fca5a5')}>
+                      Counter
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function getPlayerLayout(playerCount: number): {
   top?: number[]; left?: number[]; right?: number[]; bottom: number[];
 } {
@@ -243,6 +374,7 @@ function CommanderTableInner() {
         display: 'flex', flexDirection: 'column',
         width: '100%', height: '100%',
         gap: 2, boxSizing: 'border-box', padding: 4,
+        position: 'relative',
         background: '#0d1117',
         backgroundImage: `
           radial-gradient(circle at 50% 50%, rgba(59,130,246,0.03) 0%, transparent 60%),
@@ -262,6 +394,8 @@ function CommanderTableInner() {
 
       {/* Combat summary — visible whenever combat phases are active */}
       <CombatSummaryBar />
+
+      <BattlefieldStackShowcase />
 
       {/* Top opponents */}
       {topPlayers.length > 0 && (

@@ -91,6 +91,9 @@ export interface ParsedIntent {
   // Player targeting
   targetPlayerIndex?: number;    // 1-based player number from text
   targetPlayerId?: string;       // resolved player ID
+  targetText?: string;           // raw target text from command input
+  targetName?: string;           // card/permanent target text
+  targetInstanceId?: string;     // resolved target card/permanent
 
   // Zone movement
   fromZone?: Zone;
@@ -414,7 +417,17 @@ export function parseCommand(raw: string): ParsedIntent {
   for (const pattern of castPatterns) {
     const m = lower.match(pattern);
     if (m) {
-      return { ...result, intent: 'CAST', cardName: normalizeName(m[1]), confidence: 'medium' };
+      const targetText = m[2]?.trim();
+      const playerTarget = targetText?.match(/^player\s+(\d)$/);
+      return {
+        ...result,
+        intent: 'CAST',
+        cardName: normalizeName(m[1]),
+        targetText: targetText ? normalizeName(targetText) : undefined,
+        targetPlayerIndex: playerTarget ? parseInt(playerTarget[1]) : undefined,
+        targetName: targetText && !playerTarget ? normalizeName(targetText) : undefined,
+        confidence: 'medium',
+      };
     }
   }
 
