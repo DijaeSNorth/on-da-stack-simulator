@@ -42,7 +42,14 @@ export interface UIState {
   combatMode: boolean;
   deckBuilderOpen: boolean;
   lobbyOpen: boolean;
-  zoneDrawer: { zone: 'graveyard' | 'exile' | 'library' | 'hand'; playerId: string } | null;
+  zoneDrawer: {
+    zone: 'graveyard' | 'exile' | 'library' | 'hand';
+    playerId: string;
+    mode?: 'normal' | 'scry' | 'surveil' | 'lookTop' | 'search';
+    limit?: number;
+    viewerId?: string;
+    private?: boolean;
+  } | null;
   cardContextMenu: { instanceId: string; x: number; y: number } | null;
   cardPreview: string | null;
   cardPreviewAnchor: { x: number; y: number } | null;
@@ -278,7 +285,11 @@ export interface GameStore {
   resetPanelSizes: () => void;
   toggleLeftPanel: () => void;
   toggleRightPanel: () => void;
-  openZoneDrawer: (zone: 'graveyard' | 'exile' | 'library' | 'hand', playerId: string) => void;
+  openZoneDrawer: (
+    zone: 'graveyard' | 'exile' | 'library' | 'hand',
+    playerId: string,
+    options?: Omit<NonNullable<UIState['zoneDrawer']>, 'zone' | 'playerId'>
+  ) => void;
   closeZoneDrawer: () => void;
   openCardContextMenu: (instanceId: string, x: number, y: number) => void;
   closeCardContextMenu: () => void;
@@ -302,6 +313,14 @@ export interface GameStore {
   scryCards: (playerId: string, count: number) => void;
   /** Surveil N — same as scry but mills to GY instead of bottom */
   surveilCards: (playerId: string, count: number) => void;
+  /** Look at only the top N cards allowed by an effect */
+  lookAtTopCards: (playerId: string, count: number, viewerId?: string) => void;
+  /** Dredge N — replacement for draw: mill N, return card from GY to hand */
+  dredgeCard: (playerId: string, instanceId: string) => boolean;
+  /** Proliferate chosen permanents/players, or all eligible by default */
+  proliferate: (controllerId: string, choices?: { cardIds?: string[]; playerIds?: string[] }) => void;
+  /** Put a library card on top or bottom while preserving hidden library order */
+  reorderLibraryCard: (playerId: string, instanceId: string, placement: 'top' | 'bottom') => void;
   /** Cycle a card: discard it, draw 1 */
   cycleCard: (playerId: string, instanceId: string) => void;
   /** Cast a card from a specific zone (GY, exile, command, etc.) */
@@ -434,6 +453,26 @@ const HAND_TYPE_ORDER = ['Land', 'Creature', 'Artifact', 'Enchantment', 'Planesw
 const COLOR_ORDER = ['W', 'U', 'B', 'R', 'G', 'C'] as const;
 const PRACTICE_DUMMY_PREFIX = 'practice-dummy-';
 const MAX_PRACTICE_DUMMIES = 3;
+
+function normalizeMechanicCount(value: number, max: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.max(0, Math.min(Math.floor(value), max));
+}
+
+function getDredgeValue(card: CardState): number | null {
+  const match = card.definition.oracleText.match(/\bdredge\s+(\d+)\b/i);
+  if (!match) return null;
+  const value = Number.parseInt(match[1], 10);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function playerHasCounters(player: Player): boolean {
+  return player.poisonCounters > 0 || player.energyCounters > 0 || player.experienceCounters > 0;
+}
+
+function cardHasCounters(card: CardState): boolean {
+  return card.counters.some(counter => counter.count > 0);
+}
 
 const PRACTICE_DUMMY_CREATURES: Array<Partial<CardDefinition> & { name: string; power: string; toughness: string }> = [
   {
@@ -1534,7 +1573,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   }),
   toggleLeftPanel: () => set(s => ({ ui: { ...s.ui, leftPanelOpen: !s.ui.leftPanelOpen } })),
   toggleRightPanel: () => set(s => ({ ui: { ...s.ui, rightPanelOpen: !s.ui.rightPanelOpen } })),
-  openZoneDrawer: (zone, playerId) => set(s => ({ ui: { ...s.ui, zoneDrawer: { zone, playerId } } })),
+  openZoneDrawer: (zone, playerId, options) => set(s => ({ ui: { ...s.ui, zoneDrawer: { zone, playerId, ...options } } })),
   closeZoneDrawer: () => set(s => ({ ui: { ...s.ui, zoneDrawer: null } })),
   openCardContextMenu: (instanceId, x, y) => set(s => ({ ui: { ...s.ui, cardContextMenu: { instanceId, x, y } } })),
   closeCardContextMenu: () => set(s => ({ ui: { ...s.ui, cardContextMenu: null } })),
@@ -1579,12 +1618,23 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const { game } = get();
     const player = game.players.find(p => p.id === playerId);
     if (!player || player.library.length === 0) return;
-    const n = Math.min(count, player.library.length);
+    const n = normalizeMechanicCount(count, player.library.length);
+    if (n === 0) {
+      const action = createAction(game, playerId, 'SCRY', 'Scry 0 — no scry event occurs', [], { count: 0, ruleRef: 'CR 701.22b' });
+      set({ game: { ...game, actionLog: [...game.actionLog, action] } });
+      return;
+    }
     const action = createAction(game, playerId, 'SCRY',
-      `Scry ${count} — look at top ${n} card(s)`);
+      `Scry ${count} — privately look at top ${n} card(s)`, player.library.slice(0, n), {
+        requestedCount: count,
+        visibleCount: n,
+        viewerId: playerId,
+        private: true,
+        ruleRef: 'CR 701.22a',
+      });
     set({
       game: { ...game, actionLog: [...game.actionLog, action] },
-      ui: { ...get().ui, zoneDrawer: { zone: 'library', playerId } },
+      ui: { ...get().ui, zoneDrawer: { zone: 'library', playerId, mode: 'scry', limit: n, viewerId: playerId, private: true } },
     });
   },
 
@@ -1592,13 +1642,135 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const { game } = get();
     const player = game.players.find(p => p.id === playerId);
     if (!player || player.library.length === 0) return;
-    const n = Math.min(count, player.library.length);
+    const n = normalizeMechanicCount(count, player.library.length);
+    if (n === 0) return;
     const action = createAction(game, playerId, 'SURVEIL',
-      `Surveil ${count} — top ${n} card(s): keep or mill`);
+      `Surveil ${count} — privately look at top ${n} card(s): keep or mill`, player.library.slice(0, n), {
+        requestedCount: count,
+        visibleCount: n,
+        viewerId: playerId,
+        private: true,
+      });
     set({
       game: { ...game, actionLog: [...game.actionLog, action] },
-      ui: { ...get().ui, zoneDrawer: { zone: 'library', playerId } },
+      ui: { ...get().ui, zoneDrawer: { zone: 'library', playerId, mode: 'surveil', limit: n, viewerId: playerId, private: true } },
     });
+  },
+
+  lookAtTopCards: (playerId, count, viewerId) => {
+    const { game } = get();
+    const player = game.players.find(p => p.id === playerId);
+    const actualViewer = viewerId ?? get().localPlayerId;
+    if (!player || player.library.length === 0) return;
+    const n = normalizeMechanicCount(count, player.library.length);
+    if (n === 0) return;
+    const action = createAction(game, actualViewer || playerId, 'SEARCH_LIBRARY',
+      `Look at top ${n} card(s) of ${player.name}'s library`, player.library.slice(0, n), {
+        requestedCount: count,
+        visibleCount: n,
+        viewerId: actualViewer,
+        private: true,
+        ruleRef: 'CR 401.5',
+      });
+    set({
+      game: { ...game, actionLog: [...game.actionLog, action] },
+      ui: { ...get().ui, zoneDrawer: { zone: 'library', playerId, mode: 'lookTop', limit: n, viewerId: actualViewer, private: true } },
+    });
+  },
+
+  reorderLibraryCard: (playerId, instanceId, placement) => {
+    const { game } = get();
+    const player = game.players.find(p => p.id === playerId);
+    const card = game.cards[instanceId];
+    if (!player || !card || card.zone !== 'library' || !player.library.includes(instanceId)) return;
+    const remaining = player.library.filter(id => id !== instanceId);
+    const library = placement === 'top'
+      ? [instanceId, ...remaining]
+      : [...remaining, instanceId];
+    const players = game.players.map(p => p.id === playerId ? { ...p, library } : p);
+    const action = createAction(game, playerId, 'SCRY',
+      `${card.definition.name} put on ${placement} of ${player.name}'s library`, [instanceId], {
+        placement,
+        private: true,
+      });
+    set({ game: { ...game, players, actionLog: [...game.actionLog, action], lastUpdatedAt: Date.now() } });
+  },
+
+  dredgeCard: (playerId, instanceId) => {
+    let g = get().game;
+    const player = g.players.find(p => p.id === playerId);
+    const card = g.cards[instanceId];
+    const dredgeValue = card ? getDredgeValue(card) : null;
+    if (!player || !card || card.zone !== 'graveyard' || !player.graveyard.includes(instanceId) || !dredgeValue) return false;
+    if (player.library.length < dredgeValue) {
+      const flag: AssistantFlag = {
+        id: uuid(),
+        severity: 'warning',
+        label: 'Flagged',
+        text: `${player.name} cannot dredge ${card.definition.name}: Dredge ${dredgeValue} requires at least ${dredgeValue} cards in library.`,
+        ruleRef: 'CR 702.52b',
+      };
+      const action = createAction(g, playerId, 'DREDGE',
+        `Dredge failed — ${card.definition.name} needs ${dredgeValue} library card(s)`, [instanceId], addReviewData({ dredgeValue }, [flag]), [flag]);
+      g = { ...g, actionLog: [...g.actionLog, action] };
+      set({ game: g, ui: withAssistantMessages(get().ui, g, [flag]) });
+      return false;
+    }
+    const milled = player.library.slice(0, dredgeValue);
+    for (const id of milled) g = moveCard(g, id, 'graveyard');
+    g = moveCard(g, instanceId, 'hand');
+    const action = createAction(g, playerId, 'DREDGE',
+      `Dredged ${card.definition.name} — milled ${dredgeValue}, returned to hand`, [instanceId, ...milled], {
+        dredgeValue,
+        milled,
+        ruleRef: 'CR 702.52a',
+      });
+    set({ game: { ...g, actionLog: [...g.actionLog, action] } });
+    return true;
+  },
+
+  proliferate: (controllerId, choices) => {
+    const game = get().game;
+    const chosenCardIds = choices?.cardIds ?? Object.values(game.cards)
+      .filter(card => card.zone === 'battlefield' && cardHasCounters(card))
+      .map(card => card.instanceId);
+    const chosenPlayerIds = choices?.playerIds ?? game.players
+      .filter(playerHasCounters)
+      .map(player => player.id);
+    const cardSet = new Set(chosenCardIds);
+    const playerSet = new Set(chosenPlayerIds);
+    const cards = { ...game.cards };
+    for (const id of cardSet) {
+      const card = cards[id];
+      if (!card || card.zone !== 'battlefield' || !cardHasCounters(card)) continue;
+      cards[id] = {
+        ...card,
+        counters: card.counters.map(counter => counter.count > 0 ? { ...counter, count: counter.count + 1 } : counter),
+      };
+    }
+    const players = game.players.map(player => {
+      if (!playerSet.has(player.id) || !playerHasCounters(player)) return player;
+      return {
+        ...player,
+        poisonCounters: player.poisonCounters > 0 ? player.poisonCounters + 1 : player.poisonCounters,
+        energyCounters: player.energyCounters > 0 ? player.energyCounters + 1 : player.energyCounters,
+        experienceCounters: player.experienceCounters > 0 ? player.experienceCounters + 1 : player.experienceCounters,
+      };
+    });
+    const affected = [
+      ...chosenCardIds.filter(id => cards[id] && cardHasCounters(cards[id])),
+      ...chosenPlayerIds.filter(id => {
+        const player = game.players.find(p => p.id === id);
+        return Boolean(player && playerHasCounters(player));
+      }),
+    ];
+    const action = createAction(game, controllerId, 'PROLIFERATE',
+      `Proliferated ${affected.length} object${affected.length === 1 ? '' : 's'}`, affected, {
+        cardIds: chosenCardIds,
+        playerIds: chosenPlayerIds,
+        ruleRef: 'CR 701.34a',
+      });
+    set({ game: { ...game, cards, players, actionLog: [...game.actionLog, action], lastUpdatedAt: Date.now() } });
   },
 
   cycleCard: (playerId, instanceId) => {

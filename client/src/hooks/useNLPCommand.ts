@@ -138,10 +138,21 @@ export function useNLPCommand(onCombatIntent?: (intent: ResolvedIntent) => void)
         return { success: true, message: `Surveil ${intent.count ?? 1} — library drawer opened` };
       }
 
+      case 'PROLIFERATE': {
+        store.proliferate(localPlayerId);
+        return { success: true, message: 'Proliferated all eligible counters' };
+      }
+
       case 'CYCLE': {
         if (!intent.resolvedInstanceId) return { success: false, message: intent.error ?? `Card not found: ${intent.cardName}` };
         store.cycleCard(localPlayerId, intent.resolvedInstanceId);
         return { success: true, message: `Cycled ${intent.cardName} — drew 1` };
+      }
+
+      case 'DREDGE': {
+        if (!intent.resolvedInstanceId) return { success: false, message: intent.error ?? `"${intent.cardName}" not found in graveyard` };
+        const ok = store.dredgeCard(localPlayerId, intent.resolvedInstanceId);
+        return { success: ok, message: ok ? `Dredged ${intent.cardName} instead of drawing` : `Could not dredge ${intent.cardName}` };
       }
 
       case 'CAST_FROM_GY': {
@@ -170,7 +181,7 @@ export function useNLPCommand(onCombatIntent?: (intent: ResolvedIntent) => void)
 
       case 'LOOK_AT_TOP': {
         const targetId = intent.targetPlayerId ?? localPlayerId;
-        store.openZoneDrawer('library', targetId);
+        store.lookAtTopCards(targetId, intent.count ?? 1, localPlayerId);
         return { success: true, message: `Looking at top of library` };
       }
 

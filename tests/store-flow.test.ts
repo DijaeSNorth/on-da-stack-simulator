@@ -465,6 +465,152 @@ test('targeted spells stay visible on stack and resolve to graveyard', () => {
   assert(player.graveyard.includes(bolt.instanceId), 'expected instant in graveyard list');
 });
 
+test('scry opens a private top-N library view instead of the whole deck', () => {
+  const game = makeGame(2);
+  const cards = Array.from({ length: 5 }, (_, index) => createCardState({
+    ...vanillaCreature,
+    id: `scry-card-${index}`,
+    name: `Scry Test ${index}`,
+  }, 'p1', 'library'));
+
+  resetStore({
+    ...game,
+    cards: Object.fromEntries(cards.map(card => [card.instanceId, card])),
+    players: game.players.map(player =>
+      player.id === 'p1' ? { ...player, library: cards.map(card => card.instanceId) } : player
+    ),
+  });
+
+  useGameStore.getState().scryCards('p1', 2);
+
+  const state = useGameStore.getState();
+  assert(state.ui.zoneDrawer?.mode === 'scry', 'expected scry mode library drawer');
+  assert(state.ui.zoneDrawer?.limit === 2, `expected scry limit 2, got ${state.ui.zoneDrawer?.limit}`);
+  assert(state.ui.zoneDrawer?.viewerId === 'p1' && state.ui.zoneDrawer?.private, 'expected private scry view for the scrying player');
+  const action = state.game.actionLog[state.game.actionLog.length - 1];
+  assert(action.actionType === 'SCRY', 'expected SCRY action');
+  assert(action.affectedObjects.length === 2, `expected exactly 2 visible scry cards, got ${action.affectedObjects.length}`);
+  assert(action.affectedObjects[0] === cards[0].instanceId && action.affectedObjects[1] === cards[1].instanceId, 'expected only top two cards to be affected');
+});
+
+test('dredge mills exactly N cards and returns the dredge card to hand', () => {
+  const game = makeGame(2);
+  const dredgeCard = createCardState({
+    ...vanillaCreature,
+    id: 'stinkweed-imp',
+    name: 'Stinkweed Imp',
+    oracleText: 'Flying\nDredge 5',
+  }, 'p1', 'library');
+  const library = Array.from({ length: 5 }, (_, index) => createCardState({
+    ...vanillaCreature,
+    id: `dredge-mill-${index}`,
+    name: `Mill Card ${index}`,
+  }, 'p1', 'library'));
+
+  resetStore({
+    ...game,
+    cards: Object.fromEntries([dredgeCard, ...library].map(card => [card.instanceId, {
+      ...card,
+      zone: card.instanceId === dredgeCard.instanceId ? 'graveyard' as const : card.zone,
+    }])),
+    players: game.players.map(player =>
+      player.id === 'p1'
+        ? { ...player, graveyard: [dredgeCard.instanceId], library: library.map(card => card.instanceId) }
+        : player
+    ),
+  });
+
+  const ok = useGameStore.getState().dredgeCard('p1', dredgeCard.instanceId);
+  const state = useGameStore.getState();
+  const player = state.game.players.find(p => p.id === 'p1')!;
+
+  assert(ok, 'expected dredge to succeed');
+  assert(player.hand.includes(dredgeCard.instanceId), 'expected dredge card returned to hand');
+  assert(player.library.length === 0, `expected library empty after milling 5, got ${player.library.length}`);
+  assert(library.every(card => player.graveyard.includes(card.instanceId)), 'expected exactly the top 5 cards milled to graveyard');
+  assert(state.game.actionLog[state.game.actionLog.length - 1].actionType === 'DREDGE', 'expected DREDGE action log');
+});
+
+test('dredge fails when library has fewer cards than the dredge value', () => {
+  const game = makeGame(2);
+  const dredgeCard = createCardState({
+    ...vanillaCreature,
+    id: 'life-from-the-loam',
+    name: 'Life from the Loam',
+    oracleText: 'Return up to three target land cards from your graveyard to your hand.\nDredge 3',
+  }, 'p1', 'library');
+  const library = Array.from({ length: 2 }, (_, index) => createCardState({
+    ...vanillaCreature,
+    id: `short-library-${index}`,
+    name: `Short Library ${index}`,
+  }, 'p1', 'library'));
+
+  resetStore({
+    ...game,
+    cards: Object.fromEntries([dredgeCard, ...library].map(card => [card.instanceId, {
+      ...card,
+      zone: card.instanceId === dredgeCard.instanceId ? 'graveyard' as const : card.zone,
+    }])),
+    players: game.players.map(player =>
+      player.id === 'p1'
+        ? { ...player, graveyard: [dredgeCard.instanceId], library: library.map(card => card.instanceId) }
+        : player
+    ),
+  });
+
+  const ok = useGameStore.getState().dredgeCard('p1', dredgeCard.instanceId);
+  const state = useGameStore.getState();
+  const player = state.game.players.find(p => p.id === 'p1')!;
+
+  assert(!ok, 'expected dredge to fail with too few library cards');
+  assert(player.graveyard.includes(dredgeCard.instanceId), 'expected dredge card to stay in graveyard');
+  assert(player.library.length === 2, 'expected library not to be milled on failed dredge');
+  assert(state.ui.assistantMessages.some(message => message.text.includes('cannot dredge')), 'expected judge warning for failed dredge');
+});
+
+test('proliferate adds one of each existing counter kind to chosen players and permanents', () => {
+  const game = makeGame(2);
+  const permanent = {
+    ...createCardState({ ...vanillaCreature, id: 'counter-card', name: 'Counter Bear' }, 'p1', 'library'),
+    zone: 'battlefield' as const,
+    counters: [
+      { type: '+1/+1', count: 2 },
+      { type: 'shield', count: 1 },
+    ],
+  };
+  const noCounterPermanent = {
+    ...createCardState({ ...vanillaCreature, id: 'no-counter-card', name: 'No Counter Bear' }, 'p1', 'library'),
+    zone: 'battlefield' as const,
+  };
+
+  resetStore({
+    ...game,
+    cards: {
+      [permanent.instanceId]: permanent,
+      [noCounterPermanent.instanceId]: noCounterPermanent,
+    },
+    players: game.players.map(player => {
+      if (player.id === 'p1') return { ...player, poisonCounters: 1, energyCounters: 2, battlefield: [permanent.instanceId, noCounterPermanent.instanceId] };
+      if (player.id === 'p2') return { ...player, experienceCounters: 1 };
+      return player;
+    }),
+  });
+
+  useGameStore.getState().proliferate('p1');
+  const state = useGameStore.getState();
+  const nextPermanent = state.game.cards[permanent.instanceId];
+  const unchanged = state.game.cards[noCounterPermanent.instanceId];
+  const p1 = state.game.players.find(player => player.id === 'p1')!;
+  const p2 = state.game.players.find(player => player.id === 'p2')!;
+
+  assert(nextPermanent.counters.find(counter => counter.type === '+1/+1')?.count === 3, 'expected +1/+1 counter to increment by one');
+  assert(nextPermanent.counters.find(counter => counter.type === 'shield')?.count === 2, 'expected shield counter to increment by one');
+  assert(unchanged.counters.length === 0, 'expected permanents without counters to remain unchanged');
+  assert(p1.poisonCounters === 2 && p1.energyCounters === 3, 'expected existing player counters to increment');
+  assert(p2.experienceCounters === 2, 'expected p2 existing experience counter to increment');
+  assert(state.game.actionLog[state.game.actionLog.length - 1].actionType === 'PROLIFERATE', 'expected PROLIFERATE action log');
+});
+
 test('hand can be manually reordered and sorted by workflow command', () => {
   const game = makeGame(2);
   const forest = createCardState({ ...vanillaCreature, id: 'forest', name: 'Forest', typeLine: 'Basic Land - Forest', cardTypes: ['Land'], subTypes: ['Forest'], cmc: 0, colors: [], colorIdentity: ['G'] }, 'p1', 'hand');
@@ -499,6 +645,12 @@ test('hand can be manually reordered and sorted by workflow command', () => {
 test('sort command parses as hand organization', () => {
   assert(parseCommand('sort').intent === 'SORT_HAND', 'expected bare sort command');
   assert(parseCommand('sort hand').intent === 'SORT_HAND', 'expected sort hand command');
+});
+
+test('dredge command parses as replacement action, not graveyard casting', () => {
+  const parsed = parseCommand('dredge stinkweed imp');
+  assert(parsed.intent === 'DREDGE', `expected DREDGE intent, got ${parsed.intent}`);
+  assert(parsed.cardName === 'Stinkweed Imp', `expected dredge card name, got ${parsed.cardName}`);
 });
 
 console.log(`\nStore flow tests: ${passed} passed, ${failed} failed`);

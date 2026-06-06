@@ -11,7 +11,7 @@ export function ZoneDrawer() {
   const [confirmAction, setConfirmAction] = useState<string | null>(null);
 
   if (!ui.zoneDrawer) return null;
-  const { zone, playerId } = ui.zoneDrawer;
+  const { zone, playerId, mode = 'normal', limit, viewerId, private: privateView } = ui.zoneDrawer;
 
   const player = game.players.find(p => p.id === playerId);
   if (!player) return null;
@@ -19,16 +19,21 @@ export function ZoneDrawer() {
 
   const localPlayer = game.players.find(p => p.id === localPlayerId);
   const isOwnZone = playerId === localPlayerId;
+  const isScopedLibrary = zone === 'library' && mode !== 'normal' && typeof limit === 'number';
+  const canViewPrivate = !privateView || !viewerId || viewerId === localPlayerId;
 
   // Get cards for the zone
-  const zoneCardIds = zone === 'graveyard' ? player.graveyard
+  const allZoneCardIds = zone === 'graveyard' ? player.graveyard
     : zone === 'exile' ? player.exile
     : zone === 'hand' ? player.hand
     : player.library; // library
+  const zoneCardIds = isScopedLibrary
+    ? allZoneCardIds.slice(0, Math.max(0, limit ?? 0))
+    : allZoneCardIds;
 
-  const zoneCards: CardState[] = zoneCardIds
+  const zoneCards: CardState[] = canViewPrivate ? zoneCardIds
     .map(id => game.cards[id])
-    .filter(Boolean) as CardState[];
+    .filter(Boolean) as CardState[] : [];
 
   const filtered = search
     ? zoneCards.filter(c =>
@@ -169,6 +174,60 @@ export function ZoneDrawer() {
     }
 
     if (zone === 'library') {
+      if (!canViewPrivate) {
+        return (
+          <div style={{ fontSize: 8, color: '#475569', marginTop: 2, textAlign: 'center' }}>
+            Private
+          </div>
+        );
+      }
+
+      if (mode === 'scry') {
+        return (
+          <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', justifyContent: 'center', marginTop: 2 }}>
+            <ActionBtn
+              label="Top"
+              color="#0891b2"
+              title="Keep this card on top of your library"
+              onClick={() => store.reorderLibraryCard(playerId, card.instanceId, 'top')}
+            />
+            <ActionBtn
+              label="Bottom"
+              color="#f59e0b"
+              title="Put this card on the bottom of your library"
+              onClick={() => store.reorderLibraryCard(playerId, card.instanceId, 'bottom')}
+            />
+          </div>
+        );
+      }
+
+      if (mode === 'surveil') {
+        return (
+          <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', justifyContent: 'center', marginTop: 2 }}>
+            <ActionBtn
+              label="Keep"
+              color="#0891b2"
+              title="Keep this card on top of your library"
+              onClick={() => store.reorderLibraryCard(playerId, card.instanceId, 'top')}
+            />
+            <ActionBtn
+              label="Mill"
+              color="#b45309"
+              title="Put this card into your graveyard"
+              onClick={() => store.moveCardToZone(card.instanceId, 'graveyard')}
+            />
+          </div>
+        );
+      }
+
+      if (mode === 'lookTop') {
+        return (
+          <div style={{ fontSize: 8, color: '#64748b', marginTop: 2, textAlign: 'center' }}>
+            Viewed
+          </div>
+        );
+      }
+
       return (
         <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', justifyContent: 'center', marginTop: 2 }}>
           {isOwnZone && (
@@ -345,6 +404,12 @@ export function ZoneDrawer() {
 
   const headerNote = !isOwnZone && zone === 'hand'
     ? ' (Peeking — Telepathy / Praetor\'s Grasp effect)'
+    : mode === 'scry'
+    ? ` — Scry ${zoneCards.length}`
+    : mode === 'surveil'
+    ? ` — Surveil ${zoneCards.length}`
+    : mode === 'lookTop'
+    ? ` — Top ${zoneCards.length}`
     : !isOwnZone && zone === 'library'
     ? ' (Searching — shuffle after)'
     : zone === 'library' && isOwnZone
@@ -394,32 +459,39 @@ export function ZoneDrawer() {
               {zoneIcon[zone]} {player.name}'s {zoneLabel[zone]}{headerNote}
             </div>
             <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
-              {zoneCards.length} card{zoneCards.length !== 1 ? 's' : ''}
+              {canViewPrivate
+                ? `${zoneCards.length} visible card${zoneCards.length !== 1 ? 's' : ''}${isScopedLibrary ? ` of ${allZoneCardIds.length}` : ''}`
+                : 'Private view hidden'}
               {zone === 'graveyard' && ' — right-click for actions · Cast / Reanimate / Return'}
               {zone === 'exile' && ' — Cast from exile · Return · Put on battlefield'}
-              {zone === 'library' && isOwnZone && ' — Scry/Tutor: take to hand, put on BF, or mill'}
-              {zone === 'library' && !isOwnZone && ' — Search effect: take or put on BF · shuffle after'}
+              {zone === 'library' && mode === 'scry' && ' — choose top or bottom for only these cards'}
+              {zone === 'library' && mode === 'surveil' && ' — keep on top or mill only these cards'}
+              {zone === 'library' && mode === 'lookTop' && ' — view-only effect'}
+              {zone === 'library' && mode === 'normal' && isOwnZone && ' — Scry/Tutor: take to hand, put on BF, or mill'}
+              {zone === 'library' && mode === 'normal' && !isOwnZone && ' — Search effect: take or put on BF · shuffle after'}
               {zone === 'hand' && isOwnZone && ' — Cycle / Discard / Cast from hand'}
               {zone === 'hand' && !isOwnZone && ' — Viewing via Telepathy / Praetor\'s Grasp effect'}
             </div>
           </div>
 
-          <input
-            placeholder="Search cards..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            autoFocus={zone === 'library' || zone === 'graveyard'}
-            style={{
-              flex: 1,
-              background: '#1e293b',
-              border: '1px solid #334155',
-              borderRadius: 6,
-              padding: '6px 10px',
-              fontSize: 12,
-              color: '#e2e8f0',
-              outline: 'none',
-            }}
-          />
+          {!isScopedLibrary && (
+            <input
+              placeholder="Search cards..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              autoFocus={zone === 'library' || zone === 'graveyard'}
+              style={{
+                flex: 1,
+                background: '#1e293b',
+                border: '1px solid #334155',
+                borderRadius: 6,
+                padding: '6px 10px',
+                fontSize: 12,
+                color: '#e2e8f0',
+                outline: 'none',
+              }}
+            />
+          )}
 
           {/* Quick bulk actions */}
           {zone === 'graveyard' && isOwnZone && (
@@ -433,14 +505,14 @@ export function ZoneDrawer() {
               style={quickBtnStyle('#7c3aed')}
             >Exile All</button>
           )}
-          {zone === 'library' && isOwnZone && (
+          {zone === 'library' && isOwnZone && mode === 'normal' && (
             <button
               title="Shuffle library"
               onClick={() => store.shuffleLibrary(localPlayerId)}
               style={quickBtnStyle('#2563eb')}
             >Shuffle</button>
           )}
-          {zone === 'library' && !isOwnZone && (
+          {zone === 'library' && !isOwnZone && mode === 'normal' && (
             <button
               title="Shuffle their library"
               onClick={() => {
@@ -471,7 +543,14 @@ export function ZoneDrawer() {
           gap: 8,
           alignContent: 'flex-start',
         }}>
-          {filtered.length === 0 ? (
+          {!canViewPrivate ? (
+            <div style={{
+              width: '100%', textAlign: 'center', color: '#64748b',
+              fontSize: 12, fontStyle: 'italic', padding: 24,
+            }}>
+              This is a private top-library view for the instructed player.
+            </div>
+          ) : filtered.length === 0 ? (
             <div style={{
               width: '100%', textAlign: 'center', color: '#334155',
               fontSize: 12, fontStyle: 'italic', padding: 24,

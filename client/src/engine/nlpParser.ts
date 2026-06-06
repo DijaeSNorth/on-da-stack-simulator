@@ -62,6 +62,8 @@ export type IntentType =
   | 'UNDO'
   | 'SURVEIL'
   | 'CYCLE'
+  | 'DREDGE'
+  | 'PROLIFERATE'
   | 'CAST_FROM_GY'
   | 'CAST_FROM_EXILE'
   | 'REANIMATE'
@@ -313,6 +315,10 @@ export function parseCommand(raw: string): ParsedIntent {
     return { ...result, intent: 'SURVEIL', count: parseWordNumber(surveilMatch[1]) || 1, confidence: 'high' };
   }
 
+  if (lower === 'proliferate') {
+    return { ...result, intent: 'PROLIFERATE', confidence: 'high' };
+  }
+
   // ── Cycle ──
   // "cycle sol ring" / "discard for cycling sol ring" / "cycle my goblin guide"
   const cycleMatch = lower.match(/^(?:cycle|cycling|cycle away|discard.*cycling)\s+(.+)$/);
@@ -341,8 +347,13 @@ export function parseCommand(raw: string): ParsedIntent {
   // ── Cast from graveyard (flashback, unearth, encore, escape, etc.) ──
   // "flashback goblin dark-dwellers" / "cast from graveyard goblin guide"
   // "escape elspeth" / "unearth gravecrawler" / "encore zuzu"
+  const dredgeMatch = lower.match(/^dredge\s+(.+)$/);
+  if (dredgeMatch) {
+    return { ...result, intent: 'DREDGE', cardName: normalizeName(dredgeMatch[1]), confidence: 'high' };
+  }
+
   const castFromGyMatch = lower.match(
-    /^(?:flashback|escape|unearth|encore|delve|disturb|rebound|dredge|cast from gy|cast from graveyard)\s+(.+)$/
+    /^(?:flashback|escape|unearth|encore|delve|disturb|rebound|cast from gy|cast from graveyard)\s+(.+)$/
   );
   if (castFromGyMatch) {
     return { ...result, intent: 'CAST_FROM_GY', cardName: normalizeName(castFromGyMatch[1]), confidence: 'high' };
@@ -807,6 +818,7 @@ function getSearchZones(intent: ParsedIntent): import('../types/game').Zone[] {
     case 'REMOVE_COUNTER': return ['battlefield'];
     case 'DISCARD': return ['hand'];
     case 'CYCLE': return ['hand'];
+    case 'DREDGE': return ['graveyard'];
     case 'COUNTER_SPELL': return ['stack'];
     case 'MOVE_CARD': return ['battlefield', 'hand', 'graveyard', 'exile', 'library'];
     case 'CAST_FROM_GY': return ['graveyard'];

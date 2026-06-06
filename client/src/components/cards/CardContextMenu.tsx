@@ -101,6 +101,14 @@ export function CardContextMenu() {
 
   // ─── Graveyard actions ──────────────────────────────────────────────────────
   if (inGraveyard) {
+    if (hasMechanic(def, 'dredge')) {
+      actions.push({
+        label: 'Dredge',
+        tier: 1,
+        action: () => { store.dredgeCard(localPlayerId, instanceId); close(); },
+        tooltip: 'If you would draw, mill the Dredge number and return this card to hand.',
+      });
+    }
     actions.push({
       label: 'Cast from Graveyard',
       tier: 1,
@@ -122,7 +130,7 @@ export function CardContextMenu() {
     );
     for (const m of t2gy) {
       // Don't duplicate generic cast-from-gy
-      if (m.action === 'CAST_FROM_GY') continue;
+      if (m.action === 'CAST_FROM_GY' || m.key === 'dredge') continue;
       actions.push({
         label: m.label,
         tier: 2,

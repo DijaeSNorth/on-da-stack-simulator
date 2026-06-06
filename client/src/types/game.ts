@@ -175,7 +175,7 @@ export type ActionType =
   | 'UNDO' | 'REDO' | 'SNAPSHOT'
   | 'GAME_START' | 'GAME_END' | 'MULLIGAN'
   | 'NOTE' | 'FLAG'
-  | 'SCRY' | 'SURVEIL' | 'CYCLE' | 'CAST' | 'REANIMATE' | 'OTHER';
+  | 'SCRY' | 'SURVEIL' | 'CYCLE' | 'DREDGE' | 'PROLIFERATE' | 'CAST' | 'REANIMATE' | 'OTHER';
 
 export interface ActionRecord {
   id: string;
