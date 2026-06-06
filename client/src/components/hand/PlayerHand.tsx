@@ -239,6 +239,10 @@ export function PlayerHand() {
         <button
           type="button"
           data-testid="btn-sort-hand"
+          data-help-title="Sort Hand"
+          data-help-body="Reorders your hand by card type, color, mana value, then name. You can also drag cards manually to organize your hand."
+          data-help-example="Command bar: sort hand"
+          data-help-placement="top"
           title="Sort hand by card type, color, mana value, then name. You can also type 'sort hand'."
           onClick={() => store.sortHand(localPlayerId)}
           style={{
@@ -386,6 +390,10 @@ export function PlayerHand() {
           }}>
             <button
               data-testid="btn-play-selected"
+              data-help-title={isLand ? 'Play Land' : 'Cast Spell'}
+              data-help-body={isLand ? 'Moves the selected land from hand to the battlefield and logs the land play.' : 'Moves the selected spell onto the stack first so players can respond before it resolves.'}
+              data-help-example={isLand ? 'Lands become permanents immediately.' : 'Resolve it from the Stack panel.'}
+              data-help-placement="top"
               onClick={() => {
                 if (isLand) {
                   store.playLand(localPlayerId, ui.selectedCardId!);
@@ -405,6 +413,9 @@ export function PlayerHand() {
             </button>
             <button
               data-testid="btn-discard-selected"
+              data-help-title="Discard Card"
+              data-help-body="Moves the selected hand card to the graveyard and logs the discard."
+              data-help-placement="top"
               onClick={() => {
                 store.discardFromHand(localPlayerId, ui.selectedCardId!);
                 store.setSelectedCard(null);
@@ -442,6 +453,9 @@ function ZoneButton({
     <button
       type="button"
       data-testid={`btn-hand-zone-${label.toLowerCase()}`}
+      data-help-title={`${label} Zone`}
+      data-help-body={title}
+      data-help-placement="top"
       title={title}
       onClick={event => {
         event.stopPropagation();

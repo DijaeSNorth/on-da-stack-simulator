@@ -346,6 +346,9 @@ export function LobbyScreen() {
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
                 <button
                   data-testid="btn-mode-solo"
+                  data-help-title="Solo Lab"
+                  data-help-body="Starts a one-player practice table for deck building, card logic testing, dummy opponents, and replay review."
+                  data-help-placement="bottom"
                   onClick={() => updateMode('solo')}
                   style={{
                     padding: '8px 10px',
@@ -359,6 +362,9 @@ export function LobbyScreen() {
                 </button>
                 <button
                   data-testid="btn-mode-table"
+                  data-help-title="Commander Table"
+                  data-help-body="Sets up a 2-4 player Commander game. Players join, set their own profile, load a deck, then the host starts when at least two players are ready."
+                  data-help-placement="bottom"
                   onClick={() => updateMode('table')}
                   style={{
                     padding: '8px 10px',
@@ -384,6 +390,9 @@ export function LobbyScreen() {
                     <button
                       key={n}
                       data-testid={`btn-player-count-${n}`}
+                      data-help-title={`${n} Player Table`}
+                      data-help-body={`Creates ${n} lobby seats for Commander. The host chooses seat count, but each player controls their own profile and deck.`}
+                      data-help-placement="bottom"
                       onClick={() => updateCount(n)}
                       style={{
                         flex: 1, padding: '6px 0',
@@ -474,10 +483,14 @@ export function LobbyScreen() {
                       }}
                     />
                     <button onClick={() => store.setProfileOpen(true)} style={smallBtnStyle}>
+                      <span data-help-title="Edit Profile" data-help-body="Open your player profile to change your name, avatar, color, or card-art identity before loading into the table." data-help-placement="bottom">
                       Profile
+                      </span>
                     </button>
                     <button onClick={applyActiveProfileToSeat0} style={smallBtnStyle}>
+                      <span data-help-title="Apply Profile" data-help-body="Copies your saved profile onto the active solo player slot so the practice table uses your current identity." data-help-placement="bottom">
                       Apply
+                      </span>
                     </button>
                   </div>
                 </>
@@ -520,8 +533,8 @@ export function LobbyScreen() {
                     );
                   })}
                   <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
-                    <button onClick={() => store.setProfileOpen(true)} style={smallBtnStyle}>Edit Profile</button>
-                    <button onClick={applyActiveProfileToSeat0} style={smallBtnStyle}>Apply Profile</button>
+                    <button data-help-title="Edit Profile" data-help-body="Open your player profile. The host does not set other players' names; each player manages their own identity." data-help-placement="bottom" onClick={() => store.setProfileOpen(true)} style={smallBtnStyle}>Edit Profile</button>
+                    <button data-help-title="Apply Profile" data-help-body="Applies your saved profile to your lobby seat before the game starts." data-help-placement="bottom" onClick={applyActiveProfileToSeat0} style={smallBtnStyle}>Apply Profile</button>
                   </div>
                 </div>
               )}
@@ -656,6 +669,9 @@ export function LobbyScreen() {
                   <button
                     key={mode}
                     data-testid={`btn-import-mode-${mode}`}
+                    data-help-title={mode === 'url' ? 'Import From Website' : 'Paste Deck Text'}
+                    data-help-body={mode === 'url' ? 'Fetches a public decklist from supported sites, then validates card names, commander count, size, and banned-card warnings.' : 'Lets you paste a decklist directly. The importer checks format issues and preserves custom logic notes when provided.'}
+                    data-help-placement="top"
                     onClick={() => {
                       setImportMode(mode);
                       setImportError('');
@@ -762,6 +778,10 @@ export function LobbyScreen() {
               </details>
               <button
                 data-testid="btn-import-deck"
+                data-help-title={importMode === 'url' ? 'Fetch And Validate' : 'Import And Validate'}
+                data-help-body="Imports the deck, pulls card information where possible, saves it to a deck slot, and reports warnings without blocking practice games."
+                data-help-example="Commander mode needs loaded decks before starting; Solo mode can start without one."
+                data-help-placement="top"
                 onClick={handleImport}
                 disabled={importing || (importMode === 'text' ? !deckText.trim() : !deckUrl.trim())}
                 style={{
@@ -838,6 +858,9 @@ export function LobbyScreen() {
                 <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
                   <button
                     data-testid="btn-use-deck"
+                    data-help-title="Save And Use Deck"
+                    data-help-body="Stores the validated deck in one of your saved slots and assigns it to the current player or lobby seat."
+                    data-help-placement="top"
                     onClick={saveDeckAndAssign}
                     style={{
                       flex: 1, padding: '6px 0',
@@ -886,6 +909,10 @@ export function LobbyScreen() {
         {/* Start button */}
         <button
           data-testid="btn-start-game"
+          data-help-title={gameMode === 'solo' ? 'Start Solo Lab' : 'Start Commander Game'}
+          data-help-body={gameMode === 'solo' ? 'Starts the practice table. Solo mode can begin without a loaded deck so you can build and test freely.' : 'Starts the Commander table when at least two players are present and every joined player has a loaded deck.'}
+          data-help-example={gameMode === 'table' && !tableDecksReady ? `Missing decks: ${missingDeckPlayers.join(', ')}` : undefined}
+          data-help-placement="top"
           onClick={() => startGame()}
           disabled={!canStartTable}
           style={{

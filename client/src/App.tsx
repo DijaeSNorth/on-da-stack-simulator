@@ -15,6 +15,7 @@ import { CommandInput } from './components/command/CommandInput';
 import { CommanderCastMoment } from './components/commander/CommanderCastMoment';
 import { PracticeDummyPanel } from './components/solo/PracticeDummyPanel';
 import { WelcomeModal, CoachMark } from './components/tutorial/TutorialOverlay';
+import { GlobalHelpTooltip } from './components/tutorial/GlobalHelpTooltip';
 import { useIsMobile } from './hooks/use-mobile';
 
 const CardSearchPanel = lazy(() =>
@@ -62,6 +63,7 @@ export default function App() {
           <ProfilePanel />
         </Suspense>
         <WelcomeModal />
+        <GlobalHelpTooltip />
       </div>
     );
   }
@@ -189,6 +191,7 @@ export default function App() {
       {/* Tutorial system */}
       <WelcomeModal />
       <CoachMark />
+      <GlobalHelpTooltip />
     </div>
   );
 }

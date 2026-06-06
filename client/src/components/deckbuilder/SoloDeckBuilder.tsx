@@ -329,6 +329,9 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 58px 104px auto', gap: 6, position: 'relative' }}>
           <input
             data-testid="solo-add-card-name"
+            data-help-title="Search Card"
+            data-help-body="Searches Scryfall as you type. Pick a suggestion or press Enter to fetch card text and add it to the current deck."
+            data-help-placement="bottom"
             value={newCardName}
             onChange={event => setNewCardName(event.target.value)}
             onKeyDown={event => { if (event.key === 'Enter') void addCard(); }}
@@ -364,6 +367,9 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
           </select>
           <button
             data-testid="solo-add-card"
+            data-help-title="Add Card"
+            data-help-body="Fetches the card information from Scryfall when possible, adds the chosen count to the selected section, and updates the live deck text."
+            data-help-placement="bottom"
             onClick={() => void addCard()}
             disabled={cardLookupLoading}
             style={buttonStyle(cardLookupLoading ? '#1e293b' : '#14532d', cardLookupLoading ? '#64748b' : '#86efac')}
@@ -373,7 +379,12 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
         </div>
 
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, color: '#94a3b8' }}>
+          <label
+            data-help-title="Live Test Sync"
+            data-help-body="When enabled, deck edits immediately update the solo test deck so you can practice table workflow while building."
+            data-help-placement="bottom"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 10, color: '#94a3b8' }}
+          >
             <input
               type="checkbox"
               checked={liveSyncEnabled}
@@ -396,6 +407,9 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
               <button
                 key={`${row.section}-${row.name}`}
                 data-testid={`solo-card-row-${row.name}`}
+                data-help-title="Deck Card Row"
+                data-help-body="Select a card to edit notes, triggers, replacements, or custom oracle text. Use plus and minus to adjust the count."
+                data-help-example={`${row.count} in ${SECTION_LABELS[row.section]}`}
                 onClick={() => setSelectedCard(row.name)}
                 style={{
                   display: 'grid',
@@ -458,11 +472,11 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
         </div>
 
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          <button data-testid="solo-save-deck" onClick={handleSave} title="Save this deck into one of your 3 stored deck slots." style={buttonStyle('#1e3a5f', '#bfdbfe')}>Save Slot</button>
-          <button data-testid="solo-save-as-deck" onClick={handleSaveAs} title="Duplicate this build into a new stored slot." style={buttonStyle('#312e81', '#c4b5fd')}>Duplicate Slot</button>
-          <button data-testid="solo-load-deck" onClick={handleLoad} style={buttonStyle('#14532d', '#86efac')}>{loadLabel}</button>
-          <button onClick={() => handleExportFile()} title="Download a portable deck backup file." style={buttonStyle('#3f2a08', '#fbbf24')}>Download File</button>
-          <button onClick={() => fileInputRef.current?.click()} title="Load a downloaded deck file or text decklist." style={buttonStyle('#0f172a', '#93c5fd')}>Open File</button>
+          <button data-testid="solo-save-deck" data-help-title="Save Slot" data-help-body="Saves changes into the current stored deck slot. You can keep up to three saved decks in browser storage." data-help-placement="top" onClick={handleSave} title="Save this deck into one of your 3 stored deck slots." style={buttonStyle('#1e3a5f', '#bfdbfe')}>Save Slot</button>
+          <button data-testid="solo-save-as-deck" data-help-title="Duplicate Slot" data-help-body="Creates a separate saved copy of this build. If all three slots are full, export the deck file before replacing anything." data-help-placement="top" onClick={handleSaveAs} title="Duplicate this build into a new stored slot." style={buttonStyle('#312e81', '#c4b5fd')}>Duplicate Slot</button>
+          <button data-testid="solo-load-deck" data-help-title="Load To Practice" data-help-body="Loads the current draft into the solo battlefield so you can test sequencing, triggers, combat, and custom card logic." data-help-placement="top" onClick={handleLoad} style={buttonStyle('#14532d', '#86efac')}>{loadLabel}</button>
+          <button data-help-title="Download Deck File" data-help-body="Exports a portable deck backup with card list and custom logic. Use this when saved slots are full or to move decks between browsers." data-help-placement="top" onClick={() => handleExportFile()} title="Download a portable deck backup file." style={buttonStyle('#3f2a08', '#fbbf24')}>Download File</button>
+          <button data-help-title="Open Deck File" data-help-body="Imports a downloaded deck file or text decklist back into the builder." data-help-placement="top" onClick={() => fileInputRef.current?.click()} title="Load a downloaded deck file or text decklist." style={buttonStyle('#0f172a', '#93c5fd')}>Open File</button>
           <input
             ref={fileInputRef}
             type="file"
@@ -485,18 +499,21 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
             justifyContent: 'space-between',
           }}>
             <span>Saved deck slots are full. Keep building by downloading this deck as a file.</span>
-            <button onClick={() => handleExportFile()} style={buttonStyle('#713f12', '#fde68a')}>Download</button>
+            <button data-help-title="Export Instead" data-help-body="Saved slots are full. Download this deck as a file so you can keep building without losing the current list." data-help-placement="top" onClick={() => handleExportFile()} style={buttonStyle('#713f12', '#fde68a')}>Download</button>
           </div>
         )}
         {status && <div style={{ fontSize: 10, color: '#93c5fd' }}>{status}</div>}
         {savedDecks.length > 0 && (
           <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
             {savedDecks.map(deck => (
-              <button key={deck.id} onClick={() => handleSelectSavedDeck(deck)} style={chipStyle(draft.id === deck.id)}>
+              <button key={deck.id} data-help-title="Saved Deck" data-help-body="Switches the builder to this saved deck slot." data-help-example={`${deck.cards.reduce((sum, card) => sum + card.count, 0)} cards`} data-help-placement="top" onClick={() => handleSelectSavedDeck(deck)} style={chipStyle(draft.id === deck.id)}>
                 {deck.name}
               </button>
             ))}
             <button
+              data-help-title="Delete Saved Deck"
+              data-help-body="Deletes the selected saved deck slot from browser storage. Export first if you may want it later."
+              data-help-placement="top"
               onClick={handleDeleteDraft}
               style={buttonStyle('#450a0a', '#fca5a5')}
             >
@@ -526,24 +543,24 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 6 }}>
               <input value={triggerEvent} onChange={event => setTriggerEvent(event.target.value)} placeholder="Trigger event" style={inputStyle} />
               <input value={triggerEffect} onChange={event => setTriggerEffect(event.target.value)} placeholder="Effect/reminder" style={inputStyle} />
-              <button onClick={handleAddTrigger} style={buttonStyle('#78350f', '#fcd34d')}>Trigger</button>
+              <button data-help-title="Add Trigger Logic" data-help-body="Adds a reminder for an event this card cares about. The assistant can surface it during play, but players still choose how to resolve it." data-help-placement="top" onClick={handleAddTrigger} style={buttonStyle('#78350f', '#fcd34d')}>Trigger</button>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 6 }}>
               <input value={replacementEvent} onChange={event => setReplacementEvent(event.target.value)} placeholder="Would happen" style={inputStyle} />
               <input value={replacementEffect} onChange={event => setReplacementEffect(event.target.value)} placeholder="Instead..." style={inputStyle} />
-              <button onClick={handleAddReplacement} style={buttonStyle('#4c1d95', '#ddd6fe')}>Replace</button>
+              <button data-help-title="Add Replacement Logic" data-help-body="Adds a would-happen / instead reminder for replacement effects such as exile instead of dying or modifying draws." data-help-placement="top" onClick={handleAddReplacement} style={buttonStyle('#4c1d95', '#ddd6fe')}>Replace</button>
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr auto', gap: 6 }}>
               <input value={customType} onChange={event => setCustomType(event.target.value)} placeholder="Type line" style={inputStyle} />
               <input value={customStats} onChange={event => setCustomStats(event.target.value)} placeholder="2/3" style={inputStyle} />
-              <button onClick={handleCustomCard} style={buttonStyle('#064e3b', '#99f6e4')}>Custom</button>
+              <button data-help-title="Save Custom Card Text" data-help-body="Stores custom type line, stats, and oracle text for this card name so practice games can show the intended logic." data-help-placement="top" onClick={handleCustomCard} style={buttonStyle('#064e3b', '#99f6e4')}>Custom</button>
             </div>
             <textarea value={customOracle} onChange={event => setCustomOracle(event.target.value)} placeholder="Custom oracle text for this card" rows={3} style={textareaStyle} />
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              <button onClick={() => replaceDraft(removeCardLogic(draft, selectedCard, 'note'), { refreshText: true, sync: true })} style={buttonStyle('#1e293b', '#94a3b8')}>Clear Note</button>
-              <button onClick={() => replaceDraft(removeCardLogic(draft, selectedCard, 'triggers'), { refreshText: true, sync: true })} style={buttonStyle('#1e293b', '#94a3b8')}>Clear Triggers</button>
-              <button onClick={() => replaceDraft(removeCardLogic(draft, selectedCard, 'replacements'), { refreshText: true, sync: true })} style={buttonStyle('#1e293b', '#94a3b8')}>Clear Replacements</button>
-              <button onClick={() => replaceDraft(removeCardLogic(draft, selectedCard, 'customCard'), { refreshText: true, sync: true })} style={buttonStyle('#1e293b', '#94a3b8')}>Clear Custom</button>
+              <button data-help-title="Clear Note" data-help-body="Removes the table note for this card only." data-help-placement="top" onClick={() => replaceDraft(removeCardLogic(draft, selectedCard, 'note'), { refreshText: true, sync: true })} style={buttonStyle('#1e293b', '#94a3b8')}>Clear Note</button>
+              <button data-help-title="Clear Triggers" data-help-body="Removes trigger reminders for this card only." data-help-placement="top" onClick={() => replaceDraft(removeCardLogic(draft, selectedCard, 'triggers'), { refreshText: true, sync: true })} style={buttonStyle('#1e293b', '#94a3b8')}>Clear Triggers</button>
+              <button data-help-title="Clear Replacements" data-help-body="Removes replacement-effect reminders for this card only." data-help-placement="top" onClick={() => replaceDraft(removeCardLogic(draft, selectedCard, 'replacements'), { refreshText: true, sync: true })} style={buttonStyle('#1e293b', '#94a3b8')}>Clear Replacements</button>
+              <button data-help-title="Clear Custom Text" data-help-body="Removes custom card type, stats, and oracle text for this card only." data-help-placement="top" onClick={() => replaceDraft(removeCardLogic(draft, selectedCard, 'customCard'), { refreshText: true, sync: true })} style={buttonStyle('#1e293b', '#94a3b8')}>Clear Custom</button>
             </div>
           </>
         ) : (
@@ -552,7 +569,7 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
 
         <div style={headerStyle}>
           <span>Deck Text</span>
-          <button onClick={handleImport} style={buttonStyle('#1d4ed8', '#dbeafe')}>Apply Text</button>
+          <button data-help-title="Apply Deck Text" data-help-body="Parses the deck text box and updates the current draft. Import warnings stay visible so user mistakes are easy to correct." data-help-placement="top" onClick={handleImport} style={buttonStyle('#1d4ed8', '#dbeafe')}>Apply Text</button>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 6 }}>
           <input
@@ -561,7 +578,7 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
             placeholder="Moxfield / Archidekt / MTGGoldfish / TappedOut URL"
             style={inputStyle}
           />
-          <button onClick={() => void handleImportUrl()} style={buttonStyle('#123642', '#67e8f9')}>Import URL</button>
+          <button data-help-title="Import Deck URL" data-help-body="Fetches a deck from supported public sites and converts it into the live solo build with card data where available." data-help-placement="top" onClick={() => void handleImportUrl()} style={buttonStyle('#123642', '#67e8f9')}>Import URL</button>
         </div>
         <textarea
           data-testid="solo-import-export-text"

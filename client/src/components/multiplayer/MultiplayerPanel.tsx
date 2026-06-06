@@ -150,6 +150,9 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
           {isHost && (
             <button
               data-testid="btn-copy-room-code"
+              data-help-title="Copy Room Code"
+              data-help-body="Copies the six-character room code so the host can share it with players who are joining."
+              data-help-placement="bottom"
               onClick={copyCode}
               style={{
                 padding: '8px 16px', borderRadius: 6, cursor: 'pointer',
@@ -238,6 +241,9 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
         {/* Leave */}
         <button
           data-testid="btn-leave-room"
+          data-help-title="Leave Room"
+          data-help-body="Opens the exit flow. If you are host, the app will try to migrate host duties to the strongest connected player."
+          data-help-placement="top"
           onClick={handleLeave}
           style={{
             padding: '8px 16px', borderRadius: 6, cursor: 'pointer',
@@ -264,6 +270,9 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
           <div style={{ display: 'flex', gap: 10 }}>
             <button
               data-testid="btn-mode-host"
+              data-help-title="Create Room"
+              data-help-body="Creates a peer-to-peer Commander lobby and gives you a room code to share. You choose the seat count, then players join themselves."
+              data-help-placement="bottom"
               onClick={() => setMode('host')}
               style={modeBtnStyle('#0f2d1a', '#166534', '#4ade80')}
             >
@@ -271,6 +280,9 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
             </button>
             <button
               data-testid="btn-mode-join"
+              data-help-title="Join Room"
+              data-help-body="Join a friend's room with their code, pick an open seat, and apply your own player profile."
+              data-help-placement="bottom"
               onClick={() => setMode('join')}
               style={modeBtnStyle('#0f1a2d', '#1e3a5f', '#60a5fa')}
             >
@@ -423,6 +435,9 @@ function NameColorRow({
         <button
           type="button"
           onClick={onOpenProfile}
+          data-help-title="Edit Profile"
+          data-help-body="Open your saved profile to update your display name, avatar, color, or image before hosting or joining."
+          data-help-placement="top"
           style={{ ...cancelBtnStyle, padding: '7px 10px', fontSize: 11 }}
         >
           Edit Profile
@@ -430,6 +445,9 @@ function NameColorRow({
         <button
           type="button"
           onClick={onApplyProfile}
+          data-help-title="Apply Profile"
+          data-help-body="Copies your saved profile into this room form so the table uses your latest identity."
+          data-help-placement="top"
           style={{ ...cancelBtnStyle, padding: '7px 10px', fontSize: 11, color: '#93c5fd' }}
         >
           Apply
@@ -456,6 +474,9 @@ function SeatPicker({ players, selected, onSelect, takenSeats }: {
             <button
               key={p.id}
               data-testid={`seat-btn-${i}`}
+              data-help-title={taken ? 'Seat Taken' : 'Choose Seat'}
+              data-help-body={taken ? 'Another player already claimed this seat.' : 'Select the seat you want to occupy when the game starts.'}
+              data-help-placement="top"
               disabled={taken}
               onClick={() => !taken && onSelect(i)}
               style={{
@@ -483,6 +504,9 @@ function ActionButton({ testId, onClick, busy, label, accent }: {
   return (
     <button
       data-testid={testId}
+      data-help-title={label}
+      data-help-body={label === 'Create Room' ? 'Creates the room with your selected profile and seat, then prepares the table for joined players.' : 'Connects to the room code using your selected profile and seat.'}
+      data-help-placement="top"
       onClick={onClick}
       disabled={busy}
       style={{

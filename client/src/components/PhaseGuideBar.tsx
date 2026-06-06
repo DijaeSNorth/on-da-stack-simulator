@@ -19,9 +19,6 @@
 import { useState } from 'react';
 import { useGameStore } from '../store/gameStore';
 import type { Phase } from '../types/game';
-import { TutorialTooltip } from './tutorial/TutorialTooltip';
-import { TOOLTIPS } from '../store/tutorialStore';
-import { PulseBeacon } from './tutorial/TutorialOverlay';
 import { GROUP_ACCENT, GROUP_COLORS, PHASE_META, PHASE_ORDER } from '../engine/phaseMeta';
 
 // ── Phase metadata ─────────────────────────────────────────────────────────────
@@ -47,6 +44,9 @@ function PhasePill({
   return (
     <button
       data-testid={`phase-pill-${phase}`}
+      data-help-title={`${meta.label} Phase`}
+      data-help-body={`Jump directly to ${meta.label}. The simulator allows manual phase changes, and the judge assistant will flag risky skips instead of blocking you.`}
+      data-help-example={meta.hint}
       onClick={onClick}
       title={`Jump to ${meta.label}`}
       style={{
@@ -271,6 +271,9 @@ export function PhaseGuideBar() {
         {/* Pass Priority button */}
         <button
           data-testid="btn-pass-priority-guide"
+          data-help-title="Pass Priority"
+          data-help-body="Passes priority to the next player. Use this after you are done responding to the current spell, trigger, or phase action."
+          data-help-example={`Next: ${nextPriority?.name ?? 'next player'}`}
           onClick={store.passPriority}
           title={`Pass priority to ${nextPriority?.name ?? '…'}`}
           style={{
@@ -296,6 +299,9 @@ export function PhaseGuideBar() {
         {!isLastPhase ? (
           <button
             data-testid="btn-suggest-next-phase"
+            data-help-title={hasBlocker ? 'Advance And Flag' : 'Next Phase'}
+            data-help-body={hasBlocker ? 'Moves forward even though stack items or triggers remain. The assistant will log the issue so players can review the mistake.' : `Moves the game to ${nextMeta?.label}. Use the phase pills if you need to jump somewhere else.`}
+            data-help-example={hasBlocker ? 'Good for practice when you want mistakes to be visible.' : nextMeta?.hint}
             onClick={() => store.advancePhase()}
             title={
               hasBlocker
@@ -327,6 +333,9 @@ export function PhaseGuideBar() {
           /* Last phase = End Turn button */
           <button
             data-testid="btn-end-turn-guide"
+            data-help-title={hasBlocker ? 'End And Flag' : 'End Turn'}
+            data-help-body={hasBlocker ? 'Ends the turn even with unresolved stack items or triggers, then lets the assistant flag it for review.' : 'Ends cleanup, rotates the active player, and starts the next turn.'}
+            data-help-example="Check cleanup, hand size, damage removal, and end-step triggers first."
             onClick={() => store.advanceTurn()}
             title={hasBlocker ? 'End turn anyway and let the assistant flag pending stack or triggers' : 'End turn'}
             style={{

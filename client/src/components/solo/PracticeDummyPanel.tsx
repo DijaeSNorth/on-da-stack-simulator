@@ -33,6 +33,9 @@ export function PracticeDummyPanel() {
       <button
         type="button"
         data-testid="btn-add-practice-dummy"
+        data-help-title="Add Practice Dummy"
+        data-help-body="Adds a solo-test opponent with two simple creature permanents so you can practice attacks, blockers, targeting, and combat arrows."
+        data-help-placement="left"
         title="Add a practice dummy with two creature cards"
         disabled={dummies.length >= MAX_DUMMIES}
         onClick={store.addPracticeDummy}
@@ -45,6 +48,9 @@ export function PracticeDummyPanel() {
           key={dummy.id}
           type="button"
           data-testid={`btn-remove-practice-dummy-${dummy.id}`}
+          data-help-title="Remove Practice Dummy"
+          data-help-body="Removes this dummy player and its practice creatures from the solo test table."
+          data-help-placement="left"
           title={`Remove ${dummy.name}`}
           onClick={() => store.removePracticeDummy(dummy.id)}
           style={{

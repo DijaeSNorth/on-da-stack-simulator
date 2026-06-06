@@ -160,6 +160,9 @@ export function TopBar() {
       <div style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
         <button
           data-testid="btn-toggle-left-panel"
+          data-help-title="Players Panel"
+          data-help-body="Shows life totals, commander icons, quick draw and shuffle actions, graveyards, exile, and turn controls. Hide it when you need more table space."
+          data-help-placement="bottom"
           aria-label={ui.leftPanelOpen ? 'Hide players panel' : 'Show players panel'}
           onClick={store.toggleLeftPanel}
           title={ui.leftPanelOpen ? 'Hide players' : 'Show players'}
@@ -167,6 +170,9 @@ export function TopBar() {
         >☰</button>
         <button
           data-testid="btn-toggle-view"
+          data-help-title="Battlefield View"
+          data-help-body="Switch between normal battlefield view and an overview layout for checking permanents, combat arrows, and table state faster."
+          data-help-placement="bottom"
           aria-label={ui.battlefieldView === 'normal' ? 'Switch to battlefield overview' : 'Switch to normal battlefield view'}
           onClick={store.toggleBattlefieldView}
           title={ui.battlefieldView === 'normal' ? 'Overview' : 'Normal view'}
@@ -174,6 +180,9 @@ export function TopBar() {
         >⊞</button>
         <button
           data-testid="btn-toggle-right-panel"
+          data-help-title="Stack And Judge Panel"
+          data-help-body="Opens the right panel. Stack shows spells, abilities, triggers, and the brief turn timeline; Judge / Log reviews actions and possible mistakes."
+          data-help-placement="bottom"
           aria-label={ui.rightPanelOpen ? 'Hide assistant panel' : 'Show assistant panel'}
           onClick={store.toggleRightPanel}
           title={ui.rightPanelOpen ? 'Hide assistant' : 'Show assistant'}
@@ -181,6 +190,9 @@ export function TopBar() {
         >⚖</button>
         <button
           data-testid="btn-judge-mode"
+          data-help-title="Judge Assistant"
+          data-help-body="Toggles advisory judge mode. It flags missed triggers and questionable actions, but it still lets the game continue for practice."
+          data-help-placement="bottom"
           aria-label={ui.judgeMode ? 'Exit judge mode' : 'Enter judge mode'}
           onClick={() => store.setJudgeMode(!ui.judgeMode)}
           title={ui.judgeMode ? 'Exit Judge Mode' : 'Enter Judge Mode'}
@@ -188,6 +200,10 @@ export function TopBar() {
         >⚜</button>
         <button
           data-testid="btn-card-search"
+          data-help-title="Card Search"
+          data-help-body="Opens Scryfall-backed lookup for card text and interaction checks while testing."
+          data-help-example="/ or Ctrl+F opens search."
+          data-help-placement="bottom"
           aria-label="Open card search"
           onClick={() => store.setCardSearchOpen(true)}
           title="Card Search (/ or Ctrl+F)"
@@ -195,6 +211,9 @@ export function TopBar() {
         >🔍</button>
         <button
           data-testid="btn-replay"
+          data-help-title="Replay Review"
+          data-help-body="Opens replay tools so you can save and play back game logs, review sequencing, and spot missed triggers after a game."
+          data-help-placement="bottom"
           aria-label="Open replay panel"
           onClick={() => store.setReplayOpen(true)}
           title="Replay — save & review game history"
@@ -203,6 +222,9 @@ export function TopBar() {
         {game.config.playerCount === 1 && (
           <button
             data-testid="btn-deck-lab"
+            data-help-title="Solo Deck Lab"
+            data-help-body="Opens the side-by-side solo deck builder. Add cards, edit custom logic, save slots, import/export, then load the deck into practice."
+            data-help-placement="bottom"
             aria-label={ui.deckBuilderOpen ? 'Hide deck lab' : 'Show deck lab'}
             onClick={() => store.setDeckBuilderOpen(!ui.deckBuilderOpen)}
             title="Solo Deck Lab"
@@ -211,6 +233,9 @@ export function TopBar() {
         )}
         <button
           data-testid="btn-profile"
+          data-help-title="Player Profile"
+          data-help-body="Set your name, avatar, profile image, or card-art identity. In Commander lobbies, players manage their own profile."
+          data-help-placement="bottom"
           aria-label="Open player profile"
           onClick={() => store.setProfileOpen(true)}
           title="Player Profile — customize your card"
@@ -219,6 +244,9 @@ export function TopBar() {
         <MultiplayerBadge />
         <button
           data-testid="btn-exit-game"
+          data-help-title="Exit Game"
+          data-help-body="Starts the clean exit flow. You can save replay data, preserve deck progress, and trigger host migration in Commander."
+          data-help-placement="bottom"
           aria-label="Exit game"
           onClick={() => setExitOpen(true)}
           style={topBtnStyle('none', '#f87171')}
@@ -226,6 +254,9 @@ export function TopBar() {
         >Exit</button>
         <button
           data-testid="btn-open-lobby"
+          data-help-title="Lobby And New Game"
+          data-help-body="Returns to setup. Pick Solo Lab or Commander Table, manage profiles, choose player count, import decks, and start a new session."
+          data-help-placement="bottom"
           aria-label="Open lobby for a new game"
           onClick={() => store.setLobbyOpen(true)}
           style={topBtnStyle('none', '#64748b')}
@@ -239,6 +270,9 @@ export function TopBar() {
         >
           <button
             data-testid="btn-tutorial"
+            data-help-title="Tutorial Help"
+            data-help-body="Starts the guided walkthrough or enables tooltips again. Use this whenever a new player wants the table explained."
+            data-help-placement="bottom"
             aria-label={tutorial.walkthroughActive ? 'Stop guided tour' : tutorial.enabled ? 'Start guided tour or help' : 'Enable tooltips'}
             onClick={() => {
               if (tutorial.walkthroughActive) {

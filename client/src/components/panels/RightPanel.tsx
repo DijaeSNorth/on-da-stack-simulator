@@ -746,6 +746,25 @@ const TABS: { id: string; label: string }[] = [
   { id: 'debug', label: 'Tools' },
 ];
 
+function getTabHelp(tabId: string) {
+  if (tabId === 'stack') {
+    return {
+      title: 'Stack Timeline',
+      body: 'Shows spells, abilities, pending triggers, and the latest turn actions. Resolve from the top, or leave items visible while players respond.',
+    };
+  }
+  if (tabId === 'assistant') {
+    return {
+      title: 'Judge And Log',
+      body: 'Combines player actions and assistant warnings in one timeline so missed triggers, draws, reveals, and shortcuts are easy to review.',
+    };
+  }
+  return {
+    title: 'Practice Tools',
+    body: 'Solo and debugging helpers for drawing, shuffling, changing life, running state-based actions, and stress testing table workflows.',
+  };
+}
+
 export function RightPanel() {
   const store = useGameStore();
   const { ui, game } = store;
@@ -785,6 +804,9 @@ export function RightPanel() {
             <button
               key={tab.id}
               data-testid={`tab-${tab.id}`}
+              data-help-title={getTabHelp(tab.id).title}
+              data-help-body={getTabHelp(tab.id).body}
+              data-help-placement="bottom"
               onClick={() => store.setRightPanelTab(tab.id as typeof ui.rightPanelTab)}
               style={{
                 flex: 1,
@@ -816,6 +838,9 @@ export function RightPanel() {
           );
         })}
         <button
+          data-help-title="Hide Assistant Panel"
+          data-help-body="Closes the Stack, Judge / Log, and Tools panel to give the battlefield more room. Reopen it from the top bar."
+          data-help-placement="bottom"
           onClick={store.toggleRightPanel}
           style={{
             background: 'none', border: 'none', color: '#475569',

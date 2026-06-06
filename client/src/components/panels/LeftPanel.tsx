@@ -257,6 +257,9 @@ export function LeftPanel() {
               <div style={{ display: 'flex', gap: 4, marginTop: 6, flexWrap: 'wrap' }}>
                 <button
                   data-testid={`btn-draw-${player.id}`}
+                  data-help-title="Draw Card"
+                  data-help-body="Draws from this player's library into their hand and writes the draw to the shared timeline."
+                  data-help-example="Use Draw during draw step, card effects, or solo testing."
                   onClick={(e) => { e.stopPropagation(); store.drawCard(player.id); }}
                   style={{
                     fontSize: 9, padding: '2px 6px',
@@ -268,6 +271,9 @@ export function LeftPanel() {
                   <>
                     <button
                       data-testid={`btn-shuffle-${player.id}`}
+                      data-help-title="Shuffle Library"
+                      data-help-body="Shuffles your library and logs the shuffle. Only the deck owner gets this quick control."
+                      data-help-example="Use after tutors, fetches, or deck-builder reloads."
                       onClick={(e) => { e.stopPropagation(); store.shuffleLibrary(player.id); }}
                       style={{
                         fontSize: 9, padding: '2px 6px',
@@ -277,6 +283,9 @@ export function LeftPanel() {
                     >Shuffle</button>
                     <button
                       data-testid={`btn-reveal-top-${player.id}`}
+                      data-help-title="Reveal Top Card"
+                      data-help-body="Shows the top card only to the deck owner for practice and logs the reveal toggle. It is useful for known-top-library effects."
+                      data-help-example="Turn it off again when the effect ends."
                       aria-pressed={revealTop}
                       onClick={(e) => {
                         e.stopPropagation();
@@ -303,6 +312,8 @@ export function LeftPanel() {
                 <TutorialTooltip content={TOOLTIPS.zone_graveyard} placement="top" delay={500}>
                   <button
                     data-testid={`btn-open-graveyard-${player.id}`}
+                    data-help-title="View Graveyard"
+                    data-help-body="Opens this player's graveyard so you can inspect cards, move them, or review what has resolved this game."
                     onClick={(e) => { e.stopPropagation(); store.openZoneDrawer('graveyard', player.id); }}
                     style={{
                       fontSize: 9, padding: '2px 6px',
@@ -314,6 +325,8 @@ export function LeftPanel() {
                 <TutorialTooltip content={TOOLTIPS.zone_exile} placement="top" delay={500}>
                   <button
                     data-testid={`btn-open-exile-${player.id}`}
+                    data-help-title="View Exile"
+                    data-help-body="Opens this player's exile zone for cards exiled by spells, abilities, replacement effects, or cleanup."
                     onClick={(e) => { e.stopPropagation(); store.openZoneDrawer('exile', player.id); }}
                     style={{
                       fontSize: 9, padding: '2px 6px',
@@ -359,6 +372,9 @@ export function LeftPanel() {
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
           <button
             data-testid="btn-next-phase"
+            data-help-title={phaseBlocked ? 'Advance And Flag' : 'Next Phase'}
+            data-help-body={phaseBlocked ? 'Moves to the next phase even though the stack still has items. The judge assistant will flag it for review.' : 'Moves to the next phase using the guided turn order.'}
+            data-help-example="Use the phase guide bar above the table for more precise jumps."
             aria-label={phaseBlocked ? 'Advance phase with stack pending' : `Advance from ${phaseLabel} to the next phase`}
             onClick={store.advancePhase}
             title={phaseBlocked ? 'Advance anyway and let the assistant flag the pending stack' : 'Advance to next phase'}
@@ -373,6 +389,8 @@ export function LeftPanel() {
           >{phaseBlocked ? 'Advance + Flag' : 'Next Phase'}</button>
           <button
             data-testid="btn-next-turn"
+            data-help-title="End Turn"
+            data-help-body="Ends the current turn and moves to the next player. Check end-step triggers, cleanup, and hand size before using it."
             aria-label="End the current turn"
             onClick={store.advanceTurn}
             style={{
