@@ -182,7 +182,9 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
   async function handleImport() {
     if (!exchangeText.trim()) return;
     setStatus('Importing deck...');
-    const result = await importDecklist(exchangeText, draft.name || 'Solo Lab Import', 'solo-builder', playerId, logicText);
+    const result = await importDecklist(exchangeText, draft.name || 'Solo Lab Import', 'solo-builder', playerId, logicText, {
+      captureFetchedCardData: true,
+    });
     setDraft(result.deck);
     setSelectedCard(result.deck.commanders[0] ?? result.deck.cards[0]?.name ?? '');
     refreshExchange(result.deck);
@@ -197,7 +199,9 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
   async function handleImportUrl() {
     if (!deckSourceUrl.trim()) return;
     setStatus('Importing deck URL...');
-    const result = await importDeckFromUrl(deckSourceUrl, draft.name || 'Solo Lab Import', playerId, logicText);
+    const result = await importDeckFromUrl(deckSourceUrl, draft.name || 'Solo Lab Import', playerId, logicText, {
+      captureFetchedCardData: true,
+    });
     setDraft(result.deck);
     setSelectedCard(result.deck.commanders[0] ?? result.deck.cards[0]?.name ?? '');
     refreshExchange(result.deck);
@@ -378,7 +382,7 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
             Live test sync
           </label>
           <span style={{ fontSize: 10, color: '#475569' }}>
-            {stats.totalCards}/100 cards · Avg MV {stats.avgManaValue.toFixed(2)} · {stats.landCount} lands
+            {stats.totalCards}/100 cards · Avg MV {stats.avgManaValue.toFixed(2)} · C {stats.creatureCount} / L {stats.landCount} / A {stats.artifactCount} / I {stats.instantCount} / S {stats.sorceryCount}
           </span>
         </div>
 
@@ -429,9 +433,14 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
 
         <div style={statsPanelStyle}>
           <StatChip label="Creatures" value={stats.creatureCount} />
-          <StatChip label="Noncreatures" value={stats.nonCreatureCount} />
+          <StatChip label="Lands" value={stats.landCount} />
+          <StatChip label="Artifacts" value={stats.artifactCount} />
+          <StatChip label="Instants" value={stats.instantCount} />
+          <StatChip label="Sorceries" value={stats.sorceryCount} />
+          <StatChip label="Enchantments" value={stats.enchantmentCount} />
+          <StatChip label="Planeswalkers" value={stats.planeswalkerCount} />
           <StatChip label="Commanders" value={stats.commanderCount} />
-          <StatChip label="Known types" value={Object.keys(stats.typeCounts).length} />
+          <StatChip label="Unknown" value={stats.unknownTypeCount} />
           <div style={{ gridColumn: '1 / -1', display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 3 }}>
             {Array.from({ length: 8 }, (_, mv) => (
               <div key={mv} title={`Mana value ${mv === 7 ? '7+' : mv}: ${stats.curve[mv] ?? 0}`} style={{ minWidth: 0 }}>
@@ -693,7 +702,7 @@ const suggestionStyle: React.CSSProperties = {
 
 const statsPanelStyle: React.CSSProperties = {
   display: 'grid',
-  gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+  gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
   gap: 5,
   background: 'rgba(255,255,255,0.025)',
   border: '1px solid #1e293b',

@@ -19,6 +19,7 @@ import {
   summarizeCardLogic,
   upsertCustomCard,
 } from '../client/src/engine/soloDeckBuilder';
+import { importDecklist } from '../client/src/engine/deckImport';
 import type { CardDefinition } from '../client/src/types/game';
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -98,6 +99,54 @@ const scryfallDef: CardDefinition = {
 
 deck = setDeckEntryCount(deck, 'main', scryfallDef.name, 1);
 deck = upsertCustomCard(deck, customCardFromDefinition(scryfallDef));
+deck = upsertCustomCard(deck, customCardFromDefinition({
+  ...scryfallDef,
+  id: 'oracle-sol-ring',
+  name: 'Sol Ring',
+  manaCost: { raw: '{1}', cmc: 1, generic: 1 },
+  cmc: 1,
+  typeLine: 'Artifact',
+  cardTypes: ['Artifact'],
+  colors: [],
+  colorIdentity: [],
+  oracleText: '{T}: Add {C}{C}.',
+}));
+deck = upsertCustomCard(deck, customCardFromDefinition({
+  ...scryfallDef,
+  id: 'oracle-forest',
+  name: 'Forest',
+  manaCost: { raw: '', cmc: 0 },
+  cmc: 0,
+  typeLine: 'Basic Land - Forest',
+  cardTypes: ['Land'],
+  colors: [],
+  colorIdentity: ['G'],
+  oracleText: '({T}: Add {G}.)',
+}));
+deck = setDeckEntryCount(deck, 'main', 'Counterspell', 1);
+deck = upsertCustomCard(deck, customCardFromDefinition({
+  ...scryfallDef,
+  id: 'oracle-counterspell',
+  name: 'Counterspell',
+  manaCost: { raw: '{U}{U}', cmc: 2, U: 2 },
+  cmc: 2,
+  typeLine: 'Instant',
+  cardTypes: ['Instant'],
+  oracleText: 'Counter target spell.',
+}));
+deck = setDeckEntryCount(deck, 'main', 'Cultivate', 1);
+deck = upsertCustomCard(deck, customCardFromDefinition({
+  ...scryfallDef,
+  id: 'oracle-cultivate',
+  name: 'Cultivate',
+  manaCost: { raw: '{2}{G}', cmc: 3, G: 1, generic: 2 },
+  cmc: 3,
+  typeLine: 'Sorcery',
+  cardTypes: ['Sorcery'],
+  colors: ['G'],
+  colorIdentity: ['G'],
+  oracleText: 'Search your library for up to two basic land cards.',
+}));
 assert(summarizeCardLogic(deck, 'Oracle Adept').customCard, 'expected fetched Scryfall card to become visible custom card logic');
 const scryfallSerialized = serializeDeckLogic(deck);
 assert(scryfallSerialized.includes('card: Oracle Adept | Creature - Human Wizard'), 'expected fetched type line in logic export');
@@ -107,7 +156,65 @@ assert(!scryfallSerialized.includes('scry 1.\nThen investigate.'), 'expected log
 const stats = analyzeDeckBuilderStats(deck);
 assert(stats.totalCards >= 9, 'expected stats to count deck cards');
 assert(stats.creatureCount >= 1, 'expected stats to count fetched/custom creatures');
+assert(stats.landCount === 6, 'expected stats to count known lands separately');
+assert(stats.artifactCount === 1, 'expected stats to count known artifacts separately');
+assert(stats.instantCount === 1, 'expected stats to count known instants separately');
+assert(stats.sorceryCount === 1, 'expected stats to count known sorceries separately');
 assert(stats.curve[2] >= 1, 'expected stats to include Scryfall mana curve data');
 assert(stats.colorPips.U >= 1, 'expected stats to include Scryfall color identity data');
+
+const originalFetch = globalThis.fetch;
+globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+  const target = String(url);
+  const makeCard = (name: string, typeLine: string, colors: string[] = []) => ({
+    id: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+    oracle_id: `${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-oracle`,
+    name,
+    mana_cost: typeLine.includes('Land') ? '' : '{1}',
+    cmc: typeLine.includes('Land') ? 0 : 1,
+    type_line: typeLine,
+    oracle_text: '',
+    colors,
+    color_identity: colors,
+    keywords: [],
+    legalities: { commander: 'legal' },
+  });
+  const catalog: Record<string, ReturnType<typeof makeCard>> = {
+    'Llanowar Elves': makeCard('Llanowar Elves', 'Creature - Elf Druid', ['G']),
+    'Forest': makeCard('Forest', 'Basic Land - Forest'),
+    'Sol Ring': makeCard('Sol Ring', 'Artifact'),
+    'Counterspell': makeCard('Counterspell', 'Instant', ['U']),
+    'Cultivate': makeCard('Cultivate', 'Sorcery', ['G']),
+  };
+  if (target.includes('/cards/collection')) {
+    const body = JSON.parse(String(init?.body ?? '{}')) as { identifiers?: { name?: string }[] };
+    const names = (body.identifiers ?? []).map(item => item.name).filter((name): name is string => Boolean(name));
+    return new Response(JSON.stringify({ data: names.map(name => catalog[name]).filter(Boolean), not_found: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  return new Response('{}', { status: 404 });
+}) as typeof fetch;
+
+try {
+  const imported = await importDecklist([
+    'Deck',
+    '1 Llanowar Elves',
+    '4 Forest',
+    '1 Sol Ring',
+    '1 Counterspell',
+    '1 Cultivate',
+  ].join('\n'), 'Captured Type Import', 'solo-builder-test', undefined, undefined, { captureFetchedCardData: true });
+  const importedStats = analyzeDeckBuilderStats(imported.deck);
+  assert(imported.deck.logicFile?.customCards.length === 5, 'expected solo import to capture fetched Scryfall card metadata');
+  assert(importedStats.creatureCount === 1, 'expected imported creature count');
+  assert(importedStats.landCount === 4, 'expected imported land count');
+  assert(importedStats.artifactCount === 1, 'expected imported artifact count');
+  assert(importedStats.instantCount === 1, 'expected imported instant count');
+  assert(importedStats.sorceryCount === 1, 'expected imported sorcery count');
+} finally {
+  globalThis.fetch = originalFetch;
+}
 
 console.log('PASS solo deck builder edits cards, sections, and visible card logic');

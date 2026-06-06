@@ -29,6 +29,7 @@ export interface DeckFileImportResult {
 
 export interface ImportOptions {
   allowBannedCards?: boolean;
+  captureFetchedCardData?: boolean;
 }
 
 export type DeckUrlSource = 'moxfield' | 'archidekt' | 'mtggoldfish' | 'tappedout' | 'unknown';
@@ -833,6 +834,9 @@ export async function importDecklist(
     errors.push(...parsedLogic.errors);
     warnings.push(...parsedLogic.warnings);
   }
+  if (options.captureFetchedCardData && fetchedDefs.size > 0) {
+    logicFile = withCapturedCardDefinitions(logicFile, deckId, fetchedDefs);
+  }
 
   // Check for cards not found
   for (const name of allNames) {
@@ -899,6 +903,48 @@ export async function importDecklist(
   });
 
   return { deck, errors, warnings, commanders, cardCount };
+}
+
+function withCapturedCardDefinitions(
+  logicFile: DeckLogic | undefined,
+  deckId: string,
+  fetchedDefs: Map<string, CardDefinition>
+): DeckLogic {
+  const base: DeckLogic = logicFile ?? {
+    deckId,
+    rules: [],
+    replacementEffects: [],
+    cardNotes: {},
+    triggers: [],
+    customCards: [],
+  };
+  const existing = new Set(base.customCards.map(card => card.name.toLowerCase()));
+  const captured = [...fetchedDefs.values()]
+    .filter(def => !existing.has(def.name.toLowerCase()))
+    .map(definitionToCustomCard);
+  return {
+    ...base,
+    deckId,
+    customCards: [...base.customCards, ...captured],
+  };
+}
+
+function definitionToCustomCard(def: CardDefinition): CustomCardDefinition {
+  return {
+    id: `scryfall-${def.id}`,
+    name: def.name,
+    manaCost: def.manaCost,
+    cmc: def.cmc,
+    typeLine: def.typeLine,
+    oracleText: def.oracleText,
+    power: def.power,
+    toughness: def.toughness,
+    loyalty: def.loyalty,
+    colors: def.colors,
+    colorIdentity: def.colorIdentity,
+    keywords: def.keywords,
+    imageUrl: def.imageUrl,
+  };
 }
 
 function validateDeckLogicReferences(

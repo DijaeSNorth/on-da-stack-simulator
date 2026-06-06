@@ -13,6 +13,13 @@ export interface DeckBuilderStats {
   commanderCount: number;
   landCount: number;
   creatureCount: number;
+  artifactCount: number;
+  instantCount: number;
+  sorceryCount: number;
+  enchantmentCount: number;
+  planeswalkerCount: number;
+  battleCount: number;
+  unknownTypeCount: number;
   nonCreatureCount: number;
   avgManaValue: number;
   curve: Record<number, number>;
@@ -227,6 +234,13 @@ export function analyzeDeckBuilderStats(deck: Deck): DeckBuilderStats {
   let manaValueCards = 0;
   let landCount = 0;
   let creatureCount = 0;
+  let artifactCount = 0;
+  let instantCount = 0;
+  let sorceryCount = 0;
+  let enchantmentCount = 0;
+  let planeswalkerCount = 0;
+  let battleCount = 0;
+  let unknownTypeCount = 0;
 
   const commanderOnlyEntries = deck.commanders
     .filter(name => !deck.cards.some(card => card.name.toLowerCase() === name.toLowerCase()))
@@ -236,10 +250,20 @@ export function analyzeDeckBuilderStats(deck: Deck): DeckBuilderStats {
   for (const entry of entries) {
     const card = customCards.get(entry.name.toLowerCase());
     const typeLine = card?.typeLine ?? '';
-    const primaryType = getPrimaryType(typeLine);
-    typeCounts[primaryType] = (typeCounts[primaryType] ?? 0) + entry.count;
-    if (/\bLand\b/i.test(typeLine)) landCount += entry.count;
-    if (/\bCreature\b/i.test(typeLine)) creatureCount += entry.count;
+    const matchedTypes = getCardTypes(typeLine);
+    for (const type of matchedTypes) typeCounts[type] = (typeCounts[type] ?? 0) + entry.count;
+    if (matchedTypes.length === 0) {
+      typeCounts.Unknown = (typeCounts.Unknown ?? 0) + entry.count;
+      unknownTypeCount += entry.count;
+    }
+    if (matchedTypes.includes('Land')) landCount += entry.count;
+    if (matchedTypes.includes('Creature')) creatureCount += entry.count;
+    if (matchedTypes.includes('Artifact')) artifactCount += entry.count;
+    if (matchedTypes.includes('Instant')) instantCount += entry.count;
+    if (matchedTypes.includes('Sorcery')) sorceryCount += entry.count;
+    if (matchedTypes.includes('Enchantment')) enchantmentCount += entry.count;
+    if (matchedTypes.includes('Planeswalker')) planeswalkerCount += entry.count;
+    if (matchedTypes.includes('Battle')) battleCount += entry.count;
 
     if (typeof card?.cmc === 'number') {
       const mv = Math.max(0, Math.min(7, Math.floor(card.cmc)));
@@ -258,6 +282,13 @@ export function analyzeDeckBuilderStats(deck: Deck): DeckBuilderStats {
     commanderCount: deck.commanders.length,
     landCount,
     creatureCount,
+    artifactCount,
+    instantCount,
+    sorceryCount,
+    enchantmentCount,
+    planeswalkerCount,
+    battleCount,
+    unknownTypeCount,
     nonCreatureCount: Math.max(0, totalCards - landCount - creatureCount),
     avgManaValue: manaValueCards ? totalManaValue / manaValueCards : 0,
     curve,
@@ -285,7 +316,7 @@ function singleLine(value: string): string {
   return value.replace(/\s*\n+\s*/g, ' / ').replace(/\|/g, '/').trim();
 }
 
-function getPrimaryType(typeLine: string): string {
+function getCardTypes(typeLine: string): string[] {
   const candidates = ['Creature', 'Land', 'Artifact', 'Enchantment', 'Planeswalker', 'Instant', 'Sorcery', 'Battle'];
-  return candidates.find(type => new RegExp(`\\b${type}\\b`, 'i').test(typeLine)) ?? 'Unknown';
+  return candidates.filter(type => new RegExp(`\\b${type}\\b`, 'i').test(typeLine));
 }
