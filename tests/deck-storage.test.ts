@@ -100,4 +100,12 @@ assert(!loadFavoriteDeckIds().includes('favorite-old'), 'expected toggling an ex
 saveFavoriteDeckIds(['a', 'b', 'c']);
 assert(loadFavoriteDeckIds().length === MAX_FAVORITE_DECKS, 'expected explicit favorite saves to enforce the cap');
 
+storage.set('mtg_sim_decks', JSON.stringify({ not: 'an array' }));
+assert(loadDecksFromStorage().length === 0, 'expected non-array saved deck payloads to be ignored safely');
+
+storage.set('mtg_sim_decks', JSON.stringify([{ id: 'partial', name: 'Partial Deck', cards: [{ name: 'Forest', count: 9999 }] }]));
+decks = loadDecksFromStorage();
+assert(decks.length === 1, 'expected partial saved deck objects to normalize instead of crashing');
+assert(decks[0].cards[0].count === 250, 'expected partial saved deck counts to be clamped');
+
 console.log('PASS saved deck storage is capped at 3 decks with 2 persistent favorites');

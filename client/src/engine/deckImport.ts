@@ -19,6 +19,14 @@ export interface ImportResult {
   cardCount: number;
 }
 
+export interface DeckFileImportResult {
+  deck?: Deck;
+  deckText?: string;
+  logicText?: string;
+  warnings: string[];
+  error?: string;
+}
+
 export interface ImportOptions {
   allowBannedCards?: boolean;
 }
@@ -47,6 +55,8 @@ interface ParsedEntry {
 }
 
 const MAX_COMMANDERS = 2;
+const MAX_DECKLIST_CHARS = 250_000;
+const MAX_COPIES_PER_LINE = 250;
 
 /**
  * Normalize a card name from any common variation
@@ -88,7 +98,7 @@ function parseSectionHeader(line: string): ParsedEntry['section'] | null {
  *   Card Name (set) #num
  *   Section headers: Commander, Sideboard, Maybeboard
  */
-function parseTextDecklist(raw: string): ParsedEntry[] {
+function parseTextDecklist(raw: string, warnings?: string[]): ParsedEntry[] {
   const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
   const entries: ParsedEntry[] = [];
   let currentSection: ParsedEntry['section'] = 'main';
@@ -116,7 +126,10 @@ function parseTextDecklist(raw: string): ParsedEntry[] {
     const simple = line.match(/^(\d+)\s+(.+)$/);
     if (simple) {
       entries.push({ count: parseInt(simple[1], 10), name: normalizeName(simple[2]), section: currentSection });
+      continue;
     }
+
+    warnings?.push(`Ignored unrecognized decklist line: "${line.slice(0, 80)}"`);
   }
 
   return entries;
@@ -125,20 +138,25 @@ function parseTextDecklist(raw: string): ParsedEntry[] {
 /**
  * Parse CSV format: Name,Count or Count,Name
  */
-function parseCSVDecklist(raw: string): ParsedEntry[] {
+function parseCSVDecklist(raw: string, warnings?: string[]): ParsedEntry[] {
   const lines = raw.split('\n').map(l => l.trim()).filter(Boolean);
   const entries: ParsedEntry[] = [];
 
   for (const line of lines) {
     if (line.toLowerCase().startsWith('name') || line.toLowerCase().startsWith('card')) continue;
     const parts = line.split(',').map(p => p.trim().replace(/^"|"$/g, ''));
-    if (parts.length < 2) continue;
+    if (parts.length < 2) {
+      warnings?.push(`Ignored malformed CSV deck line: "${line.slice(0, 80)}"`);
+      continue;
+    }
 
     const a = parts[0], b = parts[1];
     if (!isNaN(Number(a))) {
       entries.push({ count: Number(a), name: normalizeName(b), section: 'main' });
     } else if (!isNaN(Number(b))) {
       entries.push({ count: Number(b), name: normalizeName(a), section: 'main' });
+    } else {
+      warnings?.push(`Ignored malformed CSV deck line: "${line.slice(0, 80)}"`);
     }
   }
 
@@ -148,16 +166,20 @@ function parseCSVDecklist(raw: string): ParsedEntry[] {
 /**
  * Detect format and parse
  */
-function parseRaw(raw: string): ParsedEntry[] {
+function parseRaw(raw: string, warnings?: string[]): ParsedEntry[] {
   const trimmed = raw.trim();
 
   // CSV detection
   if (trimmed.includes(',') && !trimmed.includes('\n// ')) {
-    const csvEntries = parseCSVDecklist(trimmed);
-    if (csvEntries.length > 0) return csvEntries;
+    const csvWarnings: string[] = [];
+    const csvEntries = parseCSVDecklist(trimmed, csvWarnings);
+    if (csvEntries.length > 0) {
+      warnings?.push(...csvWarnings);
+      return csvEntries;
+    }
   }
 
-  return parseTextDecklist(trimmed);
+  return parseTextDecklist(trimmed, warnings);
 }
 
 export interface DeckLogicParseResult {
@@ -666,17 +688,18 @@ function normalizeDeckEntries(entries: unknown): Deck['cards'] {
   for (const entry of entries) {
     const item = entry as Partial<Deck['cards'][number]>;
     const name = normalizeName(String(item?.name ?? ''));
-    const count = Math.max(0, Math.floor(Number(item?.count ?? 0)));
+    const count = Math.min(MAX_COPIES_PER_LINE, Math.max(0, Math.floor(Number(item?.count ?? 0))));
     if (name && count > 0) normalized.push({ name, count });
   }
   return normalized;
 }
 
-export function normalizeCommanderDeck(deck: Deck): Deck {
-  const commanders = uniqueCommanderNames(deck.commanders).slice(0, MAX_COMMANDERS);
-  const cards = normalizeDeckEntries(deck.cards);
-  const sideboard = normalizeDeckEntries(deck.sideboard);
-  const maybeboard = normalizeDeckEntries(deck.maybeboard);
+export function normalizeCommanderDeck(deck: unknown): Deck {
+  const raw = (deck && typeof deck === 'object' ? deck : {}) as Partial<Deck>;
+  const commanders = uniqueCommanderNames(raw.commanders).slice(0, MAX_COMMANDERS);
+  const cards = normalizeDeckEntries(raw.cards);
+  const sideboard = normalizeDeckEntries(raw.sideboard);
+  const maybeboard = normalizeDeckEntries(raw.maybeboard);
 
   for (const commander of commanders) {
     if (!cards.some(card => card.name.toLowerCase() === commander.toLowerCase())) {
@@ -685,12 +708,37 @@ export function normalizeCommanderDeck(deck: Deck): Deck {
   }
 
   return {
-    ...deck,
+    id: typeof raw.id === 'string' && raw.id ? raw.id : crypto.randomUUID(),
+    name: typeof raw.name === 'string' && raw.name.trim() ? raw.name.trim() : 'Imported Deck',
+    format: 'commander',
     commanders,
     cards,
     sideboard,
     maybeboard,
+    colorIdentity: Array.isArray(raw.colorIdentity) ? raw.colorIdentity : [],
+    importSource: raw.importSource,
+    importedAt: typeof raw.importedAt === 'number' ? raw.importedAt : Date.now(),
+    logicFile: raw.logicFile,
   };
+}
+
+function sanitizeParsedEntries(entries: ParsedEntry[], warnings: string[]): ParsedEntry[] {
+  const cleaned: ParsedEntry[] = [];
+  for (const entry of entries) {
+    if (!entry.name) continue;
+    if (!Number.isFinite(entry.count) || entry.count <= 0) {
+      warnings.push(`Ignored "${entry.name}" because its quantity was not positive.`);
+      continue;
+    }
+    const count = Math.floor(entry.count);
+    if (count > MAX_COPIES_PER_LINE) {
+      warnings.push(`Clamped "${entry.name}" from ${count} copies to ${MAX_COPIES_PER_LINE}. Check that line for a typo.`);
+      cleaned.push({ ...entry, count: MAX_COPIES_PER_LINE });
+      continue;
+    }
+    cleaned.push({ ...entry, count });
+  }
+  return cleaned;
 }
 
 /**
@@ -711,7 +759,15 @@ export async function importDecklist(
   const errors: string[] = [];
   const warnings: string[] = [];
 
-  const entries = parseRaw(raw);
+  if (raw.length > MAX_DECKLIST_CHARS) {
+    errors.push(`Decklist is too large to import safely (${raw.length.toLocaleString()} characters). Export a plain-text decklist and try again.`);
+    return {
+      deck: createEmptyDeck(deckName),
+      errors, warnings, commanders: [], cardCount: 0,
+    };
+  }
+
+  const entries = sanitizeParsedEntries(parseRaw(raw, warnings), warnings);
 
   if (entries.length === 0) {
     errors.push('No cards found. Please check your decklist format.');
@@ -915,6 +971,47 @@ function createEmptyDeck(name: string): Deck {
 
 // ─── LocalStorage Persistence ─────────────────────────────────────────────────
 
+export function parseDeckFilePayload(text: string, fallbackName = 'Imported Deck File'): DeckFileImportResult {
+  const trimmed = text.trim();
+  if (!trimmed) return { warnings: [], error: 'The selected file is empty.' };
+  if (trimmed.length > MAX_DECKLIST_CHARS) {
+    return {
+      warnings: [],
+      error: `The selected file is too large to import safely (${trimmed.length.toLocaleString()} characters).`,
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+    const deckLike = parsed?.deck;
+    if (deckLike && typeof deckLike === 'object') {
+      const deck = normalizeCommanderDeck(deckLike as Deck);
+      return {
+        deck: { ...deck, name: deck.name || fallbackName },
+        deckText: typeof parsed.deckText === 'string' ? parsed.deckText : exportDeckAsText(deck),
+        logicText: typeof parsed.logicText === 'string' ? parsed.logicText : undefined,
+        warnings: [],
+      };
+    }
+    if (typeof parsed?.deckText === 'string' && parsed.deckText.trim()) {
+      return {
+        deckText: parsed.deckText,
+        logicText: typeof parsed.logicText === 'string' ? parsed.logicText : undefined,
+        warnings: ['Deck file did not include a saved deck object, so its text export was loaded into the importer.'],
+      };
+    }
+    return {
+      warnings: [],
+      error: 'This JSON file is not an On-Da-Stack deck export.',
+    };
+  } catch {
+    return {
+      deckText: text,
+      warnings: ['File was not JSON, so it was loaded as a plain-text decklist.'],
+    };
+  }
+}
+
 const DECKS_KEY = 'mtg_sim_decks';
 const FAVORITE_DECKS_KEY = 'mtg_sim_favorite_decks';
 export const MAX_STORED_DECKS = 3;
@@ -953,9 +1050,10 @@ export function toggleFavoriteDeck(deckId: string): string[] {
   return next;
 }
 
-function limitStoredDecks(decks: Deck[]): Deck[] {
+function limitStoredDecks(decks: unknown): Deck[] {
   const favorites = new Set(loadFavoriteDeckIds());
-  return [...decks]
+  const list = Array.isArray(decks) ? decks : [];
+  return list
     .map(deck => normalizeCommanderDeck(deck))
     .sort((a, b) => {
       const favoriteDelta = Number(favorites.has(b.id)) - Number(favorites.has(a.id));

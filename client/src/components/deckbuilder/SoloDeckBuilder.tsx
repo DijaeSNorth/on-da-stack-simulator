@@ -7,6 +7,7 @@ import {
   importDecklist,
   loadFavoriteDeckIds,
   MAX_STORED_DECKS,
+  parseDeckFilePayload,
   saveDeck,
 } from '../../engine/deckImport';
 import { fetchCardAutocomplete, fetchCardByName } from '../../data/cardDatabase';
@@ -231,22 +232,23 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
   async function handleImportFile(file: File | undefined) {
     if (!file) return;
     const text = await file.text();
-    try {
-      const parsed = JSON.parse(text);
-      const importedDeck = parsed?.deck as Deck | undefined;
-      if (importedDeck?.cards && importedDeck?.name) {
-        setDraft(importedDeck);
-        setSelectedCard(importedDeck.commanders[0] ?? importedDeck.cards[0]?.name ?? '');
-        refreshExchange(importedDeck);
-        if (liveSyncEnabled) await syncDeckForTesting(importedDeck);
-        setStatus(`Loaded "${importedDeck.name}" from file.`);
-        return;
-      }
-    } catch {
-      // Fall back to treating the file as a pasted decklist.
+    const parsed = parseDeckFilePayload(text, file.name.replace(/\.[^.]+$/, '') || 'Imported Deck File');
+    if (parsed.error) {
+      setStatus(parsed.error);
+      return;
     }
-    setExchangeText(text);
-    setStatus(`Loaded "${file.name}" into the importer.`);
+    if (parsed.deck) {
+      setDraft(parsed.deck);
+      setSelectedCard(parsed.deck.commanders[0] ?? parsed.deck.cards[0]?.name ?? '');
+      refreshExchange(parsed.deck);
+      if (parsed.logicText !== undefined) setLogicText(parsed.logicText);
+      if (liveSyncEnabled) await syncDeckForTesting(parsed.deck);
+      setStatus(`Loaded "${parsed.deck.name}" from file. ${parsed.warnings[0] ?? ''}`.trim());
+      return;
+    }
+    setExchangeText(parsed.deckText ?? text);
+    if (parsed.logicText !== undefined) setLogicText(parsed.logicText);
+    setStatus(`Loaded "${file.name}" into the importer. ${parsed.warnings[0] ?? ''}`.trim());
   }
 
   function handleSelectSavedDeck(deck: Deck) {

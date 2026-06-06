@@ -4,7 +4,7 @@
  * Run with: npx tsx tests/deck-import.test.ts
  */
 
-import { importDecklist, normalizeCommanderDeck } from '../client/src/engine/deckImport';
+import { importDecklist, normalizeCommanderDeck, parseDeckFilePayload } from '../client/src/engine/deckImport';
 import { createDefaultGameConfig, createEmptyGameState, createPlayer, loadDeckIntoPlayer } from '../client/src/engine/gameEngine';
 import type { Deck } from '../client/src/types/game';
 
@@ -164,6 +164,51 @@ try {
 
     assert(result.deck.commanders.length === 0, 'expected Companion section not to create a commander');
     assert(result.deck.sideboard.some(card => card.name === 'Lutri, the Spellchaser'), 'expected companion to import outside the main deck');
+  }
+
+  {
+    const result = await importDecklist([
+      'Deck',
+      '0 Sol Ring',
+      '9999 Island',
+      'x Lightning Bolt',
+      '-2 Swamp',
+      '1 Counterspell',
+    ].join('\n'), 'Safeguard Test');
+
+    const island = result.deck.cards.find(card => card.name === 'Island');
+    assert(!result.deck.cards.some(card => card.name === 'Sol Ring'), 'expected zero-count lines to be ignored');
+    assert(island?.count === 250, 'expected absurd quantities to be clamped');
+    assert(result.warnings.some(warning => warning.includes('Ignored "Sol Ring"')), 'expected warning for zero-count lines');
+    assert(result.warnings.some(warning => warning.includes('Clamped "Island"')), 'expected warning for clamped quantities');
+    assert(result.warnings.some(warning => warning.includes('Ignored unrecognized decklist line: "x Lightning Bolt"')), 'expected warning for malformed count lines');
+    assert(result.warnings.some(warning => warning.includes('Ignored unrecognized decklist line: "-2 Swamp"')), 'expected warning for negative count lines');
+  }
+
+  {
+    const parsed = parseDeckFilePayload(JSON.stringify({
+      deck: {
+        id: 'file-deck',
+        name: 'File Deck',
+        format: 'commander',
+        commanders: ['Vial Smasher the Fierce', 'Sakashima of a Thousand Faces', 'Sol Ring'],
+        cards: [{ name: 'Vial Smasher the Fierce', count: 1 }, { name: 'Sol Ring', count: 9999 }],
+      },
+      logicText: 'note: Sol Ring | mana test',
+    }));
+
+    assert(parsed.deck?.commanders.join('|') === 'Vial Smasher the Fierce|Sakashima of a Thousand Faces', 'expected deck file commanders to be normalized');
+    assert(parsed.deck?.cards.find(card => card.name === 'Sol Ring')?.count === 250, 'expected deck file counts to be clamped');
+    assert(parsed.logicText?.includes('Sol Ring'), 'expected deck file logic text to be preserved');
+  }
+
+  {
+    const textFile = parseDeckFilePayload('Deck\n1 Sol Ring');
+    assert(textFile.deckText?.includes('Sol Ring'), 'expected non-JSON files to load as deck text');
+    assert(textFile.warnings.some(warning => warning.includes('plain-text decklist')), 'expected non-JSON import warning');
+
+    const invalidJson = parseDeckFilePayload('{"notDeck":true}');
+    assert(Boolean(invalidJson.error), 'expected unrelated JSON to be rejected with an error');
   }
 
   {

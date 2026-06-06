@@ -280,12 +280,14 @@ export function LeftPanel() {
                       aria-pressed={revealTop}
                       onClick={(e) => {
                         e.stopPropagation();
+                        const nextReveal = !revealedTopPlayers.has(player.id);
                         setRevealedTopPlayers(prev => {
                           const next = new Set(prev);
                           if (next.has(player.id)) next.delete(player.id);
                           else next.add(player.id);
                           return next;
                         });
+                        store.logAction(player.id, 'OTHER', `${player.name} toggled top-card reveal ${nextReveal ? 'on' : 'off'}.`);
                       }}
                       style={{
                         fontSize: 9, padding: '2px 6px',

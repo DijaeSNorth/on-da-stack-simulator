@@ -148,7 +148,7 @@ const DEFAULT_UI: UIState = {
   selectedCardId: null,
   hoveredCardId: null,
   focusedPlayerId: null,
-  rightPanelTab: 'assistant',
+  rightPanelTab: 'stack',
   leftPanelOpen: true,
   rightPanelOpen: true,
   combatMode: false,
