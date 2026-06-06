@@ -499,12 +499,15 @@ export function ZoneDrawer() {
                 onMouseEnter={e => {
                   (e.currentTarget as HTMLElement).style.borderColor = '#334155';
                   (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.05)';
+                  store.setCardPreview(card.instanceId, { x: e.clientX, y: e.clientY });
                 }}
+                onMouseMove={e => store.setCardPreviewAnchor({ x: e.clientX, y: e.clientY })}
                 onMouseLeave={e => {
                   (e.currentTarget as HTMLElement).style.borderColor = 'transparent';
                   (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.02)';
+                  store.setCardPreview(null);
                 }}
-                onClick={() => store.setCardPreview(card.instanceId)}
+                onClick={(e) => store.setCardPreview(card.instanceId, { x: e.clientX, y: e.clientY })}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   store.openCardContextMenu(card.instanceId, e.clientX, e.clientY);

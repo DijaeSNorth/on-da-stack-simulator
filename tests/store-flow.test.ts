@@ -206,6 +206,55 @@ test('panel sizes clamp and reset for resizable touch layout', () => {
   assert(sizes.deckBuilder === 430, `expected deck builder reset 430, got ${sizes.deckBuilder}`);
 });
 
+test('card preview anchor follows hovered card location', () => {
+  resetStore(makeGame(2));
+
+  useGameStore.getState().setCardPreview('preview-card', { x: 320, y: 240 });
+  let ui = useGameStore.getState().ui;
+  assert(ui.cardPreview === 'preview-card', 'expected card preview id to be set');
+  assert(ui.cardPreviewAnchor?.x === 320 && ui.cardPreviewAnchor.y === 240, 'expected card preview anchor to be set');
+
+  useGameStore.getState().setCardPreviewAnchor({ x: 360, y: 260 });
+  ui = useGameStore.getState().ui;
+  assert(ui.cardPreviewAnchor?.x === 360 && ui.cardPreviewAnchor.y === 260, 'expected card preview anchor to update');
+
+  useGameStore.getState().setCardPreview(null);
+  ui = useGameStore.getState().ui;
+  assert(ui.cardPreview === null && ui.cardPreviewAnchor === null, 'expected clearing preview to clear anchor');
+});
+
+test('solo practice dummies can be created and removed without leaving solo deck lab mode', () => {
+  const config = createDefaultGameConfig(1);
+  const soloPlayer = createPlayer('p1', 'Solo Player', 0, '#3b82f6', config);
+  resetStore({
+    ...createEmptyGameState(config),
+    players: [soloPlayer],
+    activePlayerId: soloPlayer.id,
+    priorityPlayerId: soloPlayer.id,
+    status: 'playing',
+  });
+
+  useGameStore.getState().addPracticeDummy();
+  useGameStore.getState().addPracticeDummy();
+  let state = useGameStore.getState();
+  let dummies = state.game.players.filter(player => player.id.startsWith('practice-dummy-'));
+  assert(state.game.config.playerCount === 1, 'expected solo config to remain solo after adding dummies');
+  assert(dummies.length === 2, `expected 2 practice dummies, got ${dummies.length}`);
+  assert(dummies.every(dummy => dummy.life === config.startingLife), 'expected dummies to start at configured life');
+
+  useGameStore.getState().addPracticeDummy();
+  useGameStore.getState().addPracticeDummy();
+  state = useGameStore.getState();
+  dummies = state.game.players.filter(player => player.id.startsWith('practice-dummy-'));
+  assert(dummies.length === 3, `expected dummy cap of 3, got ${dummies.length}`);
+
+  useGameStore.getState().removePracticeDummy(dummies[0].id);
+  state = useGameStore.getState();
+  dummies = state.game.players.filter(player => player.id.startsWith('practice-dummy-'));
+  assert(dummies.length === 2, `expected 2 dummies after removal, got ${dummies.length}`);
+  assert(state.game.players.some(player => player.id === 'p1'), 'expected solo player to remain');
+});
+
 test('commander casts are tagged for dramatic table feedback', () => {
   const game = makeGame(2);
   const commander = createCardState({

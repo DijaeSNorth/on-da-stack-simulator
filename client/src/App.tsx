@@ -13,6 +13,7 @@ import { ZoneDrawer } from './components/zones/ZoneDrawer';
 import { LobbyScreen } from './components/lobby/LobbyScreen';
 import { CommandInput } from './components/command/CommandInput';
 import { CommanderCastMoment } from './components/commander/CommanderCastMoment';
+import { PracticeDummyPanel } from './components/solo/PracticeDummyPanel';
 import { WelcomeModal, CoachMark } from './components/tutorial/TutorialOverlay';
 import { useIsMobile } from './hooks/use-mobile';
 
@@ -117,8 +118,9 @@ export default function App() {
           position: 'relative',
         }}>
           {/* Battlefield (65-75% of screen) */}
-          <div style={{ flex: 1, overflow: 'hidden', minHeight: 0 }}>
+          <div style={{ flex: 1, overflow: 'hidden', minHeight: 0, position: 'relative' }}>
             <CommanderTable />
+            <PracticeDummyPanel />
           </div>
 
           {/* Hand */}

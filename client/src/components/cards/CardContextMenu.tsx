@@ -294,7 +294,7 @@ export function CardContextMenu() {
   }
 
   actions.push({ divider: true, label: '', action: () => {} });
-  actions.push({ label: 'Preview Card', action: () => { store.setCardPreview(instanceId); close(); } });
+  actions.push({ label: 'Preview Card', action: () => { store.setCardPreview(instanceId, { x: ui.cardContextMenu?.x ?? 24, y: ui.cardContextMenu?.y ?? 24 }); close(); } });
 
   // ─── Clamp to viewport ──────────────────────────────────────────────────────
   const vw = window.innerWidth;

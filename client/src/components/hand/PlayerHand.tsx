@@ -102,10 +102,39 @@ export function PlayerHand() {
 
   const handCards = player.hand.map(id => game.cards[id]).filter(Boolean) as CardState[];
   const count = handCards.length;
+  const zoneTray = (
+    <div
+      data-testid="hand-zone-tray"
+      style={{
+        position: 'absolute',
+        right: 12,
+        top: 8,
+        display: 'flex',
+        gap: 6,
+        zIndex: 190,
+      }}
+    >
+      <ZoneButton
+        label="GY"
+        count={player.graveyard.length}
+        color="#b45309"
+        title="Open graveyard"
+        onClick={() => store.openZoneDrawer('graveyard', localPlayerId)}
+      />
+      <ZoneButton
+        label="EX"
+        count={player.exile.length}
+        color="#7c3aed"
+        title="Open exile"
+        onClick={() => store.openZoneDrawer('exile', localPlayerId)}
+      />
+    </div>
+  );
 
   if (count === 0) return (
     <div style={{
       height: 90,
+      position: 'relative',
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
@@ -114,6 +143,7 @@ export function PlayerHand() {
       fontStyle: 'italic',
       borderTop: '1px solid #1e293b',
     }}>
+      {zoneTray}
       Empty hand
     </div>
   );
@@ -191,6 +221,7 @@ export function PlayerHand() {
         boxSizing: 'border-box',
       }}
     >
+      {zoneTray}
       {/* Hand label */}
       <div style={{
         position: 'absolute',
@@ -268,12 +299,19 @@ export function PlayerHand() {
               onPointerMove={handleCardPointerMove}
               onPointerUp={handleCardPointerUp}
               onPointerCancel={() => setDragState(null)}
-              onMouseEnter={() => setHoveredIdx(i)}
-              onMouseLeave={() => setHoveredIdx(null)}
-              onClick={() => {
+              onMouseEnter={(event) => {
+                setHoveredIdx(i);
+                store.setCardPreview(card.instanceId, { x: event.clientX, y: event.clientY });
+              }}
+              onMouseMove={(event) => store.setCardPreviewAnchor({ x: event.clientX, y: event.clientY })}
+              onMouseLeave={() => {
+                setHoveredIdx(null);
+                store.setCardPreview(null);
+              }}
+              onClick={(event) => {
                 if (suppressClickRef.current) return;
                 store.setSelectedCard(card.instanceId);
-                store.setCardPreview(card.instanceId);
+                store.setCardPreview(card.instanceId, { x: event.clientX, y: event.clientY });
               }}
               onContextMenu={(e) => {
                 e.preventDefault();
@@ -284,7 +322,7 @@ export function PlayerHand() {
               <CardImage card={card} size="normal" />
 
               {/* Hovered card tooltip — name + type + mana + P/T */}
-              {isHovered && (
+              {false && isHovered && (
                 <div style={{
                   position: 'absolute',
                   bottom: '105%',
@@ -308,7 +346,7 @@ export function PlayerHand() {
                     </span>
                     {card.definition.manaCost?.raw && (
                       <span style={{ fontSize: 9, color: '#94a3b8', whiteSpace: 'nowrap', flexShrink: 0 }}>
-                        {card.definition.manaCost.raw}
+                        {card.definition.manaCost?.raw}
                       </span>
                     )}
                   </div>
@@ -384,5 +422,47 @@ export function PlayerHand() {
         );
       })()}
     </div>
+  );
+}
+
+function ZoneButton({
+  label,
+  count,
+  color,
+  title,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  color: string;
+  title: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-testid={`btn-hand-zone-${label.toLowerCase()}`}
+      title={title}
+      onClick={event => {
+        event.stopPropagation();
+        onClick();
+      }}
+      style={{
+        minWidth: 46,
+        minHeight: 30,
+        padding: '4px 7px',
+        borderRadius: 6,
+        border: `1px solid ${color}77`,
+        background: `${color}22`,
+        color: '#e2e8f0',
+        cursor: 'pointer',
+        fontSize: 9,
+        fontWeight: 900,
+        letterSpacing: 0,
+        touchAction: 'manipulation',
+      }}
+    >
+      <span style={{ color }}>{label}</span> {count}
+    </button>
   );
 }

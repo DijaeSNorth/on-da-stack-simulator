@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import { CardImage } from '../cards/CardImage';
 import { useDragCombatContext } from '../../hooks/DragCombatContext';
@@ -69,6 +69,7 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
   const { game, ui } = store;
   const drag = useDragCombatContext();
   const [expandedClouds, setExpandedClouds] = useState<Set<string>>(new Set());
+  const lastTouchTapRef = useRef<{ id: string; time: number; x: number; y: number } | null>(null);
 
   const cards = player.battlefield.map(id => game.cards[id]).filter(Boolean) as CardState[];
 
@@ -94,8 +95,30 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
       store.openCardContextMenu(instanceId, e.clientX, e.clientY);
     } else {
       store.setSelectedCard(instanceId);
-      store.setCardPreview(instanceId);
+      store.setCardPreview(instanceId, { x: e.clientX, y: e.clientY });
     }
+  }
+
+  function toggleTapped(card: CardState) {
+    if (!isLocal || card.zone !== 'battlefield') return;
+    if (card.tapped) store.untapCard(card.instanceId);
+    else store.tapCard(card.instanceId);
+  }
+
+  function handleCardPointerUp(e: React.PointerEvent<HTMLDivElement>, card: CardState) {
+    if (e.pointerType === 'mouse') return;
+    const now = Date.now();
+    const previous = lastTouchTapRef.current;
+    const isSameCard = previous?.id === card.instanceId;
+    const closeEnough = previous ? Math.hypot(e.clientX - previous.x, e.clientY - previous.y) < 24 : false;
+    if (isSameCard && closeEnough && now - previous.time < 340) {
+      e.preventDefault();
+      e.stopPropagation();
+      lastTouchTapRef.current = null;
+      toggleTapped(card);
+      return;
+    }
+    lastTouchTapRef.current = { id: card.instanceId, time: now, x: e.clientX, y: e.clientY };
   }
 
   function renderCard(card: CardState) {
@@ -150,9 +173,22 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
                 : 'none',
         }}
         onClick={(e) => handleCardClick(e, card.instanceId)}
+        onDoubleClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleTapped(card);
+        }}
+        onPointerUp={(e) => handleCardPointerUp(e, card)}
         onContextMenu={(e) => { e.preventDefault(); handleCardClick(e, card.instanceId); }}
-        onMouseEnter={() => store.setHoveredCard(card.instanceId)}
-        onMouseLeave={() => store.setHoveredCard(null)}
+        onMouseEnter={(e) => {
+          store.setHoveredCard(card.instanceId);
+          store.setCardPreview(card.instanceId, { x: e.clientX, y: e.clientY });
+        }}
+        onMouseMove={(e) => store.setCardPreviewAnchor({ x: e.clientX, y: e.clientY })}
+        onMouseLeave={() => {
+          store.setHoveredCard(null);
+          store.setCardPreview(null);
+        }}
         title={
           isValidAttacker  ? `Drag to attack — ${card.definition.name}` :
           isActiveAttacker ? `Drop a creature here to block ${card.definition.name}` :

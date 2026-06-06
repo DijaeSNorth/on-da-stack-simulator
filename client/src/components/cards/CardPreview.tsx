@@ -4,15 +4,25 @@ import type { CardState } from '../../types/game';
 
 interface CardPreviewProps {
   card: CardState;
+  anchor?: { x: number; y: number } | null;
   onClose?: () => void;
 }
 
-export function CardPreview({ card, onClose }: CardPreviewProps) {
+export function CardPreview({ card, anchor, onClose }: CardPreviewProps) {
   const def = card.definition;
+  const width = 280;
+  const viewportWidth = typeof window === 'undefined' ? 1200 : window.innerWidth;
+  const viewportHeight = typeof window === 'undefined' ? 800 : window.innerHeight;
+  const left = anchor
+    ? Math.max(12, Math.min(anchor.x + 18, viewportWidth - width - 12))
+    : viewportWidth - width - 16;
+  const top = anchor
+    ? Math.max(12, Math.min(anchor.y - 180, viewportHeight - 420))
+    : 60;
 
   return (
     <div style={{
-      position: 'fixed', right: 16, top: 60, zIndex: 9999,
+      position: 'fixed', left, top, zIndex: 9999,
       display: 'flex', flexDirection: 'column', gap: 12,
       pointerEvents: 'none',
     }}>
@@ -21,7 +31,7 @@ export function CardPreview({ card, onClose }: CardPreviewProps) {
         border: '1px solid #2d2d4a',
         borderRadius: 12,
         padding: 12,
-        width: 280,
+        width,
         boxShadow: '0 20px 60px rgba(0,0,0,0.8)',
         pointerEvents: 'auto',
       }}>
@@ -81,5 +91,5 @@ export function FloatingCardPreview() {
   const { ui, game, setCardPreview } = useGameStore();
   const card = ui.cardPreview ? game.cards[ui.cardPreview] : null;
   if (!card) return null;
-  return <CardPreview card={card} onClose={() => setCardPreview(null)} />;
+  return <CardPreview card={card} anchor={ui.cardPreviewAnchor} onClose={() => setCardPreview(null)} />;
 }

@@ -45,6 +45,7 @@ export interface UIState {
   zoneDrawer: { zone: 'graveyard' | 'exile' | 'library' | 'hand'; playerId: string } | null;
   cardContextMenu: { instanceId: string; x: number; y: number } | null;
   cardPreview: string | null;
+  cardPreviewAnchor: { x: number; y: number } | null;
   searchQuery: string;
   showTokenEditor: boolean;
   cardSearchOpen: boolean;
@@ -149,6 +150,7 @@ const DEFAULT_UI: UIState = {
   zoneDrawer: null,
   cardContextMenu: null,
   cardPreview: null,
+  cardPreviewAnchor: null,
   searchQuery: '',
   showTokenEditor: false,
   cardSearchOpen: false,
@@ -206,6 +208,8 @@ export interface GameStore {
     avatarImage?: PlayerAvatarImage;
   }[]) => void;
   loadDeck: (playerId: string, deck: Deck) => Promise<void>;
+  addPracticeDummy: () => void;
+  removePracticeDummy: (playerId: string) => void;
   startGame: () => void;
   resetGame: () => void;
 
@@ -278,7 +282,8 @@ export interface GameStore {
   closeZoneDrawer: () => void;
   openCardContextMenu: (instanceId: string, x: number, y: number) => void;
   closeCardContextMenu: () => void;
-  setCardPreview: (instanceId: string | null) => void;
+  setCardPreview: (instanceId: string | null, anchor?: { x: number; y: number } | null) => void;
+  setCardPreviewAnchor: (anchor: { x: number; y: number } | null) => void;
   setCardSearchOpen: (open: boolean) => void;
   setReplayOpen: (open: boolean) => void;
   setProfileOpen: (open: boolean) => void;
@@ -427,6 +432,8 @@ function addReviewData(
 
 const HAND_TYPE_ORDER = ['Land', 'Creature', 'Artifact', 'Enchantment', 'Planeswalker', 'Battle', 'Instant', 'Sorcery'] as const;
 const COLOR_ORDER = ['W', 'U', 'B', 'R', 'G', 'C'] as const;
+const PRACTICE_DUMMY_PREFIX = 'practice-dummy-';
+const MAX_PRACTICE_DUMMIES = 3;
 
 function handSortKey(card: CardState): string {
   const typeIndex = HAND_TYPE_ORDER.findIndex(type => card.definition.cardTypes.includes(type));
@@ -629,6 +636,68 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const newState = await loadDeckIntoPlayer(get().game, playerId, normalizeCommanderDeck(deck));
     const flags = getLoadedBannedCardFlags(newState, playerId);
     set({ game: newState, ui: withAssistantMessages(get().ui, newState, flags) });
+  },
+
+  addPracticeDummy: () => {
+    const current = get().game;
+    if (current.config.playerCount !== 1) return;
+    const existingDummies = current.players.filter(player => player.id.startsWith(PRACTICE_DUMMY_PREFIX));
+    if (existingDummies.length >= MAX_PRACTICE_DUMMIES) return;
+
+    const index = existingDummies.length + 1;
+    const dummy = createPlayer(
+      `${PRACTICE_DUMMY_PREFIX}${uuid()}`,
+      `Practice Dummy ${index}`,
+      current.players.length,
+      PLAYER_COLORS[(current.players.length + 1) % PLAYER_COLORS.length] ?? '#f59e0b',
+      current.config,
+    );
+    const nextGame = {
+      ...current,
+      players: [...current.players, {
+        ...dummy,
+        life: current.config.startingLife,
+        connected: true,
+        isActive: false,
+        hasPriority: false,
+      }],
+      lastUpdatedAt: Date.now(),
+    };
+    const actorId = current.activePlayerId || get().localPlayerId || current.players[0]?.id || dummy.id;
+    const action = createAction(nextGame, actorId, 'OTHER', `${dummy.name} added for solo practice.`);
+    set({ game: { ...nextGame, actionLog: [...nextGame.actionLog, action] } });
+  },
+
+  removePracticeDummy: (playerId) => {
+    const current = get().game;
+    if (!playerId.startsWith(PRACTICE_DUMMY_PREFIX)) return;
+    const dummy = current.players.find(player => player.id === playerId);
+    if (!dummy) return;
+    const nextCards = Object.fromEntries(
+      Object.entries(current.cards).filter(([, card]) => card.ownerId !== playerId && card.controllerId !== playerId)
+    );
+    const nextPlayers = current.players.filter(player => player.id !== playerId).map((player, index) => ({
+      ...player,
+      seatIndex: index,
+    }));
+    const nextCombat = {
+      ...current.combat,
+      attackers: current.combat.attackers.filter(attacker => attacker.targetPlayerId !== playerId),
+      blockers: current.combat.blockers.filter(blocker => nextCards[blocker.instanceId] && nextCards[blocker.blockedAttacker]),
+      myriadCopies: current.combat.myriadCopies.filter(copy => copy.targetId !== playerId && nextCards[copy.copyId]),
+    };
+    const nextGame = {
+      ...current,
+      players: nextPlayers,
+      cards: nextCards,
+      combat: nextCombat,
+      activePlayerId: current.activePlayerId === playerId ? (nextPlayers[0]?.id ?? '') : current.activePlayerId,
+      priorityPlayerId: current.priorityPlayerId === playerId ? (nextPlayers[0]?.id ?? '') : current.priorityPlayerId,
+      lastUpdatedAt: Date.now(),
+    };
+    const actorId = nextGame.activePlayerId || get().localPlayerId || nextPlayers[0]?.id || playerId;
+    const action = createAction(nextGame, actorId, 'OTHER', `${dummy.name} removed from solo practice.`);
+    set({ game: { ...nextGame, actionLog: [...nextGame.actionLog, action] } });
   },
 
   startGame: () => {
@@ -1411,7 +1480,14 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   closeZoneDrawer: () => set(s => ({ ui: { ...s.ui, zoneDrawer: null } })),
   openCardContextMenu: (instanceId, x, y) => set(s => ({ ui: { ...s.ui, cardContextMenu: { instanceId, x, y } } })),
   closeCardContextMenu: () => set(s => ({ ui: { ...s.ui, cardContextMenu: null } })),
-  setCardPreview: (id) => set(s => ({ ui: { ...s.ui, cardPreview: id } })),
+  setCardPreview: (id, anchor) => set(s => ({
+    ui: {
+      ...s.ui,
+      cardPreview: id,
+      cardPreviewAnchor: id ? (anchor ?? s.ui.cardPreviewAnchor) : null,
+    },
+  })),
+  setCardPreviewAnchor: (anchor) => set(s => ({ ui: { ...s.ui, cardPreviewAnchor: anchor } })),
   setCardSearchOpen: (open) => set(s => ({ ui: { ...s.ui, cardSearchOpen: open } })),
   setReplayOpen: (open) => set(s => ({ ui: { ...s.ui, replayOpen: open } })),
   setProfileOpen: (open) => set(s => ({ ui: { ...s.ui, profileOpen: open } })),
