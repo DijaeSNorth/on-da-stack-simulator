@@ -19,6 +19,7 @@ import {
   detectAttackTriggers, detectETBTriggers, getActiveModifiers,
 } from '../engine/assistantEngine';
 import { saveDeck, loadDecksFromStorage, normalizeCommanderDeck } from '../engine/deckImport';
+import { getBannedReason } from '../data/cardDatabase';
 import { createReplay, saveReplayToStorage } from '../engine/replayEngine';
 import { getActiveProfile } from '../engine/profileStorage';
 import {
@@ -368,6 +369,41 @@ function withAssistantMessages(ui: UIState, game: GameState, flags: AssistantFla
   };
 }
 
+function hasApprovedHouseRule(game: GameState, id: string): boolean {
+  return game.config.houseRules.some(rule => rule.id === id && rule.approved);
+}
+
+function getLoadedBannedCardFlags(game: GameState, playerId: string): AssistantFlag[] {
+  if (hasApprovedHouseRule(game, 'allow_banned_cards')) return [];
+  const player = game.players.find(item => item.id === playerId);
+  if (!player) return [];
+
+  const cardIds = [
+    ...player.commandZone,
+    ...player.library,
+    ...player.hand,
+    ...player.sideboard,
+    ...player.maybeboard,
+  ];
+  const bannedCards = new Map<string, string>();
+  for (const id of cardIds) {
+    const card = game.cards[id];
+    if (!card) continue;
+    const reason = getBannedReason(card.definition);
+    if (reason) bannedCards.set(card.definition.name, reason);
+  }
+
+  if (bannedCards.size === 0) return [];
+  const names = [...bannedCards.keys()].join(', ');
+  return [{
+    id: uuid(),
+    severity: 'flagged',
+    label: 'Flagged',
+    text: `${player.name} loaded banned Commander card${bannedCards.size === 1 ? '' : 's'}: ${names}. The game can continue, but this should be Rule Zero approved or enabled with Allow Banned Cards.`,
+    ruleRef: 'Commander ban list',
+  }];
+}
+
 function addReviewData(
   data: Record<string, unknown>,
   flags: AssistantFlag[]
@@ -591,7 +627,8 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
   loadDeck: async (playerId, deck) => {
     const newState = await loadDeckIntoPlayer(get().game, playerId, normalizeCommanderDeck(deck));
-    set({ game: newState });
+    const flags = getLoadedBannedCardFlags(newState, playerId);
+    set({ game: newState, ui: withAssistantMessages(get().ui, newState, flags) });
   },
 
   startGame: () => {

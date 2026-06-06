@@ -18,6 +18,7 @@ function mockScryfallCard(name: string): Record<string, unknown> {
     'Sakashima of a Thousand Faces',
     'Lutri, the Spellchaser',
   ].includes(name);
+  const commanderBanned = ['Chaos Orb', 'Dockside Extortionist'].includes(name);
   return {
     id: name.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
     oracle_id: `${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-oracle`,
@@ -29,7 +30,7 @@ function mockScryfallCard(name: string): Record<string, unknown> {
     colors: legendary ? ['U', 'B', 'R'] : [],
     color_identity: legendary ? ['U', 'B', 'R'] : [],
     keywords: [],
-    legalities: { commander: 'legal' },
+    legalities: { commander: commanderBanned ? 'banned' : 'legal' },
   };
 }
 
@@ -96,6 +97,28 @@ try {
     ].join('\n'), 'Fuzzy Fallback Test');
 
     assert(result.warnings.every(warning => !warning.includes('Birgi, God of Storytelling') && !warning.includes('Expansion // Explosion')), 'expected fuzzy fallback to prevent placeholder warnings for DFC/split names');
+  }
+
+  {
+    const result = await importDecklist([
+      'Deck',
+      '1 Chaos Orb',
+      '1 Sol Ring',
+    ].join('\n'), 'Banned Warning Test');
+
+    assert(result.deck.cards.some(card => card.name === 'Chaos Orb'), 'expected banned card to still import');
+    assert(result.warnings.some(warning => warning.includes('Chaos Orb is banned in Commander')), 'expected banned card warning when Allow Banned Cards is off');
+  }
+
+  {
+    const result = await importDecklist([
+      'Deck',
+      '1 Chaos Orb',
+      '1 Sol Ring',
+    ].join('\n'), 'Banned Allowed Test', undefined, undefined, undefined, { allowBannedCards: true });
+
+    assert(result.deck.cards.some(card => card.name === 'Chaos Orb'), 'expected banned card to still import when allowed');
+    assert(result.warnings.every(warning => !warning.includes('Chaos Orb is banned in Commander')), 'expected Allow Banned Cards to suppress banned-card warning');
   }
 
   {

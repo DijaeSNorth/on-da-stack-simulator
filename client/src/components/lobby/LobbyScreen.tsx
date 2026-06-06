@@ -158,9 +158,10 @@ export function LobbyScreen() {
     setImportError('');
     setImportResult(null);
     try {
+      const importOptions = { allowBannedCards: houseRules.has('allow_banned_cards') };
       const result = importMode === 'url'
-        ? await importDeckFromUrl(deckUrl, deckName, undefined, customLogicText)
-        : await importDecklist(deckText, deckName || 'Imported Deck', undefined, undefined, customLogicText);
+        ? await importDeckFromUrl(deckUrl, deckName, undefined, customLogicText, importOptions)
+        : await importDecklist(deckText, deckName || 'Imported Deck', undefined, undefined, customLogicText, importOptions);
       setImportResult(result);
     } catch (err) {
       setImportError(err instanceof Error ? err.message : 'Deck import failed.');

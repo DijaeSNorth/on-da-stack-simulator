@@ -8,7 +8,7 @@ import type {
   DeckLogic,
   ReplacementEffect,
 } from '../types/game';
-import { fetchCardsByNames } from '../data/cardDatabase';
+import { fetchCardsByNames, getBannedReason } from '../data/cardDatabase';
 import { deckCache } from './deckCache';
 
 export interface ImportResult {
@@ -17,6 +17,10 @@ export interface ImportResult {
   warnings: string[];
   commanders: string[];
   cardCount: number;
+}
+
+export interface ImportOptions {
+  allowBannedCards?: boolean;
 }
 
 export type DeckUrlSource = 'moxfield' | 'archidekt' | 'mtggoldfish' | 'tappedout' | 'unknown';
@@ -200,11 +204,12 @@ export async function importDeckFromUrl(
   url: string,
   deckName: string = '',
   playerId?: string,
-  customRulesText?: string
+  customRulesText?: string,
+  options: ImportOptions = {}
 ): Promise<ImportResult> {
   const remote = await fetchDecklistFromUrl(url);
   const fallbackName = remote.name || deckName || `${formatDeckSource(remote.source)} Import`;
-  const result = await importDecklist(remote.text, deckName || fallbackName, url, playerId, customRulesText);
+  const result = await importDecklist(remote.text, deckName || fallbackName, url, playerId, customRulesText, options);
   return {
     ...result,
     warnings: [
@@ -700,7 +705,8 @@ export async function importDecklist(
   deckName: string = 'Imported Deck',
   source?: string,
   playerId?: string,
-  customRulesText?: string
+  customRulesText?: string,
+  options: ImportOptions = {}
 ): Promise<ImportResult> {
   const errors: string[] = [];
   const warnings: string[] = [];
@@ -776,6 +782,13 @@ export async function importDecklist(
   for (const name of allNames) {
     if (!fetchedDefs.has(name)) {
       warnings.push(`"${name}" could not be found — it will appear as a placeholder.`);
+    }
+  }
+
+  if (!options.allowBannedCards) {
+    for (const [, def] of fetchedDefs) {
+      const reason = getBannedReason(def);
+      if (reason) warnings.push(`${reason} Enable "Allow Banned Cards" if this is intentional Rule Zero tech.`);
     }
   }
 
