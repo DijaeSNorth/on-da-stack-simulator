@@ -67,6 +67,7 @@ export type IntentType =
   | 'REANIMATE'
   | 'LOOK_AT_HAND'   // peek at opponent's hand
   | 'LOOK_AT_TOP'    // look at top N of any player's library
+  | 'SORT_HAND'
   | 'UNKNOWN';
 
 export interface ParsedIntent {
@@ -243,6 +244,10 @@ export function parseCommand(raw: string): ParsedIntent {
   // ── Shuffle ──
   if (/^(shuffle|shuffle (my )?library|shuffle (my )?deck)$/.test(lower)) {
     return { ...result, intent: 'SHUFFLE', confidence: 'high' };
+  }
+
+  if (/^(sort|sort hand|sort my hand|organize hand|organize my hand)$/.test(lower)) {
+    return { ...result, intent: 'SORT_HAND', confidence: 'high' };
   }
 
   // ── Flip Coin ──
@@ -928,6 +933,10 @@ export function getSuggestions(partial: string, state: GameState, actingPlayerId
   const lower = partial.toLowerCase();
   const suggestions: string[] = [];
 
+  if ('sort hand'.startsWith(lower) || lower.startsWith('sort')) {
+    suggestions.push('sort hand');
+  }
+
   // ── 1. DeckCache trie autocomplete (fastest path, pre-built at deck-load) ───────
   // Returns command completions like "cast Sol Ring", "attack with Goblin Guide"
   // or raw card names, based on whatever prefix the player has typed.
@@ -983,6 +992,7 @@ function getContextualSuggestions(state: GameState, actingPlayerId: string): str
     suggestions.push('pass', 'tap all lands', 'draw');
     const player = state.players.find(p => p.id === actingPlayerId);
     if (player?.hand.length) {
+      suggestions.push('sort hand');
       for (const id of player.hand.slice(0, 3)) {
         const card = state.cards[id];
         if (card) {

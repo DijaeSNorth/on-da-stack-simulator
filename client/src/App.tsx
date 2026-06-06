@@ -12,6 +12,7 @@ import { CardContextMenu } from './components/cards/CardContextMenu';
 import { ZoneDrawer } from './components/zones/ZoneDrawer';
 import { LobbyScreen } from './components/lobby/LobbyScreen';
 import { CommandInput } from './components/command/CommandInput';
+import { CommanderCastMoment } from './components/commander/CommanderCastMoment';
 import { WelcomeModal, CoachMark } from './components/tutorial/TutorialOverlay';
 import { useIsMobile } from './hooks/use-mobile';
 
@@ -175,6 +176,7 @@ export default function App() {
 
       {/* Overlays */}
       <FloatingCardPreview />
+      <CommanderCastMoment />
       <CardContextMenu />
       <ZoneDrawer />
       <Suspense fallback={null}>

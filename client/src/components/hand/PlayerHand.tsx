@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState, type PointerEvent } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import { CardImage } from '../cards/CardImage';
 import type { CardState } from '../../types/game';
@@ -69,10 +69,30 @@ function SpectatorHandViewer() {
 }
 
 // ─── PlayerHand ───────────────────────────────────────────────────────────────────
+function moveCardToIndex(cards: CardState[], cardId: string, toIndex: number): CardState[] {
+  const fromIndex = cards.findIndex(card => card.instanceId === cardId);
+  if (fromIndex === -1) return cards;
+  const next = [...cards];
+  const [card] = next.splice(fromIndex, 1);
+  next.splice(Math.max(0, Math.min(toIndex, next.length)), 0, card);
+  return next;
+}
+
 export function PlayerHand() {
   const store = useGameStore();
   const { game, ui, localPlayerId, multiplayer } = store;
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
+  const [dragState, setDragState] = useState<{
+    cardId: string;
+    fromIndex: number;
+    toIndex: number;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    moved: boolean;
+  } | null>(null);
+  const handRailRef = useRef<HTMLDivElement | null>(null);
+  const suppressClickRef = useRef(false);
 
   // Spectators see all players' hands in a tabbed viewer
   if (multiplayer.isSpectator) return <SpectatorHandViewer />;
@@ -101,6 +121,58 @@ export function PlayerHand() {
   // Fan layout: cards spread like a hand of cards
   const totalWidth = Math.min(count * 60, window.innerWidth - 200);
   const cardSpread = Math.min(60, (totalWidth - 74) / Math.max(1, count - 1));
+  const cardStep = Math.max(1, Math.min(cardSpread, 55));
+  const displayCards = dragState
+    ? moveCardToIndex(handCards, dragState.cardId, dragState.toIndex)
+    : handCards;
+
+  function getHandIndexForClientX(clientX: number): number {
+    const rect = handRailRef.current?.getBoundingClientRect();
+    if (!rect) return dragState?.toIndex ?? 0;
+    const centerX = rect.left + rect.width / 2;
+    const raw = Math.round(((clientX - centerX) / cardStep) + ((count - 1) / 2));
+    return Math.max(0, Math.min(count - 1, raw));
+  }
+
+  function handleCardPointerDown(event: PointerEvent<HTMLDivElement>, cardId: string, index: number) {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setDragState({
+      cardId,
+      fromIndex: index,
+      toIndex: index,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      moved: false,
+    });
+  }
+
+  function handleCardPointerMove(event: PointerEvent<HTMLDivElement>) {
+    setDragState(current => {
+      if (!current || current.pointerId !== event.pointerId) return current;
+      const distance = Math.hypot(event.clientX - current.startX, event.clientY - current.startY);
+      const moved = current.moved || distance > 7;
+      if (!moved) return current;
+      event.preventDefault();
+      return { ...current, moved, toIndex: getHandIndexForClientX(event.clientX) };
+    });
+  }
+
+  function handleCardPointerUp(event: PointerEvent<HTMLDivElement>) {
+    if (!dragState || dragState.pointerId !== event.pointerId) return;
+    const targetIndex = getHandIndexForClientX(event.clientX);
+    const moved = dragState.moved || targetIndex !== dragState.fromIndex;
+    if (moved) {
+      const nextCards = moveCardToIndex(handCards, dragState.cardId, targetIndex);
+      store.reorderHand(localPlayerId, nextCards.map(card => card.instanceId));
+      suppressClickRef.current = true;
+      window.setTimeout(() => {
+        suppressClickRef.current = false;
+      }, 0);
+    }
+    setDragState(null);
+  }
 
   return (
     <div
@@ -123,14 +195,40 @@ export function PlayerHand() {
       <div style={{
         position: 'absolute',
         left: 12, bottom: 8,
-        fontSize: 10, color: '#475569',
-        fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
       }}>
-        Hand ({count})
+        <span style={{
+          fontSize: 10, color: '#475569',
+          fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase',
+        }}>
+          Hand ({count})
+        </span>
+        <button
+          type="button"
+          data-testid="btn-sort-hand"
+          title="Sort hand by card type, color, mana value, then name. You can also type 'sort hand'."
+          onClick={() => store.sortHand(localPlayerId)}
+          style={{
+            padding: '3px 7px',
+            borderRadius: 5,
+            border: '1px solid #334155',
+            background: '#0f172a',
+            color: '#94a3b8',
+            fontSize: 9,
+            fontWeight: 800,
+            cursor: 'pointer',
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em',
+          }}
+        >
+          Sort
+        </button>
       </div>
 
       {/* Fan of cards */}
-      <div style={{
+      <div ref={handRailRef} style={{
         position: 'relative',
         height: '100%',
         display: 'flex',
@@ -138,14 +236,15 @@ export function PlayerHand() {
         justifyContent: 'center',
         paddingBottom: 10,
       }}>
-        {handCards.map((card, i) => {
+        {displayCards.map((card, i) => {
           const isHovered = hoveredIdx === i;
           const isSelected = ui.selectedCardId === card.instanceId;
+          const isDragging = dragState?.cardId === card.instanceId;
 
           // Fan angle: spread cards slightly
           const spreadRange = Math.min(count * 4, 20);
           const angle = count > 1 ? ((i / (count - 1)) - 0.5) * spreadRange : 0;
-          const verticalOffset = isHovered ? -30 : Math.abs(angle) * 1.5;
+          const verticalOffset = isDragging ? -38 : isHovered ? -30 : Math.abs(angle) * 1.5;
 
           return (
             <div
@@ -153,19 +252,26 @@ export function PlayerHand() {
               data-testid={`hand-card-${card.instanceId}`}
               style={{
                 position: 'absolute',
-                left: `calc(50% + ${(i - (count - 1) / 2) * Math.min(cardSpread, 55)}px)`,
+                left: `calc(50% + ${(i - (count - 1) / 2) * cardStep}px)`,
                 bottom: verticalOffset,
-                transform: `rotate(${angle}deg) ${isHovered ? 'scale(1.12)' : isSelected ? 'scale(1.06)' : 'scale(1)'}`,
+                transform: `rotate(${angle}deg) ${isDragging ? 'scale(1.15)' : isHovered ? 'scale(1.12)' : isSelected ? 'scale(1.06)' : 'scale(1)'}`,
                 transformOrigin: 'bottom center',
-                zIndex: isHovered ? 100 : i,
-                cursor: 'pointer',
-                transition: 'transform 0.15s ease, bottom 0.15s ease, z-index 0s',
+                zIndex: isDragging ? 140 : isHovered ? 100 : i,
+                cursor: isDragging ? 'grabbing' : 'grab',
+                touchAction: 'none',
+                opacity: dragState && !isDragging ? 0.82 : 1,
+                transition: dragState ? 'left 0.12s ease, transform 0.12s ease, bottom 0.12s ease, opacity 0.12s ease' : 'transform 0.15s ease, bottom 0.15s ease, z-index 0s',
                 outline: isSelected ? '2px solid #60a5fa' : 'none',
                 borderRadius: 5,
               }}
+              onPointerDown={(event) => handleCardPointerDown(event, card.instanceId, i)}
+              onPointerMove={handleCardPointerMove}
+              onPointerUp={handleCardPointerUp}
+              onPointerCancel={() => setDragState(null)}
               onMouseEnter={() => setHoveredIdx(i)}
               onMouseLeave={() => setHoveredIdx(null)}
               onClick={() => {
+                if (suppressClickRef.current) return;
                 store.setSelectedCard(card.instanceId);
                 store.setCardPreview(card.instanceId);
               }}

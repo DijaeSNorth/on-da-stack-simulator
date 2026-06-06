@@ -11,6 +11,7 @@ import {
   createEmptyGameState,
   createPlayer,
 } from '../client/src/engine/gameEngine';
+import { parseCommand } from '../client/src/engine/nlpParser';
 import type { CardDefinition, GameState } from '../client/src/types/game';
 
 let passed = 0;
@@ -202,6 +203,75 @@ test('panel sizes clamp and reset for resizable touch layout', () => {
   assert(sizes.left === 220, `expected left panel reset 220, got ${sizes.left}`);
   assert(sizes.right === 280, `expected right panel reset 280, got ${sizes.right}`);
   assert(sizes.deckBuilder === 430, `expected deck builder reset 430, got ${sizes.deckBuilder}`);
+});
+
+test('commander casts are tagged for dramatic table feedback', () => {
+  const game = makeGame(2);
+  const commander = createCardState({
+    ...vanillaCreature,
+    id: 'cmdr-card',
+    name: 'Muldrotha, the Gravetide',
+    cmc: 6,
+    colors: ['B', 'G', 'U'],
+    colorIdentity: ['B', 'G', 'U'],
+  }, 'p1', 'command', true);
+
+  resetStore({
+    ...game,
+    cards: { [commander.instanceId]: commander },
+    players: game.players.map(player =>
+      player.id === 'p1'
+        ? { ...player, commanders: [commander.instanceId], commandZone: [commander.instanceId] }
+        : player
+    ),
+  });
+
+  useGameStore.getState().castCard('p1', commander.instanceId);
+
+  const next = useGameStore.getState().game;
+  const action = next.actionLog[next.actionLog.length - 1];
+  const player = next.players.find(p => p.id === 'p1')!;
+  assert(action.data.commanderCast === true, 'expected commander cast metadata');
+  assert(action.data.cardName === 'Muldrotha, the Gravetide', 'expected commander card name metadata');
+  assert(action.data.commanderCastNumber === 1, 'expected first commander cast number');
+  assert(action.data.commanderTax === 0, 'expected zero commander tax on first cast');
+  assert(player.commanderCastCount[commander.instanceId] === 1, 'expected commander tax count to increment');
+});
+
+test('hand can be manually reordered and sorted by workflow command', () => {
+  const game = makeGame(2);
+  const forest = createCardState({ ...vanillaCreature, id: 'forest', name: 'Forest', typeLine: 'Basic Land - Forest', cardTypes: ['Land'], subTypes: ['Forest'], cmc: 0, colors: [], colorIdentity: ['G'] }, 'p1', 'hand');
+  const creature = createCardState({ ...vanillaCreature, id: 'creature', name: 'Blue Test Mage', cmc: 2, colors: ['U'], colorIdentity: ['U'] }, 'p1', 'hand');
+  const artifact = createCardState({ ...vanillaCreature, id: 'artifact', name: 'Sol Ring', typeLine: 'Artifact', cardTypes: ['Artifact'], subTypes: [], cmc: 1, colors: [], colorIdentity: ['C'] }, 'p1', 'hand');
+  const instant = createCardState({ ...vanillaCreature, id: 'instant', name: 'Lightning Bolt', typeLine: 'Instant', cardTypes: ['Instant'], subTypes: [], cmc: 1, colors: ['R'], colorIdentity: ['R'] }, 'p1', 'hand');
+
+  resetStore({
+    ...game,
+    cards: {
+      [forest.instanceId]: forest,
+      [creature.instanceId]: creature,
+      [artifact.instanceId]: artifact,
+      [instant.instanceId]: instant,
+    },
+    players: game.players.map(player =>
+      player.id === 'p1'
+        ? { ...player, hand: [instant.instanceId, artifact.instanceId, forest.instanceId, creature.instanceId] }
+        : player
+    ),
+  });
+
+  useGameStore.getState().reorderHand('p1', [artifact.instanceId, instant.instanceId, creature.instanceId, forest.instanceId]);
+  let hand = useGameStore.getState().game.players.find(p => p.id === 'p1')!.hand;
+  assert(hand[0] === artifact.instanceId && hand[3] === forest.instanceId, 'expected manual reorder to persist');
+
+  useGameStore.getState().sortHand('p1');
+  hand = useGameStore.getState().game.players.find(p => p.id === 'p1')!.hand;
+  assert(hand.join(',') === [forest.instanceId, creature.instanceId, artifact.instanceId, instant.instanceId].join(','), 'expected hand sorted by type/color/mana/name');
+});
+
+test('sort command parses as hand organization', () => {
+  assert(parseCommand('sort').intent === 'SORT_HAND', 'expected bare sort command');
+  assert(parseCommand('sort hand').intent === 'SORT_HAND', 'expected sort hand command');
 });
 
 console.log(`\nStore flow tests: ${passed} passed, ${failed} failed`);

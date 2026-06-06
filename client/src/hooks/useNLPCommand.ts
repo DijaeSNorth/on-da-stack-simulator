@@ -110,6 +110,11 @@ export function useNLPCommand(onCombatIntent?: (intent: ResolvedIntent) => void)
         return { success: true, message: 'Shuffled library' };
       }
 
+      case 'SORT_HAND': {
+        store.sortHand(localPlayerId);
+        return { success: true, message: 'Sorted hand by type, color, mana value, and name' };
+      }
+
       case 'MILL': {
         store.millCards(localPlayerId, intent.count ?? 1);
         return { success: true, message: `Milled ${intent.count ?? 1} card(s)` };

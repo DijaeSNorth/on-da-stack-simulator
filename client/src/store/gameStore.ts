@@ -227,6 +227,8 @@ export interface GameStore {
   addPoisonCounter: (playerId: string, amount?: number) => void;
   drawCard: (playerId: string, count?: number) => void;
   discardFromHand: (playerId: string, instanceId: string) => void;
+  reorderHand: (playerId: string, orderedInstanceIds: string[]) => void;
+  sortHand: (playerId: string) => void;
   shuffleLibrary: (playerId: string) => void;
   millCards: (playerId: string, count: number) => void;
 
@@ -386,6 +388,32 @@ function addReviewData(
 }
 
 // ─── Store ────────────────────────────────────────────────────────────────────
+
+const HAND_TYPE_ORDER = ['Land', 'Creature', 'Artifact', 'Enchantment', 'Planeswalker', 'Battle', 'Instant', 'Sorcery'] as const;
+const COLOR_ORDER = ['W', 'U', 'B', 'R', 'G', 'C'] as const;
+
+function handSortKey(card: CardState): string {
+  const typeIndex = HAND_TYPE_ORDER.findIndex(type => card.definition.cardTypes.includes(type));
+  const safeType = typeIndex === -1 ? HAND_TYPE_ORDER.length : typeIndex;
+  const colors = card.definition.colorIdentity.length
+    ? card.definition.colorIdentity
+    : card.definition.colors.length
+      ? card.definition.colors
+      : ['C'];
+  const colorKey = colors
+    .map(color => COLOR_ORDER.indexOf(color as typeof COLOR_ORDER[number]))
+    .filter(index => index >= 0)
+    .sort((a, b) => a - b)
+    .join('.');
+  const mv = String(Math.round((card.definition.cmc ?? 0) * 10)).padStart(4, '0');
+  return `${String(safeType).padStart(2, '0')}|${colorKey.padStart(5, '9')}|${mv}|${card.definition.name.toLowerCase()}`;
+}
+
+function sameHandMembers(current: string[], proposed: string[]): boolean {
+  if (current.length !== proposed.length) return false;
+  const currentSet = new Set(current);
+  return proposed.every(id => currentSet.has(id)) && new Set(proposed).size === proposed.length;
+}
 
 export const useGameStore = create<GameStore>()((set, get) => ({
   game: createEmptyGameState(createDefaultGameConfig(4)),
@@ -595,6 +623,10 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const flags = filterAssistantFlags(check.flags, get().ui);
     const card = g.cards[cardInstanceId];
     if (!card) return;
+    const castingPlayerBeforeMove = g.players.find(p => p.id === castingPlayerId);
+    const isCommanderBeingCast = Boolean(castingPlayerBeforeMove?.commanders.includes(cardInstanceId)) ||
+      card.zone === 'command';
+    const previousCommanderCastCount = castingPlayerBeforeMove?.commanderCastCount[cardInstanceId] || 0;
 
     const stackObj: StackObject = {
       id: uuid(), type: 'spell',
@@ -610,9 +642,6 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     g = pushToStack(g, stackObj);
 
     // Track commander cast count for tax purposes (CR 903.8)
-    const castingPlayer = g.players.find(p => p.id === castingPlayerId);
-    const isCommanderBeingCast = castingPlayer?.commanders.includes(cardInstanceId) ||
-      card.zone === 'command';
     if (isCommanderBeingCast && g.config.commanderTaxEnabled) {
       g = {
         ...g,
@@ -626,9 +655,22 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         }),
       };
     }
+    const castingPlayer = g.players.find(p => p.id === castingPlayerId);
+    const commanderCastNumber = isCommanderBeingCast ? previousCommanderCastCount + 1 : undefined;
+    const commanderTax = isCommanderBeingCast ? previousCommanderCastCount * 2 : undefined;
 
     const action = createAction(g, castingPlayerId, 'CAST_SPELL',
-      `${card.definition.name} cast by ${castingPlayerId}`, [cardInstanceId], addReviewData({}, flags), flags);
+      `${card.definition.name} cast by ${castingPlayer?.name || castingPlayerId}`,
+      [cardInstanceId],
+      addReviewData(isCommanderBeingCast ? {
+        commanderCast: true,
+        commanderCastNumber,
+        commanderTax,
+        playerName: castingPlayer?.name || castingPlayerId,
+        playerColor: castingPlayer?.color,
+        cardName: card.definition.name,
+      } : {}, flags),
+      flags);
     g = { ...g, actionLog: [...g.actionLog, action] };
 
     set({ game: g, ui: withAssistantMessages(get().ui, g, flags) });
@@ -818,6 +860,35 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const card = g.cards[instanceId];
     const action = createAction(g, playerId, 'DISCARD', `Discarded ${card?.definition.name}`, [instanceId]);
     set({ game: { ...g, actionLog: [...g.actionLog, action] } });
+  },
+
+  reorderHand: (playerId, orderedInstanceIds) => {
+    const g = get().game;
+    const player = g.players.find(p => p.id === playerId);
+    if (!player || !sameHandMembers(player.hand, orderedInstanceIds)) return;
+    if (player.hand.every((id, index) => id === orderedInstanceIds[index])) return;
+    const action = createAction(g, playerId, 'OTHER', `${player.name} reorganized their hand.`);
+    set({
+      game: {
+        ...g,
+        players: g.players.map(p => p.id === playerId ? { ...p, hand: orderedInstanceIds } : p),
+        actionLog: [...g.actionLog, action],
+        lastUpdatedAt: Date.now(),
+      },
+    });
+  },
+
+  sortHand: (playerId) => {
+    const g = get().game;
+    const player = g.players.find(p => p.id === playerId);
+    if (!player) return;
+    const sorted = [...player.hand].sort((a, b) => {
+      const cardA = g.cards[a];
+      const cardB = g.cards[b];
+      if (!cardA || !cardB) return 0;
+      return handSortKey(cardA).localeCompare(handSortKey(cardB));
+    });
+    get().reorderHand(playerId, sorted);
   },
 
   shuffleLibrary: (playerId) => {

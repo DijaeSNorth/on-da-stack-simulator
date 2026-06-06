@@ -105,6 +105,28 @@ html, body {
   50% { opacity: 0.6; }
 }
 
+@keyframes commanderMomentBackdrop {
+  0% { opacity: 0; }
+  10% { opacity: 1; }
+  78% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@keyframes commanderMomentCard {
+  0% { opacity: 0; transform: translateY(18px) scale(0.9); }
+  12% { opacity: 1; transform: translateY(0) scale(1); }
+  78% { opacity: 1; transform: translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateY(-10px) scale(0.98); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-testid="commander-cast-moment"],
+  [data-testid="commander-cast-moment"] * {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
 
 
 /* Tutorial tooltip + coach mark animations */
