@@ -22,11 +22,20 @@ const SEVERITY_LABEL_STYLES: Record<string, { bg: string; color: string }> = {
   'State-Based': { bg: '#312e81', color: '#a5b4fc' },
 };
 
+const sectionHeaderStyle: React.CSSProperties = {
+  fontSize: 9,
+  color: '#64748b',
+  fontWeight: 800,
+  letterSpacing: '0.08em',
+  textTransform: 'uppercase',
+};
+
 function AssistantTab() {
   const messages = useGameStore(s => s.ui.assistantMessages);
   const game = useGameStore(s => s.game);
   const store = useGameStore();
   const reversed = [...messages].reverse();
+  const log = [...game.actionLog].reverse().slice(0, 80);
   const pendingTriggers = game.triggerQueue.filter(t => !t.acknowledged);
   const missedTriggers = game.triggerQueue.filter(t => t.missed);
 
@@ -69,18 +78,20 @@ function AssistantTab() {
           </button>
         </div>
       )}
-      {reversed.length === 0 ? (
-        <div style={{
-          flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          color: '#334155', fontSize: 12, fontStyle: 'italic', textAlign: 'center', padding: 16,
-        }}>
-          <div>The judge is watching.</div>
-          <div style={{ fontSize: 10, marginTop: 6, color: '#1e293b' }}>
-            Actions will be evaluated here.
+      <div style={{ flex: 1, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={sectionHeaderStyle}>Judge Flags</div>
+        {reversed.length === 0 ? (
+          <div style={{
+            color: '#334155', fontSize: 12, fontStyle: 'italic', textAlign: 'center',
+            padding: '14px 8px', border: '1px dashed #1e293b', borderRadius: 5,
+          }}>
+            The judge is watching.
+            <div style={{ fontSize: 10, marginTop: 5, color: '#1e293b' }}>
+              Mistakes and missed opportunities will appear here.
+            </div>
           </div>
-        </div>
-      ) : (
-        <div style={{ flex: 1, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+        ) : (
+          <>
           {reversed.map((msg: AssistantMessage) => {
             const labelStyle = SEVERITY_LABEL_STYLES[msg.label] || { bg: '#1e293b', color: '#94a3b8' };
             return (
@@ -116,8 +127,53 @@ function AssistantTab() {
               </div>
             );
           })}
-        </div>
-      )}
+          </>
+        )}
+
+        <div style={{ ...sectionHeaderStyle, marginTop: 4 }}>Action Log</div>
+        {log.length === 0 ? (
+          <div style={{
+            color: '#334155', fontSize: 12, fontStyle: 'italic', textAlign: 'center',
+            padding: '14px 8px', border: '1px dashed #1e293b', borderRadius: 5,
+          }}>
+            No actions logged yet.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+            {log.map(action => {
+              const player = game.players.find(p => p.id === action.playerId);
+              const isFlag = action.flags?.length > 0 || Array.isArray(action.data?.reviewTypes);
+              return (
+                <div
+                  key={action.id}
+                  style={{
+                    display: 'flex',
+                    gap: 6,
+                    padding: '4px 0',
+                    borderTop: '1px solid rgba(255,255,255,0.04)',
+                    opacity: action.undone ? 0.4 : 1,
+                  }}
+                >
+                  <div style={{ fontSize: 9, color: '#334155', flexShrink: 0, paddingTop: 1 }}>
+                    T{action.turn}
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 10, color: isFlag ? '#f59e0b' : '#94a3b8', lineHeight: 1.35 }}>
+                      {action.description}
+                      {action.undone && <span style={{ color: '#6b7280' }}> [undone]</span>}
+                    </div>
+                    {player && (
+                      <div style={{ fontSize: 9, color: '#475569' }}>
+                        {player.name} - {action.phase}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -229,47 +285,6 @@ function StackTab() {
         );
       })}
       <TriggersTab embedded />
-    </div>
-  );
-}
-
-function LogTab() {
-  const { game } = useGameStore();
-  const log = [...game.actionLog].reverse().slice(0, 100);
-
-  return (
-    <div style={{ flex: 1, overflowY: 'auto', padding: 8 }}>
-      {log.map((action, i) => {
-        const player = game.players.find(p => p.id === action.playerId);
-        const isFlag = action.flags?.length > 0;
-        return (
-          <div
-            key={action.id}
-            style={{
-              display: 'flex',
-              gap: 6,
-              padding: '3px 0',
-              borderBottom: '1px solid rgba(255,255,255,0.04)',
-              opacity: action.undone ? 0.4 : 1,
-            }}
-          >
-            <div style={{ fontSize: 9, color: '#334155', flexShrink: 0, paddingTop: 1 }}>
-              T{action.turn}
-            </div>
-            <div>
-              <div style={{ fontSize: 10, color: isFlag ? '#f59e0b' : '#94a3b8', lineHeight: 1.3 }}>
-                {action.description}
-                {action.undone && <span style={{ color: '#6b7280' }}> [undone]</span>}
-              </div>
-              {player && (
-                <div style={{ fontSize: 9, color: '#475569' }}>
-                  {player.name} · {action.phase}
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      })}
     </div>
   );
 }
@@ -446,9 +461,8 @@ const debugBtnStyle: React.CSSProperties = {
 };
 
 const TABS: { id: string; label: string }[] = [
-  { id: 'assistant', label: 'Judge' },
+  { id: 'assistant', label: 'Judge / Log' },
   { id: 'stack', label: 'Stack' },
-  { id: 'log', label: 'Log' },
   { id: 'debug', label: 'Tools' },
 ];
 
@@ -459,7 +473,11 @@ export function RightPanel() {
   if (!ui.rightPanelOpen) return null;
 
   const pendingTriggers = game.triggerQueue.filter(t => !t.acknowledged).length;
-  const effectiveTab = ui.rightPanelTab === 'triggers' ? 'stack' : ui.rightPanelTab;
+  const effectiveTab = ui.rightPanelTab === 'triggers'
+    ? 'stack'
+    : ui.rightPanelTab === 'log'
+      ? 'assistant'
+      : ui.rightPanelTab;
 
   return (
     <div
@@ -530,7 +548,6 @@ export function RightPanel() {
       <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
         {effectiveTab === 'assistant' && <AssistantTab />}
         {effectiveTab === 'stack' && <StackTab />}
-        {effectiveTab === 'log' && <LogTab />}
         {effectiveTab === 'debug' && <DebugTab />}
       </div>
     </div>

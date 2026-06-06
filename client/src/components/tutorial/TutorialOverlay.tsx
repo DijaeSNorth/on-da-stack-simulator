@@ -57,8 +57,8 @@ const STEP_CARDS: Partial<Record<TutorialStep, StepCard>> = {
   },
   right_panel: {
     title: 'Judge Panel',
-    body: 'The right panel has four tabs: Assistant (rules flags), Stack (spells in progress), Log (every action), and Triggers (things waiting to resolve).\n\nThe assistant never blocks your moves — it only advises.',
-    tip: 'Switch to "Log" to see a full history of every action taken.',
+    body: 'The right panel keeps Judge flags and the action log together, with Stack for spells and triggers, plus Tools for sandbox actions.\n\nThe assistant never blocks your moves — it only advises.',
+    tip: 'Use Judge / Log to review both flagged mistakes and the full table history.',
     position: 'right',
   },
   left_panel: {

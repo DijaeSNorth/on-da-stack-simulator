@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import type { Player } from '../../types/game';
 import { TutorialTooltip } from '../tutorial/TutorialTooltip';
@@ -93,6 +94,7 @@ function LifeCounter({ player, commander, onChange }: { player: Player; commande
 export function LeftPanel() {
   const store = useGameStore();
   const { game, ui, localPlayerId } = store;
+  const [revealedTopPlayers, setRevealedTopPlayers] = useState<Set<string>>(new Set());
   const phaseLabel = getPhaseLabel(game.phase);
   const phaseBlocked = game.stack.length > 0;
 
@@ -141,6 +143,9 @@ export function LeftPanel() {
         {players.map(player => {
           const isActive = player.id === game.activePlayerId;
           const hasPriority = player.id === game.priorityPlayerId;
+          const isDeckOwner = player.id === localPlayerId;
+          const topLibraryCard = player.library[0] ? game.cards[player.library[0]] : undefined;
+          const revealTop = revealedTopPlayers.has(player.id);
           const bfCount = player.battlefield.length;
           const commanderCard = player.commanders.map(id => game.cards[id]).find(Boolean);
           const cmdDmgEntries = Object.entries(player.commanderDamage).filter(([, v]) => v > 0);
@@ -259,6 +264,40 @@ export function LeftPanel() {
                     border: 'none', borderRadius: 3, cursor: 'pointer',
                   }}
                 >Draw</button>
+                {isDeckOwner && (
+                  <>
+                    <button
+                      data-testid={`btn-shuffle-${player.id}`}
+                      onClick={(e) => { e.stopPropagation(); store.shuffleLibrary(player.id); }}
+                      style={{
+                        fontSize: 9, padding: '2px 6px',
+                        background: '#123642', color: '#67e8f9',
+                        border: 'none', borderRadius: 3, cursor: 'pointer',
+                      }}
+                    >Shuffle</button>
+                    <button
+                      data-testid={`btn-reveal-top-${player.id}`}
+                      aria-pressed={revealTop}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setRevealedTopPlayers(prev => {
+                          const next = new Set(prev);
+                          if (next.has(player.id)) next.delete(player.id);
+                          else next.add(player.id);
+                          return next;
+                        });
+                      }}
+                      style={{
+                        fontSize: 9, padding: '2px 6px',
+                        background: revealTop ? '#713f12' : '#1e293b',
+                        color: revealTop ? '#fde68a' : '#94a3b8',
+                        border: `1px solid ${revealTop ? '#f59e0b' : '#334155'}`,
+                        borderRadius: 3,
+                        cursor: 'pointer',
+                      }}
+                    >Reveal Top</button>
+                  </>
+                )}
                 <TutorialTooltip content={TOOLTIPS.zone_graveyard} placement="top" delay={500}>
                   <button
                     data-testid={`btn-open-graveyard-${player.id}`}
@@ -282,6 +321,26 @@ export function LeftPanel() {
                   >Ex ({player.exile.length})</button>
                 </TutorialTooltip>
               </div>
+              {isDeckOwner && revealTop && (
+                <div
+                  data-testid={`revealed-top-card-${player.id}`}
+                  style={{
+                    marginTop: 5,
+                    padding: '4px 6px',
+                    borderRadius: 4,
+                    background: 'rgba(113,63,18,0.24)',
+                    border: '1px solid #713f12',
+                    color: '#fde68a',
+                    fontSize: 9,
+                    lineHeight: 1.3,
+                  }}
+                >
+                  Top: {topLibraryCard?.definition.name ?? 'Library empty'}
+                  {topLibraryCard?.definition.typeLine && (
+                    <span style={{ color: '#a8a29e' }}> - {topLibraryCard.definition.typeLine}</span>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}
