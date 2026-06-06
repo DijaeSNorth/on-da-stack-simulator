@@ -42,6 +42,8 @@ interface ParsedEntry {
   section: 'main' | 'sideboard' | 'maybeboard' | 'commander';
 }
 
+const MAX_COMMANDERS = 2;
+
 /**
  * Normalize a card name from any common variation
  */
@@ -50,6 +52,28 @@ function normalizeName(name: string): string {
     .replace(/\s*\/\/\s*/g, ' // ') // DFC separator
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function parseSectionHeader(line: string): ParsedEntry['section'] | null {
+  const header = line
+    .replace(/^\[(.+)\]$/, '$1')
+    .replace(/:$/, '')
+    .replace(/\s*\(\d+\)\s*$/, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+
+  if (/^(commander|commanders|general|generals)$/.test(header)) return 'commander';
+  if (/^(main|main deck|mainboard|main board|deck|decklist|library)$/.test(header)) return 'main';
+  if (/^(sideboard|side board|side|sb)$/.test(header)) return 'sideboard';
+  if (/^(maybeboard|maybe board|maybe|mb|considering)$/.test(header)) return 'maybeboard';
+  if (/^companion$/.test(header)) return 'sideboard';
+
+  if (/^(creature|creatures|instant|instants|sorcery|sorceries|artifact|artifacts|enchantment|enchantments|planeswalker|planeswalkers|land|lands|battle|battles)$/.test(header)) {
+    return 'main';
+  }
+
+  return null;
 }
 
 /**
@@ -66,13 +90,13 @@ function parseTextDecklist(raw: string): ParsedEntry[] {
   let currentSection: ParsedEntry['section'] = 'main';
 
   for (const line of lines) {
-    const lower = line.toLowerCase();
+    const section = parseSectionHeader(line);
+    if (section) {
+      currentSection = section;
+      continue;
+    }
 
     // Section headers
-    if (/^(commander|companion)$/i.test(lower)) { currentSection = 'commander'; continue; }
-    if (/^(sideboard|sb)$/i.test(lower)) { currentSection = 'sideboard'; continue; }
-    if (/^(maybeboard|mb)$/i.test(lower)) { currentSection = 'maybeboard'; continue; }
-    if (/^(main|mainboard|deck)$/i.test(lower)) { currentSection = 'main'; continue; }
     if (line.startsWith('//') || line.startsWith('#')) continue; // comment
 
     // Count + name pattern: "4x Lightning Bolt" or "4 Lightning Bolt"
@@ -365,7 +389,7 @@ function normalizeRemoteDeckText(raw: string): string {
     .replace(/<[^>]+>/g, ' ')
     .split('\n')
     .map(line => line.replace(/\s+/g, ' ').trim())
-    .filter(line => /^(\d+x?\s+|Commander$|Deck$|Mainboard$|Sideboard$|Maybeboard$|SB:)/i.test(line))
+    .filter(line => /^(\d+x?\s+|Commanders?:?$|Main Deck:?$|Deck:?$|Mainboard:?$|Sideboard:?$|Maybeboard:?$|SB:)/i.test(line))
     .map(line => line.replace(/^SB:\s*/i, 'Sideboard\n'))
     .join('\n');
 }
@@ -607,13 +631,14 @@ function splitOnce(value: string, separator: string): [string, string] | [string
   return [value.slice(0, idx), value.slice(idx + separator.length)];
 }
 
-/**
- * Detect if any entries are commanders based on section or legendary status
- */
-function detectCommanders(entries: ParsedEntry[]): string[] {
-  const explicit = entries.filter(e => e.section === 'commander').map(e => e.name);
-  if (explicit.length > 0) return explicit;
-  return [];
+function clampCommanders(names: string[], warnings: string[], source: 'explicit' | 'auto'): string[] {
+  const unique = [...new Set(names)];
+  if (unique.length <= MAX_COMMANDERS) return unique;
+  const kept = unique.slice(0, MAX_COMMANDERS);
+  warnings.push(source === 'explicit'
+    ? `Commander section contained ${unique.length} unique cards. Only ${kept.join(' and ')} will be treated as commanders; the rest remain in the deck.`
+    : `Auto-detected ${unique.length} possible commanders. Only ${kept.join(' and ')} will be treated as commanders; choose commanders manually if needed.`);
+  return kept;
 }
 
 /**
@@ -700,9 +725,6 @@ export async function importDecklist(
     warnings.push(...parsedLogic.warnings);
   }
 
-  // Validate color identity
-  const commanderNames = detectCommanders(entries).concat([...commanderSet]);
-
   // Check for cards not found
   for (const name of allNames) {
     if (!fetchedDefs.has(name)) {
@@ -711,15 +733,17 @@ export async function importDecklist(
   }
 
   // Auto-detect commanders: legendary creatures in main deck when no explicit commander section
-  let commanders = [...commanderSet];
+  let commanders = clampCommanders([...commanderSet], warnings, 'explicit');
   if (commanders.length === 0) {
+    const candidates: string[] = [];
     for (const [name] of mainMap) {
       const def = fetchedDefs.get(name);
       if (def && def.superTypes.includes('Legendary') &&
         (def.cardTypes.includes('Creature') || def.cardTypes.includes('Planeswalker'))) {
-        commanders.push(name);
+        candidates.push(name);
       }
     }
+    commanders = clampCommanders(candidates, warnings, 'auto');
     if (commanders.length > 0) {
       warnings.push(`Auto-detected commander${commanders.length > 1 ? 's' : ''}: ${commanders.join(', ')}`);
     }
