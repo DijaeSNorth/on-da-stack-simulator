@@ -159,12 +159,24 @@ export async function fetchCardsByNames(names: string[]): Promise<Map<string, Ca
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ identifiers: chunk.map(n => ({ name: n })) }),
       });
-      if (!res.ok) continue;
+      if (!res.ok) throw new Error(`Collection lookup failed with HTTP ${res.status}`);
       const data = await res.json();
       for (const card of data.data || []) {
         const def = scryfallToDefinition(card);
         result.set(card.name, def);
         cardCache.set(card.name.toLowerCase(), def);
+      }
+      const foundKeys = new Set([...result.keys()].map(name => name.toLowerCase()));
+      const notFoundNames = Array.isArray(data.not_found)
+        ? data.not_found.map((item: { name?: string }) => item.name).filter((name: unknown): name is string => typeof name === 'string')
+        : [];
+      const missing = [...new Set([
+        ...chunk.filter(name => !foundKeys.has(name.toLowerCase())),
+        ...notFoundNames,
+      ])];
+      for (const name of missing) {
+        const fallback = await fetchCardByName(name);
+        if (fallback) result.set(name, fallback);
       }
     } catch {
       // Fall through — partial results OK

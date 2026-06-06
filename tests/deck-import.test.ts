@@ -46,7 +46,17 @@ globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
   if (target.includes('/cards/collection')) {
     const body = JSON.parse(String(init?.body ?? '{}')) as { identifiers?: { name?: string }[] };
     const names = (body.identifiers ?? []).map(item => item.name).filter((name): name is string => Boolean(name));
-    return new Response(JSON.stringify({ data: names.map(mockScryfallCard) }), {
+    const fuzzyOnly = new Set(['Birgi, God of Storytelling', 'Expansion // Explosion']);
+    const foundNames = names.filter(name => !fuzzyOnly.has(name));
+    const notFound = names.filter(name => fuzzyOnly.has(name)).map(name => ({ name }));
+    return new Response(JSON.stringify({ data: foundNames.map(mockScryfallCard), not_found: notFound }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }
+  if (target.includes('/cards/named')) {
+    const fuzzyName = new URL(target).searchParams.get('fuzzy') ?? 'Unknown Card';
+    return new Response(JSON.stringify(mockScryfallCard(fuzzyName)), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     });
@@ -75,6 +85,17 @@ try {
     assert(!result.deck.commanders.includes('Lightning Bolt'), 'expected main spells not to become commanders');
     assert(result.deck.cards.some(card => card.name === 'Sol Ring'), 'expected main card to import into deck cards');
     assert(result.deck.sideboard.some(card => card.name === 'Pyroblast'), 'expected sideboard card to import into sideboard');
+  }
+
+  {
+    const result = await importDecklist([
+      'Deck',
+      '1 Birgi, God of Storytelling',
+      '1 Expansion // Explosion',
+      '1 Sol Ring',
+    ].join('\n'), 'Fuzzy Fallback Test');
+
+    assert(result.warnings.every(warning => !warning.includes('Birgi, God of Storytelling') && !warning.includes('Expansion // Explosion')), 'expected fuzzy fallback to prevent placeholder warnings for DFC/split names');
   }
 
   {
