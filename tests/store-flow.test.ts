@@ -83,6 +83,58 @@ const vanillaCreature: CardDefinition = {
   toughness: '1',
 };
 
+function resetCombatScenario(): { attackerId: string; blockerId: string } {
+  const game = makeGame(2);
+  const attacker = {
+    ...createCardState({ ...vanillaCreature, id: 'attacker-card', name: 'Charging Test Creature', power: '3', toughness: '3' }, 'p1', 'library'),
+    zone: 'battlefield' as const,
+    summoningSick: false,
+  };
+  const blocker = {
+    ...createCardState({ ...vanillaCreature, id: 'blocker-card', name: 'Blocking Test Creature', power: '2', toughness: '4' }, 'p2', 'library'),
+    zone: 'battlefield' as const,
+    summoningSick: false,
+  };
+
+  resetStore({
+    ...game,
+    cards: {
+      [attacker.instanceId]: attacker,
+      [blocker.instanceId]: blocker,
+    },
+    players: game.players.map(player => {
+      if (player.id === 'p1') return { ...player, battlefield: [attacker.instanceId] };
+      if (player.id === 'p2') return { ...player, battlefield: [blocker.instanceId] };
+      return player;
+    }),
+  });
+
+  useGameStore.getState().enterCombat();
+  useGameStore.getState().declareAttack(attacker.instanceId, 'p2');
+  useGameStore.getState().goToPhase('declareBlockers');
+  useGameStore.getState().declareBlock(blocker.instanceId, attacker.instanceId);
+
+  const combatState = useGameStore.getState().game;
+  assert(combatState.cards[attacker.instanceId].combatRole === 'attacker', 'expected attacker role before cleanup');
+  assert(combatState.cards[blocker.instanceId].combatRole === 'blocker', 'expected blocker role before cleanup');
+  assert(combatState.combat.attackers.length === 1, 'expected attacker assignment before cleanup');
+  assert(combatState.combat.blockers.length === 1, 'expected blocker assignment before cleanup');
+
+  return { attackerId: attacker.instanceId, blockerId: blocker.instanceId };
+}
+
+function assertCombatAssignmentsCleared(attackerId: string, blockerId: string): void {
+  const state = useGameStore.getState();
+  assert(state.game.cards[attackerId].combatRole === 'none', 'expected attacker role to clear after combat');
+  assert(state.game.cards[attackerId].attackTarget === undefined, 'expected attacker target to clear after combat');
+  assert(state.game.cards[blockerId].combatRole === 'none', 'expected blocker role to clear after combat');
+  assert((state.game.cards[blockerId].blockTarget ?? []).length === 0, 'expected blocker target to clear after combat');
+  assert(state.game.combat.attackers.length === 0, 'expected combat attackers to clear');
+  assert(state.game.combat.blockers.length === 0, 'expected combat blockers to clear');
+  assert(!state.game.combat.active, 'expected combat to be inactive');
+  assert(!state.ui.combatMode, 'expected combat UI mode to clear');
+}
+
 test('startGame draws opening hands from loaded libraries', () => {
   let game = makeGame(2);
   const cards = Array.from({ length: 10 }, (_, index) => createCardState({
@@ -176,6 +228,34 @@ test('advancePhase allows mistakes while flagging pending stack review', () => {
   const lastAction = state.game.actionLog[state.game.actionLog.length - 1];
   assert(Array.isArray(lastAction.data.reviewTypes), 'expected reviewTypes metadata on phase action');
   assert((lastAction.data.reviewTypes as string[]).includes('judge-review'), 'expected judge-review replay marker');
+});
+
+test('leaving combat by phase jump clears attacker and blocker assignments', () => {
+  const { attackerId, blockerId } = resetCombatScenario();
+
+  useGameStore.getState().goToPhase('main2');
+
+  assert(useGameStore.getState().game.phase === 'main2', 'expected jump to main2');
+  assertCombatAssignmentsCleared(attackerId, blockerId);
+});
+
+test('advancing past end of combat clears attacker and blocker assignments', () => {
+  const { attackerId, blockerId } = resetCombatScenario();
+
+  useGameStore.getState().goToPhase('endOfCombat');
+  useGameStore.getState().advancePhase();
+
+  assert(useGameStore.getState().game.phase === 'main2', 'expected end of combat to advance to main2');
+  assertCombatAssignmentsCleared(attackerId, blockerId);
+});
+
+test('advancing turn clears attacker and blocker assignments', () => {
+  const { attackerId, blockerId } = resetCombatScenario();
+
+  useGameStore.getState().advanceTurn();
+
+  assert(useGameStore.getState().game.phase === 'untap', 'expected next turn to start at untap');
+  assertCombatAssignmentsCleared(attackerId, blockerId);
 });
 
 test('screen and lobbyOpen stay synchronized', () => {

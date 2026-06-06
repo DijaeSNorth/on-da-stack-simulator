@@ -144,6 +144,39 @@ function createEmptyCombat(): CombatState {
   };
 }
 
+function isCombatPhase(phase: Phase): boolean {
+  return [
+    'beginningOfCombat',
+    'declareAttackers',
+    'declareBlockers',
+    'combatDamage',
+    'endOfCombat',
+  ].includes(phase);
+}
+
+export function clearCombatAssignments(state: GameState): GameState {
+  let g = state;
+  if (g.combat.hasMyriad && g.combat.myriadCopies.length > 0) {
+    g = exileMyriadCopies(g);
+  }
+
+  const newCards = { ...g.cards };
+  let changedCards = false;
+  for (const [id, card] of Object.entries(newCards)) {
+    if (card.combatRole !== 'none' || card.attackTarget || (card.blockTarget?.length ?? 0) > 0) {
+      newCards[id] = { ...card, combatRole: 'none', attackTarget: undefined, blockTarget: [] };
+      changedCards = true;
+    }
+  }
+
+  return {
+    ...g,
+    cards: changedCards ? newCards : g.cards,
+    combat: createEmptyCombat(),
+    lastUpdatedAt: Date.now(),
+  };
+}
+
 // ─── Action Logging ────────────────────────────────────────────────────────────
 
 export function createAction(
@@ -357,34 +390,41 @@ export function nextPhase(state: GameState): GameState {
   const currentIdx = PHASE_ORDER.indexOf(state.phase);
   if (currentIdx < PHASE_ORDER.length - 1) {
     const nextPh = PHASE_ORDER[currentIdx + 1];
-    return {
+    const nextState = {
       ...state,
       phase: nextPh,
       priorityPlayerId: state.activePlayerId,
       lastUpdatedAt: Date.now(),
     };
+    return isCombatPhase(state.phase) && !isCombatPhase(nextPh)
+      ? clearCombatAssignments(nextState)
+      : nextState;
   }
   // End of turn — advance to next player
   return nextTurn(state);
 }
 
 export function setPhase(state: GameState, phase: Phase): GameState {
-  return {
+  const nextState = {
     ...state,
     phase,
     priorityPlayerId: state.activePlayerId,
     lastUpdatedAt: Date.now(),
   };
+  return isCombatPhase(state.phase) && !isCombatPhase(phase)
+    ? clearCombatAssignments(nextState)
+    : nextState;
 }
 
 export function nextTurn(state: GameState): GameState {
+  const baseState = clearCombatAssignments(state);
   const playerCount = state.players.length;
   const currentActiveIdx = state.players.findIndex(p => p.id === state.activePlayerId);
   const nextActiveIdx = (currentActiveIdx + 1) % playerCount;
   const nextPlayer = state.players[nextActiveIdx];
 
   // Untap all permanents for new active player
-  const newCards = { ...state.cards };
+  const newCards = { ...baseState.cards };
   for (const [id, card] of Object.entries(newCards)) {
     if (card.controllerId === nextPlayer.id && card.zone === 'battlefield') {
       newCards[id] = { ...card, tapped: false, summoningSick: false };
@@ -398,7 +438,7 @@ export function nextTurn(state: GameState): GameState {
   }));
 
   return {
-    ...state,
+    ...baseState,
     players: newPlayers,
     cards: newCards,
     turn: state.turn + 1,

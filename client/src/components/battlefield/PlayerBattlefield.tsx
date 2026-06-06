@@ -155,6 +155,7 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
       <div
         key={card.instanceId}
         data-testid={`card-battlefield-${card.instanceId}`}
+        data-card-instance={card.instanceId}
         style={{
           position: 'relative',
           cursor: isLocal ? 'grab' : isActiveAttacker ? 'crosshair' : 'pointer',

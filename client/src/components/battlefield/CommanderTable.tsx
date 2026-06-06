@@ -1,9 +1,173 @@
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import { PlayerBattlefield } from './PlayerBattlefield';
 import { DragCombatProvider, useDragCombatContext } from '../../hooks/DragCombatContext';
 import { TriggerQueuePanel } from '../triggers/TriggerQueuePanel';
 import { CardImage } from '../cards/CardImage';
 import type { GameState, Player, StackObject } from '../../types/game';
+
+type CombatArrow = {
+  id: string;
+  kind: 'attack' | 'block';
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  label: string;
+};
+
+function findDataElement(root: HTMLElement, attr: string, value: string): HTMLElement | null {
+  const nodes = Array.from(root.querySelectorAll<HTMLElement>(`[${attr}]`));
+  return nodes.find(node => node.getAttribute(attr) === value) ?? null;
+}
+
+function getElementCenter(element: HTMLElement, rootRect: DOMRect): { x: number; y: number } {
+  const rect = element.getBoundingClientRect();
+  return {
+    x: rect.left - rootRect.left + rect.width / 2,
+    y: rect.top - rootRect.top + rect.height / 2,
+  };
+}
+
+function CombatArrowOverlay() {
+  const game = useGameStore(s => s.game);
+  const overlayRef = useRef<SVGSVGElement | null>(null);
+  const [arrows, setArrows] = useState<CombatArrow[]>([]);
+  const signature = useMemo(() => {
+    const attackers = game.combat.attackers.map(a => `${a.instanceId}:${a.targetPlayerId}`).join('|');
+    const blockers = game.combat.blockers.map(b => `${b.instanceId}:${b.blockedAttacker}`).join('|');
+    return `${game.phase}:${game.combat.active}:${attackers}:${blockers}`;
+  }, [game.combat.active, game.combat.attackers, game.combat.blockers, game.phase]);
+
+  useEffect(() => {
+    let frame = 0;
+    const update = () => {
+      const svg = overlayRef.current;
+      const root = svg?.closest('[data-testid="commander-table"]') as HTMLElement | null;
+      if (!svg || !root || game.combat.attackers.length === 0) {
+        setArrows([]);
+        return;
+      }
+
+      const rootRect = root.getBoundingClientRect();
+      const next: CombatArrow[] = [];
+
+      for (const attacker of game.combat.attackers) {
+        const attackerEl = findDataElement(root, 'data-card-instance', attacker.instanceId);
+        const targetEl = findDataElement(root, 'data-player-slot', attacker.targetPlayerId);
+        const attackerCard = game.cards[attacker.instanceId];
+        const targetPlayer = game.players.find(p => p.id === attacker.targetPlayerId);
+        if (attackerEl && targetEl) {
+          const from = getElementCenter(attackerEl, rootRect);
+          const to = getElementCenter(targetEl, rootRect);
+          next.push({
+            id: `attack-${attacker.instanceId}-${attacker.targetPlayerId}`,
+            kind: 'attack',
+            x1: from.x,
+            y1: from.y,
+            x2: to.x,
+            y2: to.y,
+            label: `${attackerCard?.definition.name ?? 'Attacker'} -> ${targetPlayer?.name ?? 'player'}`,
+          });
+        }
+      }
+
+      for (const blocker of game.combat.blockers) {
+        const blockerEl = findDataElement(root, 'data-card-instance', blocker.instanceId);
+        const attackerEl = findDataElement(root, 'data-card-instance', blocker.blockedAttacker);
+        const blockerCard = game.cards[blocker.instanceId];
+        const attackerCard = game.cards[blocker.blockedAttacker];
+        if (blockerEl && attackerEl) {
+          const from = getElementCenter(blockerEl, rootRect);
+          const to = getElementCenter(attackerEl, rootRect);
+          next.push({
+            id: `block-${blocker.instanceId}-${blocker.blockedAttacker}`,
+            kind: 'block',
+            x1: from.x,
+            y1: from.y,
+            x2: to.x,
+            y2: to.y,
+            label: `${blockerCard?.definition.name ?? 'Blocker'} blocks ${attackerCard?.definition.name ?? 'attacker'}`,
+          });
+        }
+      }
+
+      setArrows(next);
+    };
+
+    const schedule = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(update);
+    };
+    schedule();
+    window.addEventListener('resize', schedule);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('resize', schedule);
+    };
+  }, [game.cards, game.combat.attackers, game.combat.blockers, game.players, signature]);
+
+  if (game.combat.attackers.length === 0) return null;
+
+  return (
+    <svg
+      ref={overlayRef}
+      data-testid="combat-arrow-overlay"
+      style={{
+        position: 'absolute',
+        inset: 0,
+        zIndex: 12,
+        pointerEvents: 'none',
+        overflow: 'visible',
+      }}
+      aria-hidden="true"
+    >
+      <defs>
+        <marker id="attack-arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#ef4444" />
+        </marker>
+        <marker id="block-arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+          <path d="M0,0 L8,4 L0,8 Z" fill="#60a5fa" />
+        </marker>
+      </defs>
+      {arrows.map(arrow => {
+        const attack = arrow.kind === 'attack';
+        const midX = (arrow.x1 + arrow.x2) / 2;
+        const midY = (arrow.y1 + arrow.y2) / 2;
+        return (
+          <g key={arrow.id}>
+            <line
+              x1={arrow.x1}
+              y1={arrow.y1}
+              x2={arrow.x2}
+              y2={arrow.y2}
+              stroke={attack ? '#ef4444' : '#60a5fa'}
+              strokeWidth={attack ? 3 : 2.5}
+              strokeDasharray={attack ? undefined : '7 5'}
+              strokeLinecap="round"
+              markerEnd={`url(#${attack ? 'attack-arrowhead' : 'block-arrowhead'})`}
+              opacity={attack ? 0.82 : 0.9}
+            />
+            <text
+              x={midX}
+              y={midY - 6}
+              textAnchor="middle"
+              dominantBaseline="middle"
+              fill={attack ? '#fecaca' : '#bfdbfe'}
+              stroke="#020617"
+              strokeWidth={3}
+              paintOrder="stroke"
+              fontSize={9}
+              fontWeight={900}
+            >
+              {attack ? 'ATTACK' : 'BLOCK'}
+            </text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
 
 // ── Combat Summary Bar ────────────────────────────────────────────────────────
 // Shown during declareAttackers, declareBlockers, combatDamage, endOfCombat
@@ -59,8 +223,10 @@ function CombatSummaryBar() {
           {combat.attackers.map(atk => {
             const card = game.cards[atk.instanceId];
             const target = game.players.find(p => p.id === atk.targetPlayerId);
-            const blocker = combat.blockers.find(b => b.blockedAttacker === atk.instanceId);
-            const blockerCard = blocker ? game.cards[blocker.instanceId] : null;
+            const blockerCards = combat.blockers
+              .filter(b => b.blockedAttacker === atk.instanceId)
+              .map(b => game.cards[b.instanceId])
+              .filter(Boolean);
 
             return (
               <div
@@ -91,17 +257,14 @@ function CombatSummaryBar() {
                   {target?.name ?? '?'}
                 </span>
                 {/* Blocker info */}
-                {blockerCard ? (
+                {blockerCards.length > 0 ? (
                   <>
                     <span style={{ color: '#3b82f6', fontSize: 11 }}>🛡</span>
                     <span style={{ color: '#93c5fd', fontWeight: 600, fontSize: 10 }}>
-                      {blockerCard.definition.name}
+                      {blockerCards.map(blockerCard =>
+                        `${blockerCard.definition.name}${blockerCard.definition.power !== undefined ? ` ${blockerCard.definition.power}/${blockerCard.definition.toughness}` : ''}`
+                      ).join(', ')}
                     </span>
-                    {blockerCard.definition.power !== undefined && (
-                      <span style={{ color: '#60a5fa', fontSize: 9 }}>
-                        {blockerCard.definition.power}/{blockerCard.definition.toughness}
-                      </span>
-                    )}
                   </>
                 ) : phase !== 'declareAttackers' ? (
                   <span style={{ color: '#f59e0b', fontSize: 9, fontStyle: 'italic' }}>unblocked</span>
@@ -313,6 +476,7 @@ function CommanderTableInner() {
     return (
       <div
         key={player.id}
+        data-player-slot={player.id}
         style={{
           flex: 1,
           background: isActive(player)
@@ -394,6 +558,7 @@ function CommanderTableInner() {
 
       {/* Combat summary — visible whenever combat phases are active */}
       <CombatSummaryBar />
+      <CombatArrowOverlay />
 
       <BattlefieldStackShowcase />
 

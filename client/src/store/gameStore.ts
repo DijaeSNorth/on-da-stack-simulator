@@ -12,7 +12,7 @@ import {
   addTrigger, acknowledgeTrigger, drawCards, discardCard, createToken,
   checkStateBasedActions, declareAttacker, declareBlocker, undoAction,
   loadDeckIntoPlayer, createDefaultGameConfig, createCardState,
-  triggerMyriad, exileMyriadCopies,
+  triggerMyriad, clearCombatAssignments,
 } from '../engine/gameEngine';
 import {
   checkCastLegality, checkTapLegality, checkAttackLegality, checkBlockLegality,
@@ -1115,14 +1115,15 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     );
     g = { ...g, actionLog: [...g.actionLog, action] };
     const mods = filterAssistantFlags(getActiveModifiers(g), get().ui);
-    set({ game: g, ui: withAssistantMessages(withAssistantMessages(get().ui, g, phaseFlags), g, mods) });
+    const baseUi = { ...get().ui, combatMode: g.combat.active };
+    set({ game: g, ui: withAssistantMessages(withAssistantMessages(baseUi, g, phaseFlags), g, mods) });
   },
 
   goToPhase: (phase) => {
     let g = get().game;
     g = setPhase(g, phase);
     const action = createAction(g, g.activePlayerId, 'CHANGE_PHASE', `Jump to: ${phase}`);
-    set({ game: { ...g, actionLog: [...g.actionLog, action] } });
+    set({ game: { ...g, actionLog: [...g.actionLog, action] }, ui: { ...get().ui, combatMode: g.combat.active } });
   },
 
   advanceTurn: () => {
@@ -1130,7 +1131,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     g = nextTurn(g);
     const active = g.players.find(p => p.id === g.activePlayerId);
     const action = createAction(g, g.activePlayerId, 'CHANGE_PHASE', `Turn ${g.turn} — ${active?.name || '?'}`);
-    set({ game: { ...g, actionLog: [...g.actionLog, action] } });
+    set({ game: { ...g, actionLog: [...g.actionLog, action] }, ui: { ...get().ui, combatMode: false } });
   },
 
   passPriority: () => {
@@ -1254,6 +1255,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
   enterCombat: () => {
     let g = get().game;
+    g = clearCombatAssignments(g);
     g = {
       ...g,
       combat: { ...g.combat, active: true, attackingPlayerId: g.activePlayerId, attackers: [], blockers: [] },
@@ -1324,8 +1326,13 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const check = checkBlockLegality(g, blockerInstanceId, attackerInstanceId);
     const flags = filterAssistantFlags(check.flags, get().ui);
     g = declareBlocker(g, blockerInstanceId, attackerInstanceId);
+    const blocker = g.cards[blockerInstanceId];
+    const attacker = g.cards[attackerInstanceId];
     const action = createAction(g, g.activePlayerId, 'DECLARE_BLOCKER',
-      `Block declared`, [blockerInstanceId, attackerInstanceId], addReviewData({}, flags), flags);
+      `${blocker?.definition.name ?? 'Blocker'} blocks ${attacker?.definition.name ?? 'attacker'}`,
+      [blockerInstanceId, attackerInstanceId],
+      addReviewData({ blockerInstanceId, attackerInstanceId }, flags),
+      flags);
     g = { ...g, actionLog: [...g.actionLog, action] };
     set({ game: g, ui: withAssistantMessages(get().ui, g, flags) });
   },
@@ -1495,21 +1502,9 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         g.combat.myriadCopies.map(m => m.copyId),
       );
       g = { ...g, actionLog: [...g.actionLog, myriadLog] };
-      g = exileMyriadCopies(g);
     }
 
-    // Clear combat roles from remaining cards
-    const newCards = { ...g.cards };
-    for (const [id, card] of Object.entries(newCards)) {
-      if (card.combatRole !== 'none') {
-        newCards[id] = { ...card, combatRole: 'none', attackTarget: undefined, blockTarget: [] };
-      }
-    }
-    g = {
-      ...g,
-      cards: newCards,
-      combat: { active: false, attackingPlayerId: '', attackers: [], blockers: [], combatPhase: 'none', hasMyriad: false, myriadCopies: [] },
-    };
+    g = clearCombatAssignments(g);
     g = setPhase(g, 'main2');
     set({ game: g, ui: { ...get().ui, combatMode: false } });
   },
