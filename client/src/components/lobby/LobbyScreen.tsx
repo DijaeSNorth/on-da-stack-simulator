@@ -40,7 +40,7 @@ function shouldShowDeckImportPanel(mode: GameMode): boolean {
 const HOUSE_RULE_PRESETS = [
   { id: 'free_mulligan', name: 'Free Mulligan', description: 'First mulligan is free (no card loss)' },
   { id: 'no_commander_tax', name: 'No Commander Tax', description: 'Commanders don\'t cost more to cast from command zone' },
-  { id: 'extra_land', name: 'Extra Land Drop', description: 'Each player may play an additional land per turn' },
+  { id: 'allow_banned_cards', name: 'Allow Banned Cards', description: 'Decks may include cards normally banned in Commander' },
   { id: 'shared_pool', name: 'Rule Zero Session', description: 'Custom power level agreement in effect' },
 ];
 
