@@ -33,11 +33,12 @@ export function PracticeDummyPanel() {
       <button
         type="button"
         data-testid="btn-add-practice-dummy"
+        title="Add a practice dummy with two creature cards"
         disabled={dummies.length >= MAX_DUMMIES}
         onClick={store.addPracticeDummy}
         style={buttonStyle(dummies.length >= MAX_DUMMIES)}
       >
-        Add
+        Add +2
       </button>
       {dummies.map(dummy => (
         <button
@@ -54,7 +55,7 @@ export function PracticeDummyPanel() {
             background: '#450a0a66',
           }}
         >
-          {dummy.name.replace('Practice Dummy ', 'D')}
+          {dummy.name.replace('Practice Dummy ', 'D')} ({dummy.battlefield.length})
         </button>
       ))}
     </div>

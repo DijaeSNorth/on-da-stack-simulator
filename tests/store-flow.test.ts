@@ -241,6 +241,14 @@ test('solo practice dummies can be created and removed without leaving solo deck
   assert(state.game.config.playerCount === 1, 'expected solo config to remain solo after adding dummies');
   assert(dummies.length === 2, `expected 2 practice dummies, got ${dummies.length}`);
   assert(dummies.every(dummy => dummy.life === config.startingLife), 'expected dummies to start at configured life');
+  assert(dummies.every(dummy => dummy.battlefield.length === 2), 'expected each dummy to start with 2 creature cards');
+  for (const dummy of dummies) {
+    const dummyCards = dummy.battlefield.map(id => state.game.cards[id]);
+    assert(dummyCards.every(Boolean), 'expected dummy battlefield cards to exist in game card state');
+    assert(dummyCards.every(card => card.ownerId === dummy.id && card.controllerId === dummy.id), 'expected dummy creatures to be owned and controlled by the dummy');
+    assert(dummyCards.every(card => card.zone === 'battlefield'), 'expected dummy creatures to start on battlefield');
+    assert(dummyCards.every(card => card.definition.cardTypes.includes('Creature')), 'expected dummy permanents to be creatures');
+  }
 
   useGameStore.getState().addPracticeDummy();
   useGameStore.getState().addPracticeDummy();
@@ -248,10 +256,12 @@ test('solo practice dummies can be created and removed without leaving solo deck
   dummies = state.game.players.filter(player => player.id.startsWith('practice-dummy-'));
   assert(dummies.length === 3, `expected dummy cap of 3, got ${dummies.length}`);
 
-  useGameStore.getState().removePracticeDummy(dummies[0].id);
+  const removedDummyId = dummies[0].id;
+  useGameStore.getState().removePracticeDummy(removedDummyId);
   state = useGameStore.getState();
   dummies = state.game.players.filter(player => player.id.startsWith('practice-dummy-'));
   assert(dummies.length === 2, `expected 2 dummies after removal, got ${dummies.length}`);
+  assert(Object.values(state.game.cards).every(card => card.ownerId !== removedDummyId && card.controllerId !== removedDummyId), 'expected removed dummy cards to be cleaned from card state');
   assert(state.game.players.some(player => player.id === 'p1'), 'expected solo player to remain');
 });
 

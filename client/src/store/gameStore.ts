@@ -3,7 +3,7 @@ import { create } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import type {
   GameState, Player, CardState, Phase, StackObject, TriggerItem,
-  AssistantFlag, Deck, GameConfig, ActionRecord, PlayerAvatarImage
+  AssistantFlag, Deck, GameConfig, ActionRecord, PlayerAvatarImage, CardDefinition
 } from '../types/game';
 import {
   createEmptyGameState, createPlayer, createAction, moveCard, tapCard,
@@ -11,7 +11,7 @@ import {
   nextPhase, setPhase, nextTurn, pushToStack, resolveTopStack,
   addTrigger, acknowledgeTrigger, drawCards, discardCard, createToken,
   checkStateBasedActions, declareAttacker, declareBlocker, undoAction,
-  loadDeckIntoPlayer, createDefaultGameConfig,
+  loadDeckIntoPlayer, createDefaultGameConfig, createCardState,
   triggerMyriad, exileMyriadCopies,
 } from '../engine/gameEngine';
 import {
@@ -435,6 +435,58 @@ const COLOR_ORDER = ['W', 'U', 'B', 'R', 'G', 'C'] as const;
 const PRACTICE_DUMMY_PREFIX = 'practice-dummy-';
 const MAX_PRACTICE_DUMMIES = 3;
 
+const PRACTICE_DUMMY_CREATURES: Array<Partial<CardDefinition> & { name: string; power: string; toughness: string }> = [
+  {
+    id: 'practice-dummy-sparring-guard',
+    name: 'Sparring Guard',
+    typeLine: 'Creature - Dummy Soldier',
+    subTypes: ['Dummy', 'Soldier'],
+    oracleText: 'A simple practice body for combat math and targeting drills.',
+    power: '2',
+    toughness: '3',
+  },
+  {
+    id: 'practice-dummy-reach-sentinel',
+    name: 'Reach Sentinel',
+    typeLine: 'Creature - Dummy Archer',
+    subTypes: ['Dummy', 'Archer'],
+    oracleText: 'Reach',
+    keywords: ['Reach'],
+    power: '1',
+    toughness: '4',
+  },
+];
+
+function createPracticeDummyCreatures(playerId: string, dummyNumber: number): CardState[] {
+  return PRACTICE_DUMMY_CREATURES.map((template, index) => {
+    const definition: CardDefinition = {
+      id: `${template.id}-${dummyNumber}-${index + 1}`,
+      name: template.name,
+      cmc: 0,
+      typeLine: template.typeLine ?? 'Creature - Dummy',
+      superTypes: [],
+      cardTypes: ['Creature'],
+      subTypes: template.subTypes ?? ['Dummy'],
+      oracleText: template.oracleText ?? '',
+      power: template.power,
+      toughness: template.toughness,
+      colors: template.colors ?? [],
+      colorIdentity: template.colorIdentity ?? [],
+      keywords: template.keywords ?? [],
+      isDoubleFaced: false,
+      legalities: {},
+    };
+    const card = createCardState(definition, playerId, 'library');
+    return {
+      ...card,
+      zone: 'battlefield',
+      summoningSick: true,
+      visualX: 28 + index * 22,
+      visualY: 28 + dummyNumber * 10,
+    };
+  });
+}
+
 function handSortKey(card: CardState): string {
   const typeIndex = HAND_TYPE_ORDER.findIndex(type => card.definition.cardTypes.includes(type));
   const safeType = typeIndex === -1 ? HAND_TYPE_ORDER.length : typeIndex;
@@ -652,6 +704,14 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       PLAYER_COLORS[(current.players.length + 1) % PLAYER_COLORS.length] ?? '#f59e0b',
       current.config,
     );
+    const dummyCreatures = createPracticeDummyCreatures(dummy.id, index);
+    const dummyCreatureIds = dummyCreatures.map(card => card.instanceId);
+    const dummyCreatureDefinitions = Object.fromEntries(
+      dummyCreatures.map(card => [card.definitionId, card.definition])
+    );
+    const dummyCreatureCards = Object.fromEntries(
+      dummyCreatures.map(card => [card.instanceId, card])
+    );
     const nextGame = {
       ...current,
       players: [...current.players, {
@@ -660,11 +720,14 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         connected: true,
         isActive: false,
         hasPriority: false,
+        battlefield: dummyCreatureIds,
       }],
+      cards: { ...current.cards, ...dummyCreatureCards },
+      definitions: { ...current.definitions, ...dummyCreatureDefinitions },
       lastUpdatedAt: Date.now(),
     };
     const actorId = current.activePlayerId || get().localPlayerId || current.players[0]?.id || dummy.id;
-    const action = createAction(nextGame, actorId, 'OTHER', `${dummy.name} added for solo practice.`);
+    const action = createAction(nextGame, actorId, 'OTHER', `${dummy.name} added for solo practice with ${dummyCreatureIds.length} creature cards.`);
     set({ game: { ...nextGame, actionLog: [...nextGame.actionLog, action] } });
   },
 
