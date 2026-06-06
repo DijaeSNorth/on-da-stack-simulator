@@ -2,6 +2,12 @@ import type { CardDefinition, CustomCardDefinition, CustomTrigger, Deck, DeckLog
 
 export type DeckBuilderSection = 'commander' | 'main' | 'sideboard' | 'maybeboard';
 
+export interface DeckBuilderRow {
+  section: DeckBuilderSection;
+  name: string;
+  count: number;
+}
+
 export interface DeckBuilderStats {
   totalCards: number;
   commanderCount: number;
@@ -74,6 +80,18 @@ export function getDeckEntryCount(deck: Deck, section: DeckBuilderSection, rawNa
   if (section === 'commander') return deck.commanders.some(card => card.toLowerCase() === name) ? 1 : 0;
   const list = section === 'main' ? deck.cards : deck[section];
   return list.find(entry => entry.name.toLowerCase() === name)?.count ?? 0;
+}
+
+export function getDeckBuilderRows(deck: Deck): DeckBuilderRow[] {
+  const commanderNames = new Set(deck.commanders.map(name => name.toLowerCase()));
+  return [
+    ...deck.commanders.map(name => ({ section: 'commander' as const, name, count: 1 })),
+    ...deck.cards
+      .filter(card => !commanderNames.has(card.name.toLowerCase()))
+      .map(card => ({ section: 'main' as const, name: card.name, count: card.count })),
+    ...deck.sideboard.map(card => ({ section: 'sideboard' as const, name: card.name, count: card.count })),
+    ...deck.maybeboard.map(card => ({ section: 'maybeboard' as const, name: card.name, count: card.count })),
+  ];
 }
 
 export function setCardNote(deck: Deck, cardName: string, note: string): Deck {

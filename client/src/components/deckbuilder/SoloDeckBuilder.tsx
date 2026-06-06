@@ -17,6 +17,7 @@ import {
   adjustDeckEntry,
   createBlankDeck,
   customCardFromDefinition,
+  getDeckBuilderRows,
   removeCardLogic,
   serializeDeckLogic,
   setCardNote,
@@ -66,15 +67,7 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
   const [saveLimitOpen, setSaveLimitOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const cardRows = useMemo(() => {
-    const rows = [
-      ...draft.commanders.map(name => ({ section: 'commander' as const, name, count: 1 })),
-      ...draft.cards.map(card => ({ section: 'main' as const, name: card.name, count: card.count })),
-      ...draft.sideboard.map(card => ({ section: 'sideboard' as const, name: card.name, count: card.count })),
-      ...draft.maybeboard.map(card => ({ section: 'maybeboard' as const, name: card.name, count: card.count })),
-    ];
-    return rows;
-  }, [draft]);
+  const cardRows = useMemo(() => getDeckBuilderRows(draft), [draft]);
   const mainCount = draft.cards.reduce((sum, card) => sum + card.count, 0);
   const logicSummary = selectedCard ? summarizeCardLogic(draft, selectedCard) : undefined;
   const stats = useMemo(() => analyzeDeckBuilderStats(draft), [draft]);

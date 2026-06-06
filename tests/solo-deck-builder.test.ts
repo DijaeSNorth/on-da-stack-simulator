@@ -11,6 +11,7 @@ import {
   customCardFromDefinition,
   adjustDeckEntry,
   createBlankDeck,
+  getDeckBuilderRows,
   removeCardLogic,
   serializeDeckLogic,
   setCardNote,
@@ -33,6 +34,10 @@ deck = setDeckEntryCount(deck, 'sideboard', 'Nature\'s Claim', 2);
 
 assert(deck.commanders.join(',') === 'Muldrotha, the Gravetide', 'expected commander to be tracked');
 assert(deck.cards.some(card => card.name === 'Muldrotha, the Gravetide' && card.count === 1), 'expected commander to also be in deck cards');
+const visibleRows = getDeckBuilderRows(deck);
+const visibleCommanderRows = visibleRows.filter(row => row.name === 'Muldrotha, the Gravetide');
+assert(visibleCommanderRows.length === 1, 'expected commander to render only once in deck builder rows');
+assert(visibleCommanderRows[0].section === 'commander', 'expected visible commander row to stay in commander section');
 assert(deck.cards.some(card => card.name === 'Forest' && card.count === 6), 'expected card count adjustment');
 assert(deck.sideboard[0].name === 'Nature\'s Claim', 'expected sideboard entry');
 
