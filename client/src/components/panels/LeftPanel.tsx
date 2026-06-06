@@ -4,10 +4,55 @@ import { TutorialTooltip } from '../tutorial/TutorialTooltip';
 import { TOOLTIPS } from '../../store/tutorialStore';
 import { getPhaseLabel } from '../../engine/phaseMeta';
 import { PlayerAvatar } from '../profile/PlayerAvatar';
+import type { CardState } from '../../types/game';
 
-function LifeCounter({ player, onChange }: { player: Player; onChange: (delta: number) => void }) {
+function CommanderLifeIcon({ commander }: { commander?: CardState }) {
+  const name = commander?.definition.name ?? 'Commander';
+  const imageUrl = commander?.definition.imageUrl;
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+    <div
+      data-testid={`commander-life-icon-${commander?.ownerId ?? 'empty'}`}
+      title={commander ? `${name} - commander` : 'Commander'}
+      style={{
+        width: 32,
+        height: 32,
+        borderRadius: '50%',
+        border: '2px solid #fbbf24',
+        overflow: 'hidden',
+        background: 'linear-gradient(135deg, #1f2937, #451a03)',
+        color: '#fbbf24',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        fontSize: 16,
+        fontWeight: 900,
+        flexShrink: 0,
+        boxShadow: '0 0 14px rgba(251,191,36,0.28)',
+      }}
+    >
+      {imageUrl ? (
+        <img
+          src={imageUrl}
+          alt={name}
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: 'cover',
+            objectPosition: '50% 18%',
+            display: 'block',
+          }}
+        />
+      ) : (
+        <span aria-hidden="true">C</span>
+      )}
+    </div>
+  );
+}
+
+function LifeCounter({ player, commander, onChange }: { player: Player; commander?: CardState; onChange: (delta: number) => void }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <CommanderLifeIcon commander={commander} />
       <button
         data-testid={`life-decrease-${player.id}`}
         onClick={() => onChange(-1)}
@@ -97,6 +142,7 @@ export function LeftPanel() {
           const isActive = player.id === game.activePlayerId;
           const hasPriority = player.id === game.priorityPlayerId;
           const bfCount = player.battlefield.length;
+          const commanderCard = player.commanders.map(id => game.cards[id]).find(Boolean);
           const cmdDmgEntries = Object.entries(player.commanderDamage).filter(([, v]) => v > 0);
 
           return (
@@ -147,6 +193,7 @@ export function LeftPanel() {
               {/* Life */}
               <LifeCounter
                 player={player}
+                commander={commanderCard}
                 onChange={(delta) => store.modifyPlayerLife(player.id, delta)}
               />
 

@@ -419,14 +419,35 @@ export function pushToStack(state: GameState, item: StackObject): GameState {
   };
 }
 
+function isPermanentSpell(card: CardState): boolean {
+  return card.definition.cardTypes.some(type =>
+    ['Creature', 'Artifact', 'Enchantment', 'Planeswalker', 'Land', 'Battle'].includes(type)
+  );
+}
+
 export function resolveTopStack(state: GameState): GameState {
   if (state.stack.length === 0) return state;
-  const [_resolved, ...remaining] = state.stack;
-  return {
+  const [resolved, ...remaining] = state.stack;
+  let next: GameState = {
     ...state,
     stack: remaining,
     lastUpdatedAt: Date.now(),
   };
+
+  if (resolved.sourceInstanceId) {
+    const card = next.cards[resolved.sourceInstanceId];
+    if (card?.zone === 'stack') {
+      next = moveCard(
+        next,
+        resolved.sourceInstanceId,
+        isPermanentSpell(card) ? 'battlefield' : 'graveyard',
+        resolved.controllerId,
+      );
+      next = { ...next, stack: remaining, lastUpdatedAt: Date.now() };
+    }
+  }
+
+  return next;
 }
 
 // ─── Trigger Queue ────────────────────────────────────────────────────────────

@@ -10,6 +10,7 @@ import {
   createDefaultGameConfig,
   createEmptyGameState,
   createPlayer,
+  resolveTopStack,
 } from '../client/src/engine/gameEngine';
 import { parseCommand } from '../client/src/engine/nlpParser';
 import type { CardDefinition, GameState } from '../client/src/types/game';
@@ -236,6 +237,44 @@ test('commander casts are tagged for dramatic table feedback', () => {
   assert(action.data.commanderCastNumber === 1, 'expected first commander cast number');
   assert(action.data.commanderTax === 0, 'expected zero commander tax on first cast');
   assert(player.commanderCastCount[commander.instanceId] === 1, 'expected commander tax count to increment');
+});
+
+test('resolving a commander spell puts it onto the battlefield as a permanent', () => {
+  const game = makeGame(2);
+  const commander = createCardState({
+    ...vanillaCreature,
+    id: 'cmdr-resolve-card',
+    name: 'Atraxa, Praetors Voice',
+    cmc: 4,
+    colors: ['G', 'W', 'U', 'B'],
+    colorIdentity: ['G', 'W', 'U', 'B'],
+  }, 'p1', 'stack', true);
+
+  const next = resolveTopStack({
+    ...game,
+    stack: [{
+      id: 'stack-cmdr',
+      type: 'spell',
+      sourceInstanceId: commander.instanceId,
+      sourceDefinitionId: commander.definitionId,
+      sourceName: commander.definition.name,
+      controllerId: 'p1',
+      text: commander.definition.oracleText,
+      timestamp: Date.now(),
+    }],
+    cards: { [commander.instanceId]: commander },
+    players: game.players.map(player =>
+      player.id === 'p1'
+        ? { ...player, commanders: [commander.instanceId] }
+        : player
+    ),
+  });
+
+  const player = next.players.find(p => p.id === 'p1')!;
+  assert(next.stack.length === 0, 'expected stack to be empty after resolution');
+  assert(next.cards[commander.instanceId].zone === 'battlefield', 'expected commander zone battlefield');
+  assert(player.battlefield.includes(commander.instanceId), 'expected commander in player battlefield list');
+  assert(player.commanders.includes(commander.instanceId), 'expected commander identity to stay tracked');
 });
 
 test('hand can be manually reordered and sorted by workflow command', () => {
