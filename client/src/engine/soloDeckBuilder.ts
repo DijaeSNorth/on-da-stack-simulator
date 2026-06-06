@@ -180,6 +180,9 @@ export function customCardFromDefinition(definition: CardDefinition): CustomCard
     colorIdentity: definition.colorIdentity,
     keywords: definition.keywords,
     imageUrl: definition.imageUrl,
+    imageUrlBack: definition.imageUrlBack,
+    isDoubleFaced: definition.isDoubleFaced,
+    faces: definition.faces,
   };
 }
 

@@ -628,6 +628,30 @@ function TriggersTab({ embedded = false }: { embedded?: boolean }) {
                     onClick={() => store.ackTrigger(t.id)}
                     style={{ fontSize: 9, padding: '2px 8px', background: '#78350f', color: '#fcd34d', border: 'none', borderRadius: 3, cursor: 'pointer', fontWeight: 700 }}
                   >{i === 0 ? 'Resolve ↵' : 'Resolve'}</button>
+                  {t.effect?.kind === 'vialSmasherDamage' && (
+                    <button
+                      data-testid={`btn-trigger-shortcut-panel-${t.id}`}
+                      onClick={() => store.applyTriggerShortcut(t.id)}
+                      title="Shortcut: choose a random opponent and apply Vial Smasher damage"
+                      style={{ fontSize: 8, padding: '2px 6px', background: '#123642', color: '#67e8f9', border: '1px solid #0e7490', borderRadius: 3, cursor: 'pointer', fontWeight: 800 }}
+                    >Random Damage</button>
+                  )}
+                  {t.effect?.kind === 'poisonFromCombatDamage' && (
+                    <button
+                      data-testid={`btn-trigger-shortcut-panel-${t.id}`}
+                      onClick={() => store.applyTriggerShortcut(t.id)}
+                      title="Shortcut: apply poison counters from combat damage"
+                      style={{ fontSize: 8, padding: '2px 6px', background: '#1f2a10', color: '#bef264', border: '1px solid #4d7c0f', borderRadius: 3, cursor: 'pointer', fontWeight: 800 }}
+                    >Apply Poison</button>
+                  )}
+                  {t.effect?.kind === 'createToken' && (
+                    <button
+                      data-testid={`btn-trigger-shortcut-panel-${t.id}`}
+                      onClick={() => store.applyTriggerShortcut(t.id)}
+                      title={`Shortcut: create ${t.effect.token.name} token${t.effect.count === 1 ? '' : 's'}`}
+                      style={{ fontSize: 8, padding: '2px 6px', background: '#2e1f10', color: '#fdba74', border: '1px solid #c2410c', borderRadius: 3, cursor: 'pointer', fontWeight: 800 }}
+                    >Create Token</button>
+                  )}
                   <button onClick={() => store.moveTriggerUp(t.id)} disabled={i === 0}
                     style={{ fontSize: 9, padding: '2px 5px', background: 'transparent', color: i === 0 ? '#334155' : '#64748b', border: '1px solid #334155', borderRadius: 3, cursor: i === 0 ? 'default' : 'pointer' }}>↑</button>
                   <button onClick={() => store.moveTriggerDown(t.id)} disabled={i === pending.length - 1}

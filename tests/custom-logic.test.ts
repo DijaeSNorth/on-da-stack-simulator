@@ -11,7 +11,10 @@
 import { detectDeckUrl, fetchDecklistFromUrl, parseDeckLogicFile } from '../client/src/engine/deckImport';
 import {
   detectAttackTriggers,
+  detectCastTriggers,
+  detectCombatDamageTriggers,
   detectETBTriggers,
+  detectUpkeepTriggers,
   getActiveModifiers,
 } from '../client/src/engine/assistantEngine';
 import { createDefaultGameConfig, createEmptyGameState, createPlayer } from '../client/src/engine/gameEngine';
@@ -124,6 +127,125 @@ console.log('=== Custom logic line format ===');
   assert(result.logicFile?.cardNotes['Custom Commander'] === 'Track copied spells.', 'Expected line note');
 }
 
+console.log('=== Vial-style cast trigger detection ===');
+{
+  const vial = makeCard(makeDef({
+    name: 'Vial Smasher the Fierce',
+    oracleText: 'Whenever you cast your first spell each turn, choose an opponent at random. Vial Smasher the Fierce deals damage equal to that spell\'s mana value to that player or a planeswalker that player controls.',
+    cmc: 3,
+  }));
+  const spell = makeCard(makeDef({
+    name: 'Treasure Cruise',
+    typeLine: 'Sorcery',
+    cardTypes: ['Sorcery'],
+    oracleText: 'Draw three cards.',
+    cmc: 8,
+  }), 'stack');
+  const state = makeState([vial, spell]);
+
+  const firstSpellTriggers = detectCastTriggers(state, 'p1', spell, 1);
+  assert(firstSpellTriggers.length === 1, 'Expected Vial to trigger on first spell');
+  assert(firstSpellTriggers[0].triggerType === 'cast', 'Expected cast trigger type');
+  assert(firstSpellTriggers[0].effect?.kind === 'vialSmasherDamage', 'Expected Vial shortcut effect metadata');
+  assert(firstSpellTriggers[0].effect?.manaValue === 8, 'Expected Vial damage to use spell mana value');
+
+  const secondSpellTriggers = detectCastTriggers(state, 'p1', spell, 2);
+  assert(secondSpellTriggers.length === 0, 'Expected Vial not to trigger on second spell in same turn');
+}
+
+console.log('=== Difficult cast trigger reminder patterns ===');
+{
+  const rhystic = makeCard(makeDef({
+    name: 'Rhystic Study',
+    typeLine: 'Enchantment',
+    cardTypes: ['Enchantment'],
+    oracleText: 'Whenever an opponent casts a spell, you may draw a card unless that player pays {1}.',
+    cmc: 3,
+  }));
+  const remora = makeCard(makeDef({
+    name: 'Mystic Remora',
+    typeLine: 'Enchantment',
+    cardTypes: ['Enchantment'],
+    oracleText: 'Whenever an opponent casts a noncreature spell, you may draw a card unless that player pays {4}.',
+    cmc: 1,
+  }));
+  const talrand = makeCard(makeDef({
+    name: 'Talrand, Sky Summoner',
+    oracleText: 'Whenever you cast an instant or sorcery spell, create a 2/2 blue Drake creature token with flying.',
+    cmc: 4,
+  }));
+  const stormKiln = makeCard(makeDef({
+    name: 'Storm-Kiln Artist',
+    oracleText: 'Magecraft - Whenever you cast or copy an instant or sorcery spell, create a Treasure token.',
+    cmc: 4,
+  }));
+  const swiftspear = makeCard(makeDef({
+    name: 'Monastery Swiftspear',
+    oracleText: 'Haste\nProwess (Whenever you cast a noncreature spell, this creature gets +1/+1 until end of turn.)',
+    cmc: 1,
+  }));
+  const joriEn = makeCard(makeDef({
+    name: 'Jori En, Ruin Diver',
+    oracleText: 'Whenever you cast your second spell each turn, draw a card.',
+    cmc: 3,
+  }));
+  const ledger = makeCard(makeDef({
+    name: 'Ledger Shredder',
+    oracleText: 'Flying\nWhenever a player casts their second spell each turn, Ledger Shredder connives.',
+    cmc: 2,
+  }));
+  const opponentInstant = {
+    ...makeCard(makeDef({
+      name: 'Counterspell',
+      typeLine: 'Instant',
+      cardTypes: ['Instant'],
+      oracleText: 'Counter target spell.',
+      cmc: 2,
+    }), 'stack'),
+    ownerId: 'p2',
+    controllerId: 'p2',
+  };
+  const ownInstant = makeCard(makeDef({
+    name: 'Opt',
+    typeLine: 'Instant',
+    cardTypes: ['Instant'],
+    oracleText: 'Scry 1. Draw a card.',
+    cmc: 1,
+  }), 'stack');
+  const ownCreature = makeCard(makeDef({
+    name: 'Goblin Electromancer',
+    oracleText: 'Instant and sorcery spells you cast cost {1} less to cast.',
+    cmc: 2,
+  }), 'stack');
+  const state = makeState([rhystic, remora, talrand, stormKiln, swiftspear, joriEn, ledger, opponentInstant, ownInstant, ownCreature]);
+
+  const opponentTriggers = detectCastTriggers(state, 'p2', opponentInstant, 1).map(t => t.sourceCard.definition.name);
+  assert(opponentTriggers.includes('Rhystic Study'), 'Expected Rhystic Study to see opponent cast');
+  assert(opponentTriggers.includes('Mystic Remora'), 'Expected Mystic Remora to see opponent noncreature cast');
+  assert(!opponentTriggers.includes('Talrand, Sky Summoner'), 'Talrand should not trigger from opponent cast');
+  assert(!opponentTriggers.includes('Ledger Shredder'), 'Ledger Shredder should wait for a player\'s second spell');
+
+  const opponentSecondTriggers = detectCastTriggers(state, 'p2', opponentInstant, 2).map(t => t.sourceCard.definition.name);
+  assert(opponentSecondTriggers.includes('Ledger Shredder'), 'Expected Ledger Shredder to see an opponent\'s second spell');
+
+  const ownInstantTriggers = detectCastTriggers(state, 'p1', ownInstant, 1).map(t => t.sourceCard.definition.name);
+  assert(ownInstantTriggers.includes('Talrand, Sky Summoner'), 'Expected Talrand to see own instant');
+  assert(ownInstantTriggers.includes('Storm-Kiln Artist'), 'Expected Storm-Kiln Artist to see own instant');
+  assert(ownInstantTriggers.includes('Monastery Swiftspear'), 'Expected prowess to see own noncreature spell');
+  assert(!ownInstantTriggers.includes('Rhystic Study'), 'Rhystic should not trigger from controller cast');
+  assert(!ownInstantTriggers.includes('Jori En, Ruin Diver'), 'Jori En should wait for your second spell');
+  assert(!ownInstantTriggers.includes('Ledger Shredder'), 'Ledger Shredder should wait for the second spell');
+
+  const ownSecondTriggers = detectCastTriggers(state, 'p1', ownInstant, 2).map(t => t.sourceCard.definition.name);
+  assert(ownSecondTriggers.includes('Jori En, Ruin Diver'), 'Expected Jori En to see your second spell');
+  assert(ownSecondTriggers.includes('Ledger Shredder'), 'Expected Ledger Shredder to see your second spell');
+
+  const ownCreatureTriggers = detectCastTriggers(state, 'p1', ownCreature, 1).map(t => t.sourceCard.definition.name);
+  assert(!ownCreatureTriggers.includes('Talrand, Sky Summoner'), 'Talrand should ignore creature spells');
+  assert(!ownCreatureTriggers.includes('Storm-Kiln Artist'), 'Storm-Kiln should ignore creature spells');
+  assert(!ownCreatureTriggers.includes('Monastery Swiftspear'), 'Prowess should ignore creature spells');
+}
+
 console.log('=== Custom trigger detection ===');
 {
   const entrant = makeCard(makeDef({
@@ -141,6 +263,95 @@ console.log('=== Custom trigger detection ===');
 
   const attack = detectAttackTriggers(state, entrant);
   assert(attack.some(t => t.triggerText.includes('make a Treasure')), 'Expected custom attack trigger');
+}
+
+console.log('=== Double-faced card active-face trigger detection ===');
+{
+  const etali = makeCard(makeDef({
+    name: 'Etali, Primal Conqueror // Etali, Primal Sickness',
+    typeLine: 'Legendary Creature - Elder Dinosaur',
+    cardTypes: ['Creature'],
+    oracleText: 'When Etali, Primal Conqueror enters, each player exiles cards until they exile a nonland card.\n---\nWhenever Etali, Primal Sickness deals combat damage to a player, they get that many poison counters.',
+    isDoubleFaced: true,
+    power: '7',
+    toughness: '7',
+    faces: [
+      {
+        name: 'Etali, Primal Conqueror',
+        typeLine: 'Legendary Creature - Elder Dinosaur',
+        superTypes: ['Legendary'],
+        cardTypes: ['Creature'],
+        subTypes: ['Elder', 'Dinosaur'],
+        oracleText: 'Trample\nWhen Etali, Primal Conqueror enters, each player exiles cards from the top of their library until they exile a nonland card. You may cast any number of spells from among the nonland cards exiled this way without paying their mana costs.',
+        power: '7',
+        toughness: '7',
+        colors: ['R'],
+        keywords: ['Trample'],
+      },
+      {
+        name: 'Etali, Primal Sickness',
+        typeLine: 'Legendary Creature - Phyrexian Elder Dinosaur',
+        superTypes: ['Legendary'],
+        cardTypes: ['Creature'],
+        subTypes: ['Phyrexian', 'Elder', 'Dinosaur'],
+        oracleText: 'Trample, indestructible\nWhenever Etali, Primal Sickness deals combat damage to a player, they get that many poison counters.',
+        power: '11',
+        toughness: '11',
+        colors: ['G', 'R'],
+        keywords: ['Trample', 'Indestructible'],
+      },
+    ],
+  }));
+  const state = makeState([etali]);
+  const frontEtb = detectETBTriggers(state, etali);
+  assert(frontEtb.length === 1 && frontEtb[0].triggerText.includes('exiles cards'), 'Expected Etali front-face ETB trigger');
+
+  const transformedEtali = { ...etali, transformed: true };
+  const transformedState = makeState([transformedEtali]);
+  const transformedEtb = detectETBTriggers(transformedState, transformedEtali);
+  assert(transformedEtb.length === 0, 'Back face should not reuse front-face ETB text');
+  const damageTriggers = detectCombatDamageTriggers(transformedState, transformedEtali, 'p2', 11);
+  assert(damageTriggers.length === 1, 'Expected transformed Etali combat damage trigger');
+  assert(damageTriggers[0].sourceCard.definition.name.includes('Etali'), 'Expected trigger to keep source card reference');
+  assert(damageTriggers[0].effect?.kind === 'poisonFromCombatDamage', 'Expected Etali poison shortcut metadata');
+  assert(damageTriggers[0].effect?.amount === 11, 'Expected poison amount to match combat damage');
+}
+
+console.log('=== Landfall and upkeep land trigger detection ===');
+{
+  const field = makeCard(makeDef({
+    name: 'Field of the Dead',
+    typeLine: 'Land',
+    cardTypes: ['Land'],
+    oracleText: 'Field of the Dead enters the battlefield tapped.\nWhenever Field of the Dead or another land enters the battlefield under your control, if you control seven or more lands with different names, create a 2/2 black Zombie creature token.',
+    cmc: 0,
+  }));
+  const lands = ['Island', 'Swamp', 'Mountain', 'Forest', 'Plains', 'Command Tower'].map(name => makeCard(makeDef({
+    name,
+    typeLine: 'Land',
+    cardTypes: ['Land'],
+    oracleText: '',
+  })));
+  const stateWithSixNames = makeState([field, ...lands.slice(0, 5)]);
+  assert(detectETBTriggers(stateWithSixNames, field).length === 0, 'Field should wait for seven different land names');
+
+  const stateWithSevenNames = makeState([field, ...lands]);
+  const fieldTriggers = detectETBTriggers(stateWithSevenNames, field);
+  assert(fieldTriggers.length === 1, 'Expected Field trigger at seven different land names');
+  assert(fieldTriggers[0].effect?.kind === 'createToken', 'Expected Field trigger to expose token shortcut metadata');
+
+  const glacial = makeCard(makeDef({
+    name: 'Glacial Chasm',
+    typeLine: 'Land',
+    cardTypes: ['Land'],
+    oracleText: 'Cumulative upkeep—Pay 2 life.\nWhen this land enters, sacrifice a land.\nCreatures you control can\'t attack.\nPrevent all damage that would be dealt to you.',
+  }));
+  const glacialState = makeState([glacial]);
+  assert(detectETBTriggers(glacialState, glacial).some(t => t.triggerText.includes('sacrifice a land')), 'Expected Glacial Chasm ETB sacrifice reminder');
+  assert(detectUpkeepTriggers(glacialState, 'p1').some(t => t.triggerText.includes('cumulative upkeep')), 'Expected Glacial Chasm cumulative upkeep reminder');
+  const modifiers = getActiveModifiers(glacialState).map(flag => flag.text);
+  assert(modifiers.some(text => text.includes("can't attack")), 'Expected Glacial Chasm attack restriction modifier');
+  assert(modifiers.some(text => text.includes('prevent all damage')), 'Expected Glacial Chasm damage prevention modifier');
 }
 
 console.log('=== Custom modifier detection ===');

@@ -611,6 +611,9 @@ function normalizeCustomCard(card: Partial<CustomCardDefinition>, index: number)
     colorIdentity: Array.isArray(card.colorIdentity) ? card.colorIdentity : undefined,
     keywords: Array.isArray(card.keywords) ? card.keywords.map(k => String(k).trim()).filter(Boolean) : undefined,
     imageUrl: card.imageUrl,
+    imageUrlBack: card.imageUrlBack,
+    isDoubleFaced: card.isDoubleFaced === true || (Array.isArray(card.faces) && card.faces.length >= 2),
+    faces: Array.isArray(card.faces) ? card.faces : undefined,
   };
 }
 
@@ -944,6 +947,9 @@ function definitionToCustomCard(def: CardDefinition): CustomCardDefinition {
     colorIdentity: def.colorIdentity,
     keywords: def.keywords,
     imageUrl: def.imageUrl,
+    imageUrlBack: def.imageUrlBack,
+    isDoubleFaced: def.isDoubleFaced,
+    faces: def.faces,
   };
 }
 

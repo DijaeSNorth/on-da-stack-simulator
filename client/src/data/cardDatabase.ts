@@ -1,5 +1,5 @@
 // ─── Scryfall API Integration & Card Lookup ──────────────────────────────────
-import type { CardDefinition, ManaCost, ManaColor, CardType, SuperType } from '../types/game';
+import type { CardDefinition, ManaCost, ManaColor, CardType, SuperType, CardFaceDefinition } from '../types/game';
 
 const SCRYFALL_BASE = 'https://api.scryfall.com';
 
@@ -47,11 +47,33 @@ function parseTypeLine(typeLine: string): { superTypes: SuperType[]; cardTypes: 
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function scryfallToDefinition(data: any): CardDefinition {
-  const typeParts = parseTypeLine(data.type_line || '');
-  const manaCost = parseMana(data.mana_cost || '');
-
   // Handle double-faced cards
   const isDoubleFaced = data.card_faces && data.card_faces.length >= 2;
+  const faces: CardFaceDefinition[] | undefined = isDoubleFaced
+    ? data.card_faces.map((face: any) => {
+        const faceTypeParts = parseTypeLine(face.type_line || '');
+        const faceMana = parseMana(face.mana_cost || '');
+        return {
+          name: face.name || '',
+          manaCost: face.mana_cost ? faceMana : undefined,
+          cmc: face.mana_cost ? faceMana.cmc : undefined,
+          typeLine: face.type_line || '',
+          superTypes: faceTypeParts.superTypes,
+          cardTypes: faceTypeParts.cardTypes,
+          subTypes: faceTypeParts.subTypes,
+          oracleText: face.oracle_text || '',
+          flavorText: face.flavor_text,
+          power: face.power,
+          toughness: face.toughness,
+          loyalty: face.loyalty ? Number(face.loyalty) : undefined,
+          colors: (face.colors || []) as ManaColor[],
+          keywords: face.keywords || [],
+          imageUrl: face.image_uris?.normal || face.image_uris?.large,
+        };
+      })
+    : undefined;
+  const typeParts = parseTypeLine(faces?.[0]?.typeLine || data.type_line || '');
+  const manaCost = parseMana(faces?.[0]?.manaCost?.raw || data.mana_cost || '');
   let imageUrl = data.image_uris?.normal || data.image_uris?.large;
   let imageUrlBack: string | undefined;
   let oracleText = data.oracle_text || '';
@@ -84,6 +106,7 @@ function scryfallToDefinition(data: any): CardDefinition {
     isDoubleFaced,
     legalities: data.legalities || {},
     relatedCards: data.all_parts?.map((p: any) => p.name),
+    faces,
   };
 }
 

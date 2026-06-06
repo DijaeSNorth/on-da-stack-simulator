@@ -6,6 +6,7 @@ import type {
   PlayerAvatarImage,
 } from '../types/game';
 import { fetchCardsByNames } from '../data/cardDatabase';
+import { getEffectiveCardDefinition, getEffectiveOracleText } from './cardFaces';
 import { normalizeCommanderDeck } from './deckImport';
 import { PHASE_ORDER } from './phaseMeta';
 
@@ -236,7 +237,7 @@ export function moveCard(
     controllerId: toControllerId || card.controllerId,
     tapped: toZone === 'battlefield' ? false : card.tapped,
     summoningSick: toZone === 'battlefield' &&
-      (card.definition.cardTypes.includes('Creature')) ? true : false,
+      (getEffectiveCardDefinition(card).cardTypes.includes('Creature')) ? true : false,
   };
 
   if (options) {
@@ -461,7 +462,7 @@ export function pushToStack(state: GameState, item: StackObject): GameState {
 }
 
 function isPermanentSpell(card: CardState): boolean {
-  return card.definition.cardTypes.some(type =>
+  return getEffectiveCardDefinition(card).cardTypes.some(type =>
     ['Creature', 'Artifact', 'Enchantment', 'Planeswalker', 'Land', 'Battle'].includes(type)
   );
 }
@@ -650,7 +651,9 @@ function createCustomCardDef(card: CustomCardDefinition): CardDefinition {
     colorIdentity: card.colorIdentity ?? card.colors ?? [],
     keywords: card.keywords ?? [],
     imageUrl: card.imageUrl,
-    isDoubleFaced: false,
+    imageUrlBack: card.imageUrlBack,
+    isDoubleFaced: card.isDoubleFaced === true || (card.faces?.length ?? 0) >= 2,
+    faces: card.faces,
     legalities: {},
   };
 }
@@ -799,10 +802,11 @@ export function checkStateBasedActions(state: GameState): { newState: GameState;
   // Check creature death (toughness ≤ 0 or damage ≥ toughness)
   for (const card of Object.values(state.cards)) {
     if (card.zone !== 'battlefield') continue;
-    if (!card.definition.cardTypes.includes('Creature')) continue;
+    const def = getEffectiveCardDefinition(card);
+    if (!def.cardTypes.includes('Creature')) continue;
 
-    const basePower = parseInt(card.definition.power || '0', 10) || 0;
-    const baseToughness = parseInt(card.definition.toughness || '0', 10) || 0;
+    const basePower = parseInt(def.power || '0', 10) || 0;
+    const baseToughness = parseInt(def.toughness || '0', 10) || 0;
 
     const plusCounters = card.counters.find(c => c.type === '+1/+1')?.count || 0;
     const minusCounters = card.counters.find(c => c.type === '-1/-1')?.count || 0;
@@ -876,9 +880,10 @@ export function declareAttacker(
   };
 
   // CR 702.20: Vigilance — attacking doesn't cause creature to tap
+  const def = getEffectiveCardDefinition(card);
   const hasVigilance =
-    card.definition.keywords.some(k => k.toLowerCase() === 'vigilance') ||
-    card.definition.oracleText.toLowerCase().includes('vigilance');
+    def.keywords.some(k => k.toLowerCase() === 'vigilance') ||
+    getEffectiveOracleText(card).toLowerCase().includes('vigilance');
 
   return {
     ...state,

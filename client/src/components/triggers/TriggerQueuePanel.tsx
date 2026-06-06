@@ -28,6 +28,7 @@ import type { TriggerItem } from '../../types/game';
 const TYPE_COLORS: Record<TriggerItem['triggerType'], { bg: string; fg: string; label: string }> = {
   ETB:       { bg: '#064e3b', fg: '#34d399', label: 'ETB' },
   attack:    { bg: '#7f1d1d', fg: '#fca5a5', label: 'ATTACK' },
+  cast:      { bg: '#123642', fg: '#67e8f9', label: 'CAST' },
   upkeep:    { bg: '#1e3a8a', fg: '#93c5fd', label: 'UPKEEP' },
   graveyard: { bg: '#1e1b4b', fg: '#a5b4fc', label: 'GY' },
   exile:     { bg: '#312e81', fg: '#c4b5fd', label: 'EXILE' },
@@ -66,6 +67,7 @@ interface TriggerRowProps {
   playerName: string;
   isTop: boolean;
   onAck: () => void;
+  onShortcut: () => void;
   onMissed: () => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
@@ -79,6 +81,7 @@ function TriggerRow({
   playerName,
   isTop,
   onAck,
+  onShortcut,
   onMissed,
   onMoveUp,
   onMoveDown,
@@ -157,6 +160,66 @@ function TriggerRow({
         >
           {isTop ? 'Resolve ↵' : 'Resolve'}
         </button>
+
+        {trigger.effect?.kind === 'vialSmasherDamage' && (
+          <button
+            data-testid={`btn-trigger-shortcut-${trigger.id}`}
+            onClick={onShortcut}
+            title="Shortcut: choose a random opponent and apply Vial Smasher damage"
+            style={{
+              padding: '3px 8px',
+              fontSize: 9,
+              fontWeight: 800,
+              background: '#123642',
+              color: '#67e8f9',
+              border: '1px solid #0e7490',
+              borderRadius: 4,
+              cursor: 'pointer',
+            }}
+          >
+            Random Damage
+          </button>
+        )}
+
+        {trigger.effect?.kind === 'poisonFromCombatDamage' && (
+          <button
+            data-testid={`btn-trigger-shortcut-${trigger.id}`}
+            onClick={onShortcut}
+            title="Shortcut: apply poison counters from combat damage"
+            style={{
+              padding: '3px 8px',
+              fontSize: 9,
+              fontWeight: 800,
+              background: '#1f2a10',
+              color: '#bef264',
+              border: '1px solid #4d7c0f',
+              borderRadius: 4,
+              cursor: 'pointer',
+            }}
+          >
+            Apply Poison
+          </button>
+        )}
+
+        {trigger.effect?.kind === 'createToken' && (
+          <button
+            data-testid={`btn-trigger-shortcut-${trigger.id}`}
+            onClick={onShortcut}
+            title={`Shortcut: create ${trigger.effect.token.name} token${trigger.effect.count === 1 ? '' : 's'}`}
+            style={{
+              padding: '3px 8px',
+              fontSize: 9,
+              fontWeight: 800,
+              background: '#2e1f10',
+              color: '#fdba74',
+              border: '1px solid #c2410c',
+              borderRadius: 4,
+              cursor: 'pointer',
+            }}
+          >
+            Create Token
+          </button>
+        )}
 
         {/* Reorder buttons */}
         <button
@@ -354,6 +417,7 @@ export function TriggerQueuePanel() {
                 playerName={player?.name ?? t.controllerId}
                 isTop={i === 0}
                 onAck={() => store.ackTrigger(t.id)}
+                onShortcut={() => store.applyTriggerShortcut(t.id)}
                 onMissed={() => store.markTriggerMissed(t.id)}
                 onMoveUp={() => store.moveTriggerUp(t.id)}
                 onMoveDown={() => store.moveTriggerDown(t.id)}

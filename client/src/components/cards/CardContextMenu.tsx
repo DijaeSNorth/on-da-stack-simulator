@@ -8,6 +8,7 @@ import {
   type CardMechanic,
 } from '../../engine/mechanicResolver';
 import { getTokenEntry, getTokensFromOracleText } from '../../engine/tokenRegistry';
+import { getLandFaceIndex } from '../../engine/cardFaces';
 
 interface MenuAction {
   label: string;
@@ -56,6 +57,7 @@ export function CardContextMenu() {
 
   // ─── Hand actions ───────────────────────────────────────────────────────────
   if (inHand) {
+    const landFaceIndex = getLandFaceIndex(def);
     if (def.cardTypes.includes('Land')) {
       actions.push({
         label: 'Play Land',
@@ -66,6 +68,14 @@ export function CardContextMenu() {
         label: `Cast ${def.name}`,
         action: () => { store.castCard(localPlayerId, instanceId); close(); },
       });
+      if (landFaceIndex !== null) {
+        const landFace = def.faces?.[landFaceIndex];
+        actions.push({
+          label: `Play Land Side${landFace?.name ? ` (${landFace.name})` : ''}`,
+          action: () => { store.playLand(localPlayerId, instanceId, landFaceIndex); close(); },
+          tooltip: 'Play the modal double-faced card using its land face.',
+        });
+      }
     }
 
     // Cycling — tier 1 (popular) or detected from oracle text

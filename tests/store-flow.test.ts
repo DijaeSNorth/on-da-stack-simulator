@@ -12,6 +12,7 @@ import {
   createPlayer,
   resolveTopStack,
 } from '../client/src/engine/gameEngine';
+import { getEffectiveCardDefinition } from '../client/src/engine/cardFaces';
 import { parseCommand } from '../client/src/engine/nlpParser';
 import type { CardDefinition, GameState } from '../client/src/types/game';
 
@@ -463,6 +464,298 @@ test('targeted spells stay visible on stack and resolve to graveyard', () => {
   assert(next.stack.length === 0, 'expected stack empty after resolution');
   assert(next.cards[bolt.instanceId].zone === 'graveyard', 'expected instant to resolve to graveyard');
   assert(player.graveyard.includes(bolt.instanceId), 'expected instant in graveyard list');
+});
+
+test('Vial Smasher creates a first-spell cast trigger on stack with optional shortcut', () => {
+  const game = makeGame(3);
+  const vial = createCardState({
+    ...vanillaCreature,
+    id: 'vial-smasher',
+    name: 'Vial Smasher the Fierce',
+    typeLine: 'Legendary Creature - Goblin Berserker',
+    cardTypes: ['Creature'],
+    oracleText: 'Whenever you cast your first spell each turn, choose an opponent at random. Vial Smasher the Fierce deals damage equal to that spell\'s mana value to that player or a planeswalker that player controls.\nPartner',
+    cmc: 3,
+    colors: ['B', 'R'],
+    colorIdentity: ['B', 'R'],
+    power: '2',
+    toughness: '3',
+  }, 'p1', 'battlefield');
+  const bigSpell = createCardState({
+    ...vanillaCreature,
+    id: 'big-spell',
+    name: 'Creative Outburst',
+    typeLine: 'Instant',
+    cardTypes: ['Instant'],
+    subTypes: [],
+    oracleText: 'Creative Outburst deals 5 damage to any target.',
+    cmc: 7,
+    colors: ['U', 'R'],
+    colorIdentity: ['U', 'R'],
+    power: undefined,
+    toughness: undefined,
+  }, 'p1', 'hand');
+  const secondSpell = createCardState({
+    ...bigSpell.definition,
+    id: 'second-spell',
+    name: 'Lightning Bolt',
+    cmc: 1,
+  }, 'p1', 'hand');
+
+  resetStore({
+    ...game,
+    cards: {
+      [vial.instanceId]: vial,
+      [bigSpell.instanceId]: bigSpell,
+      [secondSpell.instanceId]: secondSpell,
+    },
+    players: game.players.map(player =>
+      player.id === 'p1'
+        ? { ...player, battlefield: [vial.instanceId], hand: [bigSpell.instanceId, secondSpell.instanceId] }
+        : player
+    ),
+  });
+
+  useGameStore.getState().castCard('p1', bigSpell.instanceId);
+  let state = useGameStore.getState().game;
+  const pending = state.triggerQueue.filter(trigger => !trigger.acknowledged);
+  assert(pending.length === 1, `expected one Vial trigger, got ${pending.length}`);
+  assert(pending[0].triggerType === 'cast', 'expected Vial trigger to be a cast trigger');
+  assert(pending[0].effect?.kind === 'vialSmasherDamage', 'expected Vial shortcut metadata');
+  assert(pending[0].effect?.manaValue === 7, 'expected Vial damage to use spell mana value');
+  assert(state.stack[0].type === 'triggered' && state.stack[0].parentId === pending[0].id, 'expected Vial trigger to be mentioned on top of stack');
+  assert(state.stack[1].sourceInstanceId === bigSpell.instanceId, 'expected original spell to remain under the trigger on stack');
+  assert(state.players.find(player => player.id === 'p2')!.life === 40, 'expected no automatic damage before shortcut');
+  assert(state.players.find(player => player.id === 'p3')!.life === 40, 'expected no automatic damage before shortcut');
+
+  useGameStore.getState().applyTriggerShortcut(pending[0].id);
+  state = useGameStore.getState().game;
+  const opponentLifeTotal = state.players
+    .filter(player => player.id === 'p2' || player.id === 'p3')
+    .reduce((sum, player) => sum + player.life, 0);
+  assert(opponentLifeTotal === 73, `expected exactly 7 random damage across opponents, total life ${opponentLifeTotal}`);
+  assert(state.triggerQueue.find(trigger => trigger.id === pending[0].id)?.acknowledged, 'expected shortcut to acknowledge the trigger');
+  assert(!state.stack.some(item => item.parentId === pending[0].id), 'expected shortcut to clear matching triggered stack item');
+
+  useGameStore.getState().castCard('p1', secondSpell.instanceId);
+  state = useGameStore.getState().game;
+  const vialTriggers = state.triggerQueue.filter(trigger => trigger.sourceName === 'Vial Smasher the Fierce');
+  assert(vialTriggers.length === 1, `expected no second Vial trigger in same turn, got ${vialTriggers.length}`);
+});
+
+test('transformed Etali uses back-face combat damage and creates optional poison trigger', () => {
+  const game = makeGame(2);
+  const etaliDef: CardDefinition = {
+    ...vanillaCreature,
+    id: 'etali-primal-conqueror',
+    name: 'Etali, Primal Conqueror // Etali, Primal Sickness',
+    typeLine: 'Legendary Creature - Elder Dinosaur',
+    superTypes: ['Legendary'],
+    cardTypes: ['Creature'],
+    subTypes: ['Elder', 'Dinosaur'],
+    oracleText: 'When Etali, Primal Conqueror enters, each player exiles cards until they exile a nonland card.\n---\nWhenever Etali, Primal Sickness deals combat damage to a player, they get that many poison counters.',
+    cmc: 7,
+    colors: ['R'],
+    colorIdentity: ['G', 'R'],
+    keywords: ['Trample'],
+    isDoubleFaced: true,
+    power: '7',
+    toughness: '7',
+    faces: [
+      {
+        name: 'Etali, Primal Conqueror',
+        typeLine: 'Legendary Creature - Elder Dinosaur',
+        superTypes: ['Legendary'],
+        cardTypes: ['Creature'],
+        subTypes: ['Elder', 'Dinosaur'],
+        oracleText: 'Trample\nWhen Etali, Primal Conqueror enters, each player exiles cards from the top of their library until they exile a nonland card.',
+        power: '7',
+        toughness: '7',
+        colors: ['R'],
+        keywords: ['Trample'],
+      },
+      {
+        name: 'Etali, Primal Sickness',
+        typeLine: 'Legendary Creature - Phyrexian Elder Dinosaur',
+        superTypes: ['Legendary'],
+        cardTypes: ['Creature'],
+        subTypes: ['Phyrexian', 'Elder', 'Dinosaur'],
+        oracleText: 'Trample, indestructible\nWhenever Etali, Primal Sickness deals combat damage to a player, they get that many poison counters.',
+        power: '11',
+        toughness: '11',
+        colors: ['G', 'R'],
+        keywords: ['Trample', 'Indestructible'],
+      },
+    ],
+  };
+  const etali = {
+    ...createCardState(etaliDef, 'p1', 'library'),
+    zone: 'battlefield' as const,
+    transformed: true,
+    summoningSick: false,
+  };
+
+  resetStore({
+    ...game,
+    phase: 'declareAttackers',
+    cards: { [etali.instanceId]: etali },
+    players: game.players.map(player =>
+      player.id === 'p1' ? { ...player, battlefield: [etali.instanceId] } : player
+    ),
+  });
+
+  useGameStore.getState().enterCombat();
+  useGameStore.getState().declareAttack(etali.instanceId, 'p2');
+  useGameStore.getState().goToPhase('combatDamage');
+  useGameStore.getState().resolveCombatDamage();
+
+  let state = useGameStore.getState().game;
+  const target = state.players.find(player => player.id === 'p2')!;
+  assert(target.life === 29, `expected transformed Etali to deal 11 damage, got life ${target.life}`);
+  assert(target.poisonCounters === 0, 'expected poison not to apply automatically');
+  const trigger = state.triggerQueue.find(item => item.sourceName === 'Etali, Primal Sickness');
+  if (!trigger) throw new Error('expected Etali poison trigger in queue');
+  assert(trigger.effect?.kind === 'poisonFromCombatDamage', 'expected poison shortcut metadata');
+  assert(trigger.effect?.amount === 11, 'expected poison amount to match combat damage');
+  assert(state.stack.some(item => item.parentId === trigger.id), 'expected Etali poison trigger on stack');
+
+  useGameStore.getState().applyTriggerShortcut(trigger.id);
+  state = useGameStore.getState().game;
+  const poisonedTarget = state.players.find(player => player.id === 'p2')!;
+  assert(poisonedTarget.poisonCounters === 11, `expected shortcut to apply 11 poison, got ${poisonedTarget.poisonCounters}`);
+  assert(state.triggerQueue.find(item => item.id === trigger.id)?.acknowledged, 'expected poison trigger to be acknowledged');
+  assert(!state.stack.some(item => item.parentId === trigger.id), 'expected shortcut to clear poison trigger from stack');
+});
+
+test('MDFC land faces, Field of the Dead, and Glacial Chasm land reminders stay in game flow', () => {
+  const game = makeGame(2);
+  const mdfcDef: CardDefinition = {
+    ...vanillaCreature,
+    id: 'sejiri-shelter',
+    name: 'Sejiri Shelter // Sejiri Glacier',
+    typeLine: 'Instant // Land',
+    cardTypes: ['Instant'],
+    subTypes: [],
+    oracleText: 'Target creature you control gains protection from the color of your choice until end of turn.\n---\nSejiri Glacier enters the battlefield tapped.',
+    isDoubleFaced: true,
+    power: undefined,
+    toughness: undefined,
+    faces: [
+      {
+        name: 'Sejiri Shelter',
+        manaCost: { raw: '{1}{W}', cmc: 2, W: 1, generic: 1 },
+        cmc: 2,
+        typeLine: 'Instant',
+        superTypes: [],
+        cardTypes: ['Instant'],
+        subTypes: [],
+        oracleText: 'Target creature you control gains protection from the color of your choice until end of turn.',
+        colors: ['W'],
+        keywords: [],
+      },
+      {
+        name: 'Sejiri Glacier',
+        typeLine: 'Land',
+        superTypes: [],
+        cardTypes: ['Land'],
+        subTypes: [],
+        oracleText: 'Sejiri Glacier enters the battlefield tapped.',
+        colors: [],
+        keywords: [],
+      },
+    ],
+  };
+  const mdfc = createCardState(mdfcDef, 'p1', 'hand');
+  resetStore({
+    ...game,
+    cards: { [mdfc.instanceId]: mdfc },
+    players: game.players.map(player => player.id === 'p1' ? { ...player, hand: [mdfc.instanceId] } : player),
+  });
+  useGameStore.getState().playLand('p1', mdfc.instanceId, 1);
+  let state = useGameStore.getState().game;
+  assert(state.cards[mdfc.instanceId].zone === 'battlefield', 'expected MDFC land face on battlefield');
+  assert(state.cards[mdfc.instanceId].transformed, 'expected MDFC land face to mark back face active');
+  assert(getEffectiveCardDefinition(state.cards[mdfc.instanceId]).cardTypes.includes('Land'), 'expected active MDFC face to be a land');
+
+  const field = createCardState({
+    ...vanillaCreature,
+    id: 'field-of-the-dead',
+    name: 'Field of the Dead',
+    typeLine: 'Land',
+    cardTypes: ['Land'],
+    subTypes: [],
+    oracleText: 'Field of the Dead enters the battlefield tapped.\nWhenever Field of the Dead or another land enters the battlefield under your control, if you control seven or more lands with different names, create a 2/2 black Zombie creature token.',
+    colors: [],
+    colorIdentity: [],
+    power: undefined,
+    toughness: undefined,
+  }, 'p1', 'hand');
+  const otherLands = ['Island', 'Swamp', 'Mountain', 'Forest', 'Plains', 'Command Tower'].map(name => ({
+    ...createCardState({
+      ...vanillaCreature,
+      id: name.toLowerCase().replace(/\s+/g, '-'),
+      name,
+      typeLine: 'Land',
+      cardTypes: ['Land'],
+      subTypes: [],
+      oracleText: '',
+      colors: [],
+      colorIdentity: [],
+      power: undefined,
+      toughness: undefined,
+    }, 'p1', 'library'),
+    zone: 'battlefield' as const,
+    summoningSick: false,
+  }));
+  const fieldGame = makeGame(2);
+  resetStore({
+    ...fieldGame,
+    cards: Object.fromEntries([field, ...otherLands].map(card => [card.instanceId, card])),
+    players: fieldGame.players.map(player =>
+      player.id === 'p1'
+        ? { ...player, hand: [field.instanceId], battlefield: otherLands.map(card => card.instanceId) }
+        : player
+    ),
+  });
+  useGameStore.getState().playLand('p1', field.instanceId);
+  state = useGameStore.getState().game;
+  const fieldTrigger = state.triggerQueue.find(trigger => trigger.sourceName === 'Field of the Dead');
+  if (!fieldTrigger) throw new Error('expected Field of the Dead landfall trigger');
+  assert(fieldTrigger.effect?.kind === 'createToken', 'expected Field trigger to expose token shortcut');
+  assert(state.stack.some(item => item.parentId === fieldTrigger.id), 'expected Field trigger on stack');
+  useGameStore.getState().applyTriggerShortcut(fieldTrigger.id);
+  state = useGameStore.getState().game;
+  const zombies = Object.values(state.cards).filter(card => card.token && card.definition.name === 'Zombie');
+  assert(zombies.length === 1, `expected one Zombie token, got ${zombies.length}`);
+
+  const chasm = {
+    ...createCardState({
+      ...vanillaCreature,
+      id: 'glacial-chasm',
+      name: 'Glacial Chasm',
+      typeLine: 'Land',
+      cardTypes: ['Land'],
+      subTypes: [],
+      oracleText: 'Cumulative upkeep-Pay 2 life.\nWhen this land enters, sacrifice a land.\nCreatures you control can\'t attack.\nPrevent all damage that would be dealt to you.',
+      colors: [],
+      colorIdentity: [],
+      power: undefined,
+      toughness: undefined,
+    }, 'p1', 'library'),
+    zone: 'battlefield' as const,
+  };
+  const chasmGame = makeGame(2);
+  resetStore({
+    ...chasmGame,
+    phase: 'untap',
+    cards: { [chasm.instanceId]: chasm },
+    players: chasmGame.players.map(player => player.id === 'p1' ? { ...player, battlefield: [chasm.instanceId] } : player),
+  });
+  useGameStore.getState().advancePhase();
+  state = useGameStore.getState().game;
+  assert(state.phase === 'upkeep', 'expected phase to advance to upkeep');
+  assert(state.triggerQueue.some(trigger => trigger.sourceName === 'Glacial Chasm' && trigger.triggerType === 'upkeep'), 'expected Glacial Chasm upkeep trigger');
+  assert(state.stack.some(item => item.sourceName === 'Glacial Chasm'), 'expected Glacial Chasm upkeep trigger on stack');
 });
 
 test('scry opens a private top-N library view instead of the whole deck', () => {

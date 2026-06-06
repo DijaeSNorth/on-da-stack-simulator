@@ -44,10 +44,29 @@ export interface CardDefinition {
   legalities: Record<string, 'legal' | 'not_legal' | 'banned' | 'restricted'>;
   rulings?: { date: string; text: string }[];
   relatedCards?: string[];
+  faces?: CardFaceDefinition[];
   customTriggers?: CustomTrigger[];
   replacementEffects?: ReplacementEffect[];
   customRules?: CustomRule[];
   customNotes?: string[];
+}
+
+export interface CardFaceDefinition {
+  name: string;
+  manaCost?: ManaCost;
+  cmc?: number;
+  typeLine: string;
+  superTypes: SuperType[];
+  cardTypes: CardType[];
+  subTypes: string[];
+  oracleText: string;
+  flavorText?: string;
+  power?: string;
+  toughness?: string;
+  loyalty?: number;
+  colors: ManaColor[];
+  keywords: string[];
+  imageUrl?: string;
 }
 
 export interface Counter {
@@ -106,13 +125,45 @@ export interface StackObject {
   parentId?: string;       // for triggered-in-response chains
 }
 
+export type KnownTriggerEffect =
+  | {
+      kind: 'vialSmasherDamage';
+      spellInstanceId: string;
+      spellName: string;
+      manaValue: number;
+      eligibleOpponentIds: string[];
+    }
+  | {
+      kind: 'poisonFromCombatDamage';
+      damagedPlayerId: string;
+      amount: number;
+    }
+  | {
+      kind: 'createToken';
+      controllerId: string;
+      count: number;
+      token: {
+        name: string;
+        power?: string;
+        toughness?: string;
+        colors: ManaColor[];
+        cardTypes: CardType[];
+        subTypes: string[];
+        keywords: string[];
+        oracleText?: string;
+        typeLine: string;
+      };
+    };
+
 export interface TriggerItem {
   id: string;
   sourceInstanceId?: string;
   sourceName: string;
   controllerId: string;
   text: string;
-  triggerType: 'ETB' | 'attack' | 'upkeep' | 'graveyard' | 'exile' | 'damage' | 'other';
+  triggerType: 'ETB' | 'attack' | 'cast' | 'upkeep' | 'graveyard' | 'exile' | 'damage' | 'other';
+  effect?: KnownTriggerEffect;
+  data?: Record<string, unknown>;
   acknowledged: boolean;
   missed: boolean;
   timestamp: number;
@@ -248,6 +299,9 @@ export interface CustomCardDefinition {
   colorIdentity?: ManaColor[];
   keywords?: string[];
   imageUrl?: string;
+  imageUrlBack?: string;
+  isDoubleFaced?: boolean;
+  faces?: CardFaceDefinition[];
 }
 
 export interface CustomRule {

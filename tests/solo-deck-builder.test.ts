@@ -101,6 +101,44 @@ deck = setDeckEntryCount(deck, 'main', scryfallDef.name, 1);
 deck = upsertCustomCard(deck, customCardFromDefinition(scryfallDef));
 deck = upsertCustomCard(deck, customCardFromDefinition({
   ...scryfallDef,
+  id: 'oracle-sejiri-shelter',
+  name: 'Sejiri Shelter // Sejiri Glacier',
+  typeLine: 'Instant // Land',
+  cardTypes: ['Instant'],
+  oracleText: 'Target creature you control gains protection from the color of your choice until end of turn.\n---\nSejiri Glacier enters the battlefield tapped.',
+  imageUrlBack: 'https://cards.scryfall.io/normal/back/sejiri.jpg',
+  isDoubleFaced: true,
+  faces: [
+    {
+      name: 'Sejiri Shelter',
+      manaCost: { raw: '{1}{W}', cmc: 2, W: 1, generic: 1 },
+      cmc: 2,
+      typeLine: 'Instant',
+      superTypes: [],
+      cardTypes: ['Instant'],
+      subTypes: [],
+      oracleText: 'Target creature you control gains protection from the color of your choice until end of turn.',
+      colors: ['W'],
+      keywords: [],
+      imageUrl: 'https://cards.scryfall.io/normal/front/sejiri.jpg',
+    },
+    {
+      name: 'Sejiri Glacier',
+      typeLine: 'Land',
+      superTypes: [],
+      cardTypes: ['Land'],
+      subTypes: [],
+      oracleText: 'Sejiri Glacier enters the battlefield tapped.',
+      colors: [],
+      keywords: [],
+      imageUrl: 'https://cards.scryfall.io/normal/back/sejiri.jpg',
+    },
+  ],
+}));
+const mdfcLogic = deck.logicFile?.customCards.find(card => card.name === 'Sejiri Shelter // Sejiri Glacier');
+assert(mdfcLogic?.faces?.[1]?.cardTypes.includes('Land'), 'expected solo card logic to preserve MDFC land face');
+deck = upsertCustomCard(deck, customCardFromDefinition({
+  ...scryfallDef,
   id: 'oracle-sol-ring',
   name: 'Sol Ring',
   manaCost: { raw: '{1}', cmc: 1, generic: 1 },

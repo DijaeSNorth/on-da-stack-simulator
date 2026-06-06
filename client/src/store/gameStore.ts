@@ -16,8 +16,10 @@ import {
 } from '../engine/gameEngine';
 import {
   checkCastLegality, checkTapLegality, checkAttackLegality, checkBlockLegality,
-  detectAttackTriggers, detectETBTriggers, getActiveModifiers,
+  detectAttackTriggers, detectCastTriggers, detectCombatDamageTriggers, detectETBTriggers, detectUpkeepTriggers, getActiveModifiers,
+  type DetectedTrigger,
 } from '../engine/assistantEngine';
+import { getEffectiveCardDefinition, getEffectiveCardName, getEffectiveOracleText } from '../engine/cardFaces';
 import { saveDeck, loadDecksFromStorage, normalizeCommanderDeck } from '../engine/deckImport';
 import { getBannedReason } from '../data/cardDatabase';
 import { createReplay, saveReplayToStorage } from '../engine/replayEngine';
@@ -221,7 +223,7 @@ export interface GameStore {
   resetGame: () => void;
 
   castCard: (castingPlayerId: string, cardInstanceId: string, targets?: { ids?: string[]; labels?: string[] }) => void;
-  playLand: (playerId: string, cardInstanceId: string) => void;
+  playLand: (playerId: string, cardInstanceId: string, faceIndex?: number) => void;
   moveCardToZone: (instanceId: string, toZone: CardState['zone'], toController?: string) => void;
   tapCard: (instanceId: string) => void;
   untapCard: (instanceId: string) => void;
@@ -255,6 +257,7 @@ export interface GameStore {
 
   addTriggerToQueue: (trigger: Omit<TriggerItem, 'id' | 'timestamp' | 'acknowledged' | 'missed'>) => void;
   ackTrigger: (triggerId: string) => void;
+  applyTriggerShortcut: (triggerId: string) => void;
   /** Move a trigger up (toward index 0) in the queue — for APNAP ordering. */
   moveTriggerUp: (triggerId: string) => void;
   /** Move a trigger down in the queue. */
@@ -448,6 +451,55 @@ function addReviewData(
 }
 
 // ─── Store ────────────────────────────────────────────────────────────────────
+
+function appendDetectedTriggersToStack(
+  game: GameState,
+  triggers: DetectedTrigger[],
+  actorId: string,
+  label: string
+): GameState {
+  if (triggers.length === 0) return game;
+  const triggerItems: TriggerItem[] = triggers.map(t => {
+    const id = uuid();
+    return {
+      id,
+      sourceInstanceId: t.sourceCard.instanceId,
+      sourceName: getEffectiveCardName(t.sourceCard),
+      controllerId: t.sourceCard.controllerId,
+      text: t.triggerText,
+      triggerType: t.triggerType,
+      effect: t.effect,
+      data: t.data,
+      acknowledged: false,
+      missed: false,
+      timestamp: Date.now(),
+    };
+  });
+  const stackObjects: StackObject[] = triggerItems.map(t => ({
+    id: uuid(),
+    type: 'triggered',
+    sourceName: t.sourceName,
+    controllerId: t.controllerId,
+    text: t.text,
+    timestamp: Date.now(),
+    parentId: t.id,
+  }));
+  const action = createAction(
+    game,
+    actorId,
+    'PUT_ON_STACK',
+    `${triggerItems.length} ${label} trigger${triggerItems.length === 1 ? '' : 's'} added to the stack.`,
+    triggerItems.flatMap(t => t.sourceInstanceId ? [t.sourceInstanceId] : []),
+    { triggerIds: triggerItems.map(t => t.id) },
+  );
+  return {
+    ...game,
+    stack: [...stackObjects, ...game.stack],
+    triggerQueue: [...game.triggerQueue, ...triggerItems],
+    actionLog: [...game.actionLog, action],
+    lastUpdatedAt: Date.now(),
+  };
+}
 
 const HAND_TYPE_ORDER = ['Land', 'Creature', 'Artifact', 'Enchantment', 'Planeswalker', 'Battle', 'Instant', 'Sorcery'] as const;
 const COLOR_ORDER = ['W', 'U', 'B', 'R', 'G', 'C'] as const;
@@ -831,6 +883,13 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const flags = filterAssistantFlags(check.flags, get().ui);
     const card = g.cards[cardInstanceId];
     if (!card) return;
+    const cardDef = getEffectiveCardDefinition(card);
+    const spellNumberThisTurn = g.actionLog.filter(action =>
+      action.turn === g.turn &&
+      action.playerId === castingPlayerId &&
+      action.actionType === 'CAST_SPELL' &&
+      !action.undone
+    ).length + 1;
     const castingPlayerBeforeMove = g.players.find(p => p.id === castingPlayerId);
     const isCommanderBeingCast = Boolean(castingPlayerBeforeMove?.commanders.includes(cardInstanceId)) ||
       card.zone === 'command';
@@ -840,11 +899,11 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       id: uuid(), type: 'spell',
       sourceInstanceId: cardInstanceId,
       sourceDefinitionId: card.definitionId,
-      sourceName: card.definition.name,
+      sourceName: cardDef.name,
       controllerId: castingPlayerId,
       targets: targets?.ids,
       targetLabels: targets?.labels,
-      text: card.definition.oracleText,
+      text: cardDef.oracleText,
       timestamp: Date.now(),
     };
 
@@ -878,38 +937,76 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         commanderTax,
         playerName: castingPlayer?.name || castingPlayerId,
         playerColor: castingPlayer?.color,
-        cardName: card.definition.name,
+        cardName: cardDef.name,
       });
     }
 
     const action = createAction(g, castingPlayerId, 'CAST_SPELL',
-      `${card.definition.name} cast by ${castingPlayer?.name || castingPlayerId}`,
+      `${cardDef.name} cast by ${castingPlayer?.name || castingPlayerId}`,
       [cardInstanceId],
       addReviewData(castData, flags),
       flags);
-    g = { ...g, actionLog: [...g.actionLog, action] };
+    const detectedCastTriggers = detectCastTriggers(g, castingPlayerId, g.cards[cardInstanceId], spellNumberThisTurn);
+    const castTriggers: TriggerItem[] = detectedCastTriggers.map(t => {
+      const id = uuid();
+      return {
+        id,
+        sourceInstanceId: t.sourceCard.instanceId,
+        sourceName: getEffectiveCardName(t.sourceCard),
+        controllerId: t.sourceCard.controllerId,
+        text: t.triggerText,
+        triggerType: t.triggerType,
+        effect: t.effect,
+        data: t.data,
+        acknowledged: false,
+        missed: false,
+        timestamp: Date.now(),
+      };
+    });
+    const triggerStackObjects: StackObject[] = castTriggers.map(t => ({
+      id: uuid(),
+      type: 'triggered',
+      sourceName: t.sourceName,
+      controllerId: t.controllerId,
+      text: t.text,
+      timestamp: Date.now(),
+      parentId: t.id,
+    }));
+    const triggerAction = castTriggers.length
+      ? createAction(
+          g,
+          castingPlayerId,
+          'PUT_ON_STACK',
+          `${castTriggers.length} cast trigger${castTriggers.length === 1 ? '' : 's'} added to the stack.`,
+          castTriggers.flatMap(t => t.sourceInstanceId ? [t.sourceInstanceId] : []),
+          { triggerIds: castTriggers.map(t => t.id), spellNumberThisTurn },
+        )
+      : null;
+    g = {
+      ...g,
+      stack: [...triggerStackObjects, ...g.stack],
+      triggerQueue: [...g.triggerQueue, ...castTriggers],
+      actionLog: triggerAction ? [...g.actionLog, action, triggerAction] : [...g.actionLog, action],
+    };
 
     set({ game: g, ui: withAssistantMessages(get().ui, g, flags) });
   },
 
-  playLand: (playerId, cardInstanceId) => {
+  playLand: (playerId, cardInstanceId, faceIndex) => {
     let g = get().game;
-    const card = g.cards[cardInstanceId];
+    let card = g.cards[cardInstanceId];
     if (!card) return;
+    if (faceIndex !== undefined) {
+      card = { ...card, transformed: faceIndex === 1 };
+      g = { ...g, cards: { ...g.cards, [cardInstanceId]: card } };
+    }
+    const playedDef = getEffectiveCardDefinition(card);
     g = moveCard(g, cardInstanceId, 'battlefield', playerId);
     g = { ...g, cards: { ...g.cards, [cardInstanceId]: { ...g.cards[cardInstanceId], summoningSick: false } } };
-    const action = createAction(g, playerId, 'MOVE_CARD', `${card.definition.name} played`, [cardInstanceId]);
+    const action = createAction(g, playerId, 'MOVE_CARD', `${playedDef.name} played as land`, [cardInstanceId], { faceIndex });
     g = { ...g, actionLog: [...g.actionLog, action] };
 
-    // ETB triggers
-    const triggers = detectETBTriggers(g, g.cards[cardInstanceId]);
-    const newTriggers: TriggerItem[] = triggers.map(t => ({
-      id: uuid(), sourceInstanceId: t.sourceCard.instanceId,
-      sourceName: t.sourceCard.definition.name, controllerId: t.sourceCard.controllerId,
-      text: t.triggerText, triggerType: t.triggerType,
-      acknowledged: false, missed: false, timestamp: Date.now(),
-    }));
-    g = { ...g, triggerQueue: [...g.triggerQueue, ...newTriggers] };
+    g = appendDetectedTriggersToStack(g, detectETBTriggers(g, g.cards[cardInstanceId]), playerId, 'ETB');
     set({ game: g });
   },
 
@@ -1020,7 +1117,23 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const g = get().game;
     const card = g.cards[instanceId];
     if (!card || !card.definition.isDoubleFaced) return;
-    set({ game: { ...g, cards: { ...g.cards, [instanceId]: { ...card, transformed: !card.transformed } } } });
+    const nextCard = { ...card, transformed: !card.transformed };
+    const action = createAction(
+      g,
+      card.controllerId,
+      'OTHER',
+      `${getEffectiveCardName(card)} transformed into ${getEffectiveCardName(nextCard)}.`,
+      [instanceId],
+      { transformed: nextCard.transformed },
+    );
+    set({
+      game: {
+        ...g,
+        cards: { ...g.cards, [instanceId]: nextCard },
+        actionLog: [...g.actionLog, action],
+        lastUpdatedAt: Date.now(),
+      },
+    });
   },
 
   createTokenCard: (controllerId, tokenDef) => {
@@ -1153,6 +1266,9 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       phaseFlags
     );
     g = { ...g, actionLog: [...g.actionLog, action] };
+    if (g.phase === 'upkeep') {
+      g = appendDetectedTriggersToStack(g, detectUpkeepTriggers(g, g.activePlayerId), g.activePlayerId, 'upkeep');
+    }
     const mods = filterAssistantFlags(getActiveModifiers(g), get().ui);
     const baseUi = { ...get().ui, combatMode: g.combat.active };
     set({ game: g, ui: withAssistantMessages(withAssistantMessages(baseUi, g, phaseFlags), g, mods) });
@@ -1207,7 +1323,16 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     if (!g.stack.length) return;
     const top = g.stack[0];
 
-    if (top.sourceInstanceId) {
+    if (top.type === 'triggered') {
+      g = {
+        ...g,
+        stack: g.stack.slice(1),
+        triggerQueue: top.parentId
+          ? g.triggerQueue.map(t => t.id === top.parentId ? { ...t, acknowledged: true } : t)
+          : g.triggerQueue,
+        lastUpdatedAt: Date.now(),
+      };
+    } else if (top.sourceInstanceId) {
       const card = g.cards[top.sourceInstanceId];
       if (card) {
         const isPerm = card.definition.cardTypes.some(t =>
@@ -1226,7 +1351,9 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         }
       }
     }
-    g = resolveTopStack(g);
+    if (top.type !== 'triggered') {
+      g = resolveTopStack(g);
+    }
     const action = createAction(g, g.activePlayerId, 'RESOLVE_STACK', `${top.sourceName} resolved`);
     set({ game: { ...g, actionLog: [...g.actionLog, action] } });
   },
@@ -1250,7 +1377,120 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   ackTrigger: (triggerId) => {
-    set({ game: acknowledgeTrigger(get().game, triggerId) });
+    const g = acknowledgeTrigger(get().game, triggerId);
+    set({ game: { ...g, stack: g.stack.filter(item => item.parentId !== triggerId), lastUpdatedAt: Date.now() } });
+  },
+
+  applyTriggerShortcut: (triggerId) => {
+    let g = get().game;
+    const trigger = g.triggerQueue.find(t => t.id === triggerId);
+    if (!trigger?.effect) return;
+
+    if (trigger.effect.kind === 'vialSmasherDamage') {
+      const eligible = trigger.effect.eligibleOpponentIds
+        .map(id => g.players.find(player => player.id === id))
+        .filter((player): player is Player => player !== undefined && !player.isSpectator);
+      if (eligible.length === 0) return;
+      const chosen = eligible[Math.floor(Math.random() * eligible.length)];
+      const amount = trigger.effect.manaValue;
+      g = modifyLife(g, chosen.id, -amount);
+      g = {
+        ...g,
+        triggerQueue: g.triggerQueue.map(t =>
+          t.id === triggerId
+            ? { ...t, acknowledged: true, data: { ...t.data, shortcutApplied: true, chosenPlayerId: chosen.id, damage: amount } }
+            : t
+        ),
+        stack: g.stack.filter(item => item.parentId !== triggerId),
+      };
+      const action = createAction(
+        g,
+        trigger.controllerId,
+        'CHANGE_LIFE',
+        `${trigger.sourceName} shortcut: ${chosen.name} chosen at random and dealt ${amount} damage from ${trigger.effect.spellName}.`,
+        trigger.sourceInstanceId ? [trigger.sourceInstanceId, trigger.effect.spellInstanceId] : [trigger.effect.spellInstanceId],
+        {
+          shortcut: 'vialSmasherDamage',
+          triggerId,
+          chosenPlayerId: chosen.id,
+          spellName: trigger.effect.spellName,
+          manaValue: amount,
+        },
+      );
+      set({ game: { ...g, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
+      return;
+    }
+
+    if (trigger.effect.kind === 'poisonFromCombatDamage') {
+      const effect = trigger.effect;
+      const target = g.players.find(player => player.id === effect.damagedPlayerId);
+      if (!target) return;
+      const amount = effect.amount;
+      g = {
+        ...g,
+        players: g.players.map(player =>
+          player.id === target.id ? { ...player, poisonCounters: player.poisonCounters + amount } : player
+        ),
+        triggerQueue: g.triggerQueue.map(t =>
+          t.id === triggerId
+            ? { ...t, acknowledged: true, data: { ...t.data, shortcutApplied: true, poisonedPlayerId: target.id, poisonCounters: amount } }
+            : t
+        ),
+        stack: g.stack.filter(item => item.parentId !== triggerId),
+      };
+      const action = createAction(
+        g,
+        trigger.controllerId,
+        'ADD_COUNTER',
+        `${trigger.sourceName} shortcut: ${target.name} gets ${amount} poison counter${amount === 1 ? '' : 's'}.`,
+        trigger.sourceInstanceId ? [trigger.sourceInstanceId] : [],
+        {
+          shortcut: 'poisonFromCombatDamage',
+          triggerId,
+          poisonedPlayerId: target.id,
+          poisonCounters: amount,
+        },
+      );
+      set({ game: { ...g, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
+      return;
+    }
+
+    if (trigger.effect.kind === 'createToken') {
+      const effect = trigger.effect;
+      for (let index = 0; index < effect.count; index++) {
+        g = createToken(g, effect.controllerId, {
+          ...effect.token,
+          id: `token-${effect.token.name.toLowerCase().replace(/\s+/g, '-')}`,
+          cmc: 0,
+          colorIdentity: effect.token.colors,
+          isDoubleFaced: false,
+          legalities: {},
+        });
+      }
+      g = {
+        ...g,
+        triggerQueue: g.triggerQueue.map(t =>
+          t.id === triggerId
+            ? { ...t, acknowledged: true, data: { ...t.data, shortcutApplied: true, tokenName: effect.token.name, tokenCount: effect.count } }
+            : t
+        ),
+        stack: g.stack.filter(item => item.parentId !== triggerId),
+      };
+      const action = createAction(
+        g,
+        trigger.controllerId,
+        'ADD_TOKEN',
+        `${trigger.sourceName} shortcut: created ${effect.count} ${effect.token.name} token${effect.count === 1 ? '' : 's'}.`,
+        trigger.sourceInstanceId ? [trigger.sourceInstanceId] : [],
+        {
+          shortcut: 'createToken',
+          triggerId,
+          tokenName: effect.token.name,
+          tokenCount: effect.count,
+        },
+      );
+      set({ game: { ...g, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
+    }
   },
 
   moveTriggerUp: (triggerId) => {
@@ -1287,7 +1527,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         triggerText: missed?.text,
         controllerId: missed?.controllerId,
       });
-    set({ game: { ...g, triggerQueue: queue, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
+    set({ game: { ...g, stack: g.stack.filter(item => item.parentId !== triggerId), triggerQueue: queue, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
   },
 
   // ── Combat ────────────────────────────────────────────────────────────────
@@ -1382,8 +1622,9 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     // Helper: does a card have a keyword (checks keywords array + oracle text)
     const hasKw = (card: (typeof g.cards)[string], kw: string) => {
       const lc = kw.toLowerCase();
-      return card.definition.keywords.some(k => k.toLowerCase() === lc) ||
-        card.definition.oracleText.toLowerCase().includes(lc);
+      const def = getEffectiveCardDefinition(card);
+      return def.keywords.some(k => k.toLowerCase() === lc) ||
+        def.oracleText.toLowerCase().includes(lc);
     };
 
     // CR 510.1–510.4: First Strike / Double Strike create a separate damage step
@@ -1410,7 +1651,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         if (blockers.length === 0) {
           if (!attackerDealsNow) continue;
           // Unblocked — deal damage to target player
-          const power = parseInt(attackerCard.definition.power || '0', 10) || 0;
+          const power = parseInt(getEffectiveCardDefinition(attackerCard).power || '0', 10) || 0;
           const hasInfect = hasKw(attackerCard, 'Infect');
           const hasPoison = hasKw(attackerCard, 'Poisonous');
           const hasLifelink = hasKw(attackerCard, 'Lifelink');
@@ -1430,11 +1671,19 @@ export const useGameStore = create<GameStore>()((set, get) => ({
           if (isCommander && g.config.useCommanderDamage && !hasInfect && power > 0) {
             g = addCommanderDamage(g, attacker.targetPlayerId, attacker.instanceId, power);
           }
+          if (power > 0) {
+            g = appendDetectedTriggersToStack(
+              g,
+              detectCombatDamageTriggers(g, attackerCard, attacker.targetPlayerId, power),
+              attackerCard.controllerId,
+              'combat damage',
+            );
+          }
         } else {
           // Blocked — assign damage to/from blockers
           // CR 510: Attacker and blocker damage is INDEPENDENT.
           // A blocker without FS deals in the normal step even if its attacker has FS.
-          const attackerPower = parseInt(attackerCard.definition.power || '0', 10) || 0;
+          const attackerPower = parseInt(getEffectiveCardDefinition(attackerCard).power || '0', 10) || 0;
           const hasDeathtouch = hasKw(attackerCard, 'Deathtouch');
           const hasLifelink = hasKw(attackerCard, 'Lifelink');
           let totalDamageDealt = 0;
@@ -1458,7 +1707,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
             // Blocker marks damage on attacker (independently per CR 510)
             if (blockerDealsNow) {
-              const blockerPower = parseInt(blocker.definition.power || '0', 10) || 0;
+              const blockerPower = parseInt(getEffectiveCardDefinition(blocker).power || '0', 10) || 0;
               const blockerDeathtouch = hasKw(blocker, 'Deathtouch');
               const dmgToAttacker = blockerDeathtouch ? 1 : blockerPower;
               g = { ...g, cards: { ...g.cards,
