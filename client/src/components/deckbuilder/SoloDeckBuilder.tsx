@@ -101,6 +101,10 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
     setLogicText(serializeDeckLogic(next));
   }
 
+  useEffect(() => {
+    refreshExchange(draft);
+  }, []);
+
   function replaceDraft(next: Deck, options: { refreshText?: boolean; sync?: boolean } = {}) {
     setDraft(next);
     if (!selectedCard && next.cards[0]) setSelectedCard(next.cards[0].name);
@@ -149,7 +153,7 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
   function handleSave() {
     if (!savedDecks.some(deck => deck.id === draft.id) && savedDecks.length >= MAX_STORED_DECKS) {
       setSaveLimitOpen(true);
-      setStatus('Saved deck slots are full. Export this build as a file or delete a stored deck first.');
+      setStatus('Saved deck slots are full. Download this build as a file or delete a stored deck first.');
       return;
     }
     saveDeck({ ...draft, importedAt: Date.now() });
@@ -164,7 +168,7 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
       setDraft(copy);
       refreshExchange(copy);
       setSaveLimitOpen(true);
-      setStatus('Saved deck slots are full. Export this copy as a file or delete a stored deck first.');
+      setStatus('Saved deck slots are full. Download this copy as a file or delete a stored deck first.');
       return;
     }
     saveDeck(copy);
@@ -209,11 +213,6 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
     setStatus(result.errors.length ? result.errors.join(' ') : `Imported ${result.cardCount} cards from URL. ${result.warnings[0] ?? ''}`);
   }
 
-  function handleExport() {
-    refreshExchange(draft);
-    setStatus('Export text refreshed.');
-  }
-
   function handleExportFile(deckToExport = draft) {
     const payload = JSON.stringify({
       version: 1,
@@ -233,7 +232,7 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
     link.remove();
     URL.revokeObjectURL(url);
     setSaveLimitOpen(false);
-    setStatus(`Exported "${deckToExport.name}" as a file.`);
+    setStatus(`Downloaded "${deckToExport.name}" as a file.`);
   }
 
   async function handleImportFile(file: File | undefined) {
@@ -255,6 +254,24 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
     }
     setExchangeText(text);
     setStatus(`Loaded "${file.name}" into the importer.`);
+  }
+
+  function handleSelectSavedDeck(deck: Deck) {
+    setDraft(deck);
+    setSelectedCard(deck.commanders[0] ?? deck.cards[0]?.name ?? '');
+    refreshExchange(deck);
+    if (liveSyncEnabled) void syncDeckForTesting(deck);
+  }
+
+  function handleDeleteDraft() {
+    deleteDeck(draft.id);
+    store.loadDecks();
+    const blank = createBlankDeck('Solo Lab Deck');
+    setDraft(blank);
+    setSelectedCard('');
+    refreshExchange(blank);
+    setSaveLimitOpen(false);
+    setStatus(`Deleted "${draft.name}" from saved slots.`);
   }
 
   function handleAddTrigger() {
@@ -437,12 +454,11 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
         </div>
 
         <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          <button data-testid="solo-save-deck" onClick={handleSave} style={buttonStyle('#1e3a5f', '#bfdbfe')}>Save</button>
-          <button data-testid="solo-save-as-deck" onClick={handleSaveAs} style={buttonStyle('#312e81', '#c4b5fd')}>Save As</button>
+          <button data-testid="solo-save-deck" onClick={handleSave} title="Save this deck into one of your 3 stored deck slots." style={buttonStyle('#1e3a5f', '#bfdbfe')}>Save Slot</button>
+          <button data-testid="solo-save-as-deck" onClick={handleSaveAs} title="Duplicate this build into a new stored slot." style={buttonStyle('#312e81', '#c4b5fd')}>Duplicate Slot</button>
           <button data-testid="solo-load-deck" onClick={handleLoad} style={buttonStyle('#14532d', '#86efac')}>{loadLabel}</button>
-          <button onClick={handleExport} style={buttonStyle('#1e293b', '#fbbf24')}>Export</button>
-          <button onClick={() => handleExportFile()} style={buttonStyle('#3f2a08', '#fbbf24')}>Export File</button>
-          <button onClick={() => fileInputRef.current?.click()} style={buttonStyle('#0f172a', '#93c5fd')}>Import File</button>
+          <button onClick={() => handleExportFile()} title="Download a portable deck backup file." style={buttonStyle('#3f2a08', '#fbbf24')}>Download File</button>
+          <button onClick={() => fileInputRef.current?.click()} title="Load a downloaded deck file or text decklist." style={buttonStyle('#0f172a', '#93c5fd')}>Open File</button>
           <input
             ref={fileInputRef}
             type="file"
@@ -464,24 +480,20 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
             alignItems: 'center',
             justifyContent: 'space-between',
           }}>
-            <span>Saved deck slots are full. Keep building by exporting this deck as a file.</span>
-            <button onClick={() => handleExportFile()} style={buttonStyle('#713f12', '#fde68a')}>Export</button>
+            <span>Saved deck slots are full. Keep building by downloading this deck as a file.</span>
+            <button onClick={() => handleExportFile()} style={buttonStyle('#713f12', '#fde68a')}>Download</button>
           </div>
         )}
         {status && <div style={{ fontSize: 10, color: '#93c5fd' }}>{status}</div>}
         {savedDecks.length > 0 && (
           <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
             {savedDecks.map(deck => (
-              <button key={deck.id} onClick={() => { setDraft(deck); setSelectedCard(deck.commanders[0] ?? deck.cards[0]?.name ?? ''); }} style={chipStyle(draft.id === deck.id)}>
+              <button key={deck.id} onClick={() => handleSelectSavedDeck(deck)} style={chipStyle(draft.id === deck.id)}>
                 {deck.name}
               </button>
             ))}
             <button
-              onClick={() => {
-                deleteDeck(draft.id);
-                store.loadDecks();
-                setDraft(createBlankDeck('Solo Lab Deck'));
-              }}
+              onClick={handleDeleteDraft}
               style={buttonStyle('#450a0a', '#fca5a5')}
             >
               Delete
@@ -535,8 +547,8 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
         )}
 
         <div style={headerStyle}>
-          <span>Import / Export</span>
-          <button onClick={handleImport} style={buttonStyle('#1d4ed8', '#dbeafe')}>Import Text</button>
+          <span>Deck Text</span>
+          <button onClick={handleImport} style={buttonStyle('#1d4ed8', '#dbeafe')}>Apply Text</button>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 6 }}>
           <input
@@ -551,7 +563,7 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
           data-testid="solo-import-export-text"
           value={exchangeText}
           onChange={event => setExchangeText(event.target.value)}
-          placeholder="Paste a decklist here, or click Export to generate one from the builder."
+          placeholder="Paste a decklist here, or use the live text generated from the current build."
           rows={compact ? 5 : 8}
           style={textareaStyle}
         />

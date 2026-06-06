@@ -1,4 +1,4 @@
-import { Suspense, lazy, useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import {
   importDeckFromUrl,
@@ -33,16 +33,16 @@ type ImportMode = 'text' | 'url';
 
 const DEFAULT_COLORS = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899'];
 
+function shouldShowDeckImportPanel(mode: GameMode): boolean {
+  return mode === 'table';
+}
+
 const HOUSE_RULE_PRESETS = [
   { id: 'free_mulligan', name: 'Free Mulligan', description: 'First mulligan is free (no card loss)' },
   { id: 'no_commander_tax', name: 'No Commander Tax', description: 'Commanders don\'t cost more to cast from command zone' },
   { id: 'extra_land', name: 'Extra Land Drop', description: 'Each player may play an additional land per turn' },
   { id: 'shared_pool', name: 'Rule Zero Session', description: 'Custom power level agreement in effect' },
 ];
-
-const SoloDeckBuilder = lazy(() =>
-  import('../deckbuilder/SoloDeckBuilder').then(module => ({ default: module.SoloDeckBuilder }))
-);
 
 export function LobbyScreen() {
   const store = useGameStore();
@@ -292,8 +292,6 @@ export function LobbyScreen() {
     store.loadDecks();
   }
 
-  const deckPanelMode = gameMode;
-
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 20000,
@@ -305,7 +303,7 @@ export function LobbyScreen() {
     }}>
       <div style={{
         width: '100%',
-        maxWidth: gameMode === 'solo' ? 1180 : 860,
+        maxWidth: 860,
         padding: 24,
         display: 'flex',
         flexDirection: 'column',
@@ -562,27 +560,7 @@ export function LobbyScreen() {
             )}
           </div>
 
-          {deckPanelMode === 'solo' ? (
-          <div style={{
-            flex: '1.4 1 520px',
-            minWidth: 0,
-            background: '#0b0f12',
-            border: '1px solid #26323a',
-            borderRadius: 10,
-            padding: 12,
-          }}>
-            <Suspense fallback={null}>
-              <SoloDeckBuilder
-                playerId={activeSetupPlayer.id}
-                loadLabel="Load for Test"
-                onLoadDeck={async deck => {
-                  updatePlayer(setupPlayerIndex, { deckId: deck.id });
-                  await store.loadDeck(activeSetupPlayer.id, deck);
-                }}
-              />
-            </Suspense>
-          </div>
-          ) : (
+          {shouldShowDeckImportPanel(gameMode) && (
           /* Right: Deck import */
           <div style={{
             flex: '1 1 340px',
