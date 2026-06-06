@@ -4,7 +4,9 @@
  * Run with: npx tsx tests/deck-import.test.ts
  */
 
-import { importDecklist } from '../client/src/engine/deckImport';
+import { importDecklist, normalizeCommanderDeck } from '../client/src/engine/deckImport';
+import { createDefaultGameConfig, createEmptyGameState, createPlayer, loadDeckIntoPlayer } from '../client/src/engine/gameEngine';
+import type { Deck } from '../client/src/types/game';
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -118,6 +120,50 @@ try {
 
     assert(result.deck.commanders.length === 0, 'expected Companion section not to create a commander');
     assert(result.deck.sideboard.some(card => card.name === 'Lutri, the Spellchaser'), 'expected companion to import outside the main deck');
+  }
+
+  {
+    const rawCorruptedDeck: Deck = {
+      id: 'corrupt-vial',
+      name: 'Corrupt Vial Import',
+      format: 'commander',
+      commanders: [
+        'Vial Smasher the Fierce',
+        'Sakashima of a Thousand Faces',
+        'Sol Ring',
+        'Lightning Bolt',
+        'Command Tower',
+      ],
+      cards: [
+        { name: 'Vial Smasher the Fierce', count: 1 },
+        { name: 'Sakashima of a Thousand Faces', count: 1 },
+        { name: 'Sol Ring', count: 1 },
+        { name: 'Lightning Bolt', count: 1 },
+        { name: 'Command Tower', count: 1 },
+      ],
+      sideboard: [],
+      maybeboard: [],
+      colorIdentity: [],
+      importedAt: 1,
+    };
+    const corrupted = normalizeCommanderDeck(rawCorruptedDeck);
+
+    assert(corrupted.commanders.join('|') === 'Vial Smasher the Fierce|Sakashima of a Thousand Faces', 'expected corrupt deck commander list to be clamped');
+    assert(corrupted.cards.some(card => card.name === 'Sol Ring'), 'expected non-commander cards to remain in the deck');
+
+    const config = createDefaultGameConfig(2);
+    const player = createPlayer('p1', 'Player 1', 0, '#3b82f6', config);
+    const game = {
+      ...createEmptyGameState(config),
+      players: [player, createPlayer('p2', 'Player 2', 1, '#ef4444', config)],
+      activePlayerId: player.id,
+      priorityPlayerId: player.id,
+    };
+    const loaded = await loadDeckIntoPlayer(game, player.id, rawCorruptedDeck);
+    const loadedPlayer = loaded.players.find(item => item.id === player.id);
+    assert(loadedPlayer?.commandZone.length === 2, 'expected gameplay loader to create only two command-zone commanders');
+    assert(loadedPlayer?.commanders.length === 2, 'expected gameplay loader to track only two commander instance ids');
+    assert(loadedPlayer?.library.length === 3, 'expected non-commander cards to stay in the library');
   }
 } finally {
   globalThis.fetch = originalFetch;

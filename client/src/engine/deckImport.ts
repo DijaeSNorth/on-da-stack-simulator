@@ -632,13 +632,60 @@ function splitOnce(value: string, separator: string): [string, string] | [string
 }
 
 function clampCommanders(names: string[], warnings: string[], source: 'explicit' | 'auto'): string[] {
-  const unique = [...new Set(names)];
+  const unique = uniqueCommanderNames(names);
   if (unique.length <= MAX_COMMANDERS) return unique;
   const kept = unique.slice(0, MAX_COMMANDERS);
   warnings.push(source === 'explicit'
     ? `Commander section contained ${unique.length} unique cards. Only ${kept.join(' and ')} will be treated as commanders; the rest remain in the deck.`
     : `Auto-detected ${unique.length} possible commanders. Only ${kept.join(' and ')} will be treated as commanders; choose commanders manually if needed.`);
   return kept;
+}
+
+function uniqueCommanderNames(names: unknown): string[] {
+  if (!Array.isArray(names)) return [];
+  const seen = new Set<string>();
+  const commanders: string[] = [];
+  for (const value of names) {
+    const name = normalizeName(String(value ?? ''));
+    const key = name.toLowerCase();
+    if (!name || seen.has(key)) continue;
+    seen.add(key);
+    commanders.push(name);
+  }
+  return commanders;
+}
+
+function normalizeDeckEntries(entries: unknown): Deck['cards'] {
+  if (!Array.isArray(entries)) return [];
+  const normalized: Deck['cards'] = [];
+  for (const entry of entries) {
+    const item = entry as Partial<Deck['cards'][number]>;
+    const name = normalizeName(String(item?.name ?? ''));
+    const count = Math.max(0, Math.floor(Number(item?.count ?? 0)));
+    if (name && count > 0) normalized.push({ name, count });
+  }
+  return normalized;
+}
+
+export function normalizeCommanderDeck(deck: Deck): Deck {
+  const commanders = uniqueCommanderNames(deck.commanders).slice(0, MAX_COMMANDERS);
+  const cards = normalizeDeckEntries(deck.cards);
+  const sideboard = normalizeDeckEntries(deck.sideboard);
+  const maybeboard = normalizeDeckEntries(deck.maybeboard);
+
+  for (const commander of commanders) {
+    if (!cards.some(card => card.name.toLowerCase() === commander.toLowerCase())) {
+      cards.unshift({ name: commander, count: 1 });
+    }
+  }
+
+  return {
+    ...deck,
+    commanders,
+    cards,
+    sideboard,
+    maybeboard,
+  };
 }
 
 /**
@@ -768,7 +815,7 @@ export async function importDecklist(
     if (counts) warnings.push(`Custom logic loaded: ${counts}.`);
   }
 
-  const deck: Deck = {
+  const deck: Deck = normalizeCommanderDeck({
     id: deckId,
     name: deckName,
     format: 'commander',
@@ -780,7 +827,7 @@ export async function importDecklist(
     importSource: source,
     importedAt: Date.now(),
     logicFile,
-  };
+  });
 
   return { deck, errors, warnings, commanders, cardCount };
 }
@@ -896,6 +943,7 @@ export function toggleFavoriteDeck(deckId: string): string[] {
 function limitStoredDecks(decks: Deck[]): Deck[] {
   const favorites = new Set(loadFavoriteDeckIds());
   return [...decks]
+    .map(deck => normalizeCommanderDeck(deck))
     .sort((a, b) => {
       const favoriteDelta = Number(favorites.has(b.id)) - Number(favorites.has(a.id));
       if (favoriteDelta !== 0) return favoriteDelta;

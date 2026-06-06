@@ -18,7 +18,7 @@ import {
   checkCastLegality, checkTapLegality, checkAttackLegality, checkBlockLegality,
   detectAttackTriggers, detectETBTriggers, getActiveModifiers,
 } from '../engine/assistantEngine';
-import { saveDeck, loadDecksFromStorage } from '../engine/deckImport';
+import { saveDeck, loadDecksFromStorage, normalizeCommanderDeck } from '../engine/deckImport';
 import { createReplay, saveReplayToStorage } from '../engine/replayEngine';
 import { getActiveProfile } from '../engine/profileStorage';
 import {
@@ -590,7 +590,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   loadDeck: async (playerId, deck) => {
-    const newState = await loadDeckIntoPlayer(get().game, playerId, deck);
+    const newState = await loadDeckIntoPlayer(get().game, playerId, normalizeCommanderDeck(deck));
     set({ game: newState });
   },
 

@@ -63,6 +63,20 @@ decks = loadDecksFromStorage();
 assert(decks.length === MAX_STORED_DECKS, 'expected bulk storage writes to enforce the cap');
 assert(decks.map(deck => deck.id).join(',') === 'd,c,b', 'expected bulk write to keep newest 3 decks');
 
+saveDecksToStorage([{
+  ...makeDeck('corrupt', 999),
+  commanders: ['Vial Smasher the Fierce', 'Sakashima of a Thousand Faces', 'Sol Ring', 'Lightning Bolt'],
+  cards: [
+    { name: 'Vial Smasher the Fierce', count: 1 },
+    { name: 'Sakashima of a Thousand Faces', count: 1 },
+    { name: 'Sol Ring', count: 1 },
+    { name: 'Lightning Bolt', count: 1 },
+  ],
+}]);
+decks = loadDecksFromStorage();
+assert(decks[0].commanders.join('|') === 'Vial Smasher the Fierce|Sakashima of a Thousand Faces', 'expected corrupt saved commander list to be normalized on load');
+assert(decks[0].cards.some(card => card.name === 'Sol Ring'), 'expected non-commander cards to remain in saved deck');
+
 storage.clear();
 
 saveDeck(makeDeck('favorite-old', 100));

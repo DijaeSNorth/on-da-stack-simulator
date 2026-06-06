@@ -6,6 +6,7 @@ import type {
   PlayerAvatarImage,
 } from '../types/game';
 import { fetchCardsByNames } from '../data/cardDatabase';
+import { normalizeCommanderDeck } from './deckImport';
 import { PHASE_ORDER } from './phaseMeta';
 
 // ─── Factory Helpers ──────────────────────────────────────────────────────────
@@ -477,13 +478,14 @@ export async function loadDeckIntoPlayer(
   playerId: string,
   deck: Deck
 ): Promise<GameState> {
+  const normalizedDeck = normalizeCommanderDeck(deck);
   const player = state.players.find(p => p.id === playerId);
   if (!player) return state;
 
   // Fetch all card definitions
-  const allNames = deck.cards.map(c => c.name);
+  const allNames = normalizedDeck.cards.map(c => c.name);
   const defsMap = await fetchCardsByNames(allNames);
-  const customDefs = getCustomCardDefinitionMap(deck);
+  const customDefs = getCustomCardDefinitionMap(normalizedDeck);
 
   let newState = { ...state };
   const newCards: Record<string, CardState> = { ...newState.cards };
@@ -497,16 +499,16 @@ export async function loadDeckIntoPlayer(
     sideboard: [],
     maybeboard: [],
     commanders: [],
-    deckId: deck.id,
+    deckId: normalizedDeck.id,
   };
 
   // Create card instances
-  for (const { name, count } of deck.cards) {
+  for (const { name, count } of normalizedDeck.cards) {
     const def = customDefs.get(name.toLowerCase()) ?? defsMap.get(name);
-    const isCommander = deck.commanders.includes(name);
+    const isCommander = normalizedDeck.commanders.includes(name);
 
     for (let i = 0; i < count; i++) {
-      const d = applyDeckLogicToDefinition(def || createPlaceholderDef(name), deck);
+      const d = applyDeckLogicToDefinition(def || createPlaceholderDef(name), normalizedDeck);
       newDefs[d.id] = d;
 
       if (isCommander && i === 0) {
@@ -523,8 +525,8 @@ export async function loadDeckIntoPlayer(
   }
 
   // Sideboard
-  for (const { name, count } of deck.sideboard) {
-    const def = applyDeckLogicToDefinition(customDefs.get(name.toLowerCase()) ?? defsMap.get(name) ?? createPlaceholderDef(name), deck);
+  for (const { name, count } of normalizedDeck.sideboard) {
+    const def = applyDeckLogicToDefinition(customDefs.get(name.toLowerCase()) ?? defsMap.get(name) ?? createPlaceholderDef(name), normalizedDeck);
     newDefs[def.id] = def;
     for (let i = 0; i < count; i++) {
       const cs = applyDeckLogicToCard(createCardState(def, playerId, 'sideboard'), def);
