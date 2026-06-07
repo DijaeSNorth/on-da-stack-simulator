@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useGameStore } from '../../store/gameStore';
 import type { AssistantMessage } from '../../store/gameStore';
 import type { ActionRecord, StackObject, TriggerItem } from '../../types/game';
+import { buildIssueReportUrl } from '../../engine/issueReport';
 
 const SEVERITY_COLORS: Record<string, string> = {
   legal: '#22c55e',
@@ -55,6 +56,15 @@ function makeFlagKey(text: string, turn: number, phase: string): string {
 function formatClock(timestamp: number): string {
   if (!timestamp) return '';
   return new Date(timestamp).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function openReportIssue(game: ReturnType<typeof useGameStore.getState>['game'], messages: AssistantMessage[]): void {
+  const url = buildIssueReportUrl(game, messages, {
+    pageUrl: typeof window !== 'undefined' ? window.location.href : undefined,
+    userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : undefined,
+  });
+  const opened = window.open(url, '_blank', 'noopener,noreferrer');
+  if (opened) opened.opener = null;
 }
 
 function AssistantTab() {
@@ -136,7 +146,29 @@ function AssistantTab() {
         </div>
       )}
       <div style={{ flex: 1, overflowY: 'auto', padding: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
-        <div style={sectionHeaderStyle}>Judge / Action Timeline</div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+          <div style={sectionHeaderStyle}>Judge / Action Timeline</div>
+          <button
+            type="button"
+            data-testid="btn-report-github-issue"
+            onClick={() => openReportIssue(game, messages)}
+            data-help-title="Report Issue"
+            data-help-body="Opens a GitHub issue draft with current turn, stack, trigger, judge, and recent action context already filled in."
+            title="Report an issue with current game context"
+            style={{
+              fontSize: 9,
+              padding: '3px 7px',
+              background: 'rgba(30,41,59,0.72)',
+              color: '#94a3b8',
+              border: '1px solid #334155',
+              borderRadius: 4,
+              cursor: 'pointer',
+              flexShrink: 0,
+            }}
+          >
+            Report Issue
+          </button>
+        </div>
         {timeline.length === 0 ? (
           <div style={{
             color: '#334155', fontSize: 12, fontStyle: 'italic', textAlign: 'center',
@@ -575,6 +607,8 @@ function TriggersTab({ embedded = false }: { embedded?: boolean }) {
   const pending = game.triggerQueue.filter(t => !t.acknowledged);
   const missed   = game.triggerQueue.filter(t => t.missed);
   const acknowledged = game.triggerQueue.filter(t => t.acknowledged && !t.missed);
+  const visiblePending = pending.slice(0, embedded ? 10 : 25);
+  const hiddenPendingCount = pending.length - visiblePending.length;
 
   return (
     <div style={embedded ? { flexShrink: 0 } : { flex: 1, overflowY: 'auto', padding: 8 }}>
@@ -596,7 +630,7 @@ function TriggersTab({ embedded = false }: { embedded?: boolean }) {
           <div style={{ fontSize: 9, color: '#f59e0b', fontWeight: 700, marginBottom: 4, textTransform: 'uppercase', letterSpacing: '0.08em' }}>
             Pending ({pending.length})
           </div>
-          {pending.map((t: TriggerItem, i: number) => {
+          {visiblePending.map((t: TriggerItem, i: number) => {
             const player = game.players.find(p => p.id === t.controllerId);
             return (
               <div
@@ -662,10 +696,15 @@ function TriggersTab({ embedded = false }: { embedded?: boolean }) {
               </div>
             );
           })}
+          {hiddenPendingCount > 0 && (
+            <div style={{ fontSize: 10, color: '#94a3b8', padding: '6px 8px', background: 'rgba(148,163,184,0.08)', border: '1px dashed #334155', borderRadius: 5, textAlign: 'center', marginBottom: 4 }}>
+              +{hiddenPendingCount} more pending triggers in the battlefield queue.
+            </div>
+          )}
           {pending.length >= 2 && (
             <button
               data-testid="btn-resolve-all-triggers-panel"
-              onClick={() => pending.forEach(t => store.ackTrigger(t.id))}
+              onClick={() => store.ackAllTriggers()}
               style={{ width: '100%', padding: '4px 0', fontSize: 9, background: '#1e293b', color: '#64748b', border: '1px solid #334155', borderRadius: 4, cursor: 'pointer', marginTop: 4 }}
             >Resolve All ({pending.length})</button>
           )}

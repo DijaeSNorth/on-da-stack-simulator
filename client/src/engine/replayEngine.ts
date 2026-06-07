@@ -108,7 +108,7 @@ export function createReplay(game: GameState, name?: string): Replay {
   let lastCheckpointTurn = -1;
   log.forEach((action, index) => {
     const isTurnStart = action.actionType === 'CHANGE_PHASE' &&
-      (action.data?.phase === 'untap' || action.data?.to === 'untap') &&
+      (action.phase === 'untap' || action.data?.phase === 'untap' || action.data?.to === 'untap') &&
       action.turn !== lastCheckpointTurn;
     const isGameEnd = action.actionType === 'GAME_END';
 

@@ -318,13 +318,15 @@ export function TriggerQueuePanel() {
 
   const pending   = game.triggerQueue.filter(t => !t.acknowledged);
   const hasMissed = game.triggerQueue.some(t => t.missed);
+  const visiblePending = pending.slice(0, 25);
+  const hiddenPendingCount = pending.length - visiblePending.length;
+
+  const resolveAll = useCallback(() => {
+    store.ackAllTriggers();
+  }, [store]);
 
   // Don't render if nothing pending
   if (pending.length === 0) return null;
-
-  const resolveAll = useCallback(() => {
-    for (const t of pending) store.ackTrigger(t.id);
-  }, [pending, store]);
 
   const headerColor = hasMissed ? '#ef4444' : '#f59e0b';
   const headerBg    = hasMissed ? 'rgba(127,29,29,0.95)' : 'rgba(120,53,15,0.95)';
@@ -405,7 +407,7 @@ export function TriggerQueuePanel() {
           </div>
 
           {/* Trigger rows */}
-          {pending.map((t, i) => {
+          {visiblePending.map((t, i) => {
             const player = game.players.find(p => p.id === t.controllerId);
             return (
               <TriggerRow
@@ -424,6 +426,22 @@ export function TriggerQueuePanel() {
               />
             );
           })}
+
+          {hiddenPendingCount > 0 && (
+            <div
+              style={{
+                fontSize: 10,
+                color: '#94a3b8',
+                padding: '6px 8px',
+                background: 'rgba(148,163,184,0.08)',
+                border: '1px dashed #334155',
+                borderRadius: 5,
+                textAlign: 'center',
+              }}
+            >
+              +{hiddenPendingCount} more pending triggers. Resolve all still affects the full queue.
+            </div>
+          )}
 
           {/* Footer: Resolve All button (only when 2+ triggers) */}
           {pending.length >= 2 && (

@@ -9,13 +9,9 @@ import { CommanderTable } from './components/battlefield/CommanderTable';
 import { PlayerHand } from './components/hand/PlayerHand';
 import { FloatingCardPreview } from './components/cards/CardPreview';
 import { CardContextMenu } from './components/cards/CardContextMenu';
-import { ZoneDrawer } from './components/zones/ZoneDrawer';
 import { LobbyScreen } from './components/lobby/LobbyScreen';
 import { CommandInput } from './components/command/CommandInput';
 import { CommanderCastMoment } from './components/commander/CommanderCastMoment';
-import { PracticeDummyPanel } from './components/solo/PracticeDummyPanel';
-import { WelcomeModal, CoachMark } from './components/tutorial/TutorialOverlay';
-import { GlobalHelpTooltip } from './components/tutorial/GlobalHelpTooltip';
 import { useIsMobile } from './hooks/use-mobile';
 
 const CardSearchPanel = lazy(() =>
@@ -29,6 +25,16 @@ const ProfilePanel = lazy(() =>
 );
 const SoloDeckBuilder = lazy(() =>
   import('./components/deckbuilder/SoloDeckBuilder').then(module => ({ default: module.SoloDeckBuilder }))
+);
+const ZoneDrawer = lazy(() =>
+  import('./components/zones/ZoneDrawer').then(module => ({ default: module.ZoneDrawer }))
+);
+const PracticeDummyPanel = lazy(() =>
+  import('./components/solo/PracticeDummyPanel').then(module => ({ default: module.PracticeDummyPanel }))
+);
+const TutorialOverlay = lazy(() => import('./components/tutorial/TutorialOverlay'));
+const GlobalHelpTooltip = lazy(() =>
+  import('./components/tutorial/GlobalHelpTooltip').then(module => ({ default: module.GlobalHelpTooltip }))
 );
 
 export default function App() {
@@ -61,9 +67,9 @@ export default function App() {
         <LobbyScreen />
         <Suspense fallback={null}>
           <ProfilePanel />
+          <TutorialOverlay />
+          <GlobalHelpTooltip />
         </Suspense>
-        <WelcomeModal />
-        <GlobalHelpTooltip />
       </div>
     );
   }
@@ -122,7 +128,11 @@ export default function App() {
           {/* Battlefield (65-75% of screen) */}
           <div style={{ flex: 1, overflow: 'hidden', minHeight: 0, position: 'relative' }}>
             <CommanderTable />
-            <PracticeDummyPanel />
+            {game.config.playerCount === 1 && (
+              <Suspense fallback={null}>
+                <PracticeDummyPanel />
+              </Suspense>
+            )}
           </div>
 
           {/* Hand */}
@@ -182,16 +192,18 @@ export default function App() {
       <FloatingCardPreview />
       <CommanderCastMoment />
       <CardContextMenu />
-      <ZoneDrawer />
+      {ui.zoneDrawer && (
+        <Suspense fallback={null}>
+          <ZoneDrawer />
+        </Suspense>
+      )}
       <Suspense fallback={null}>
         <CardSearchPanel />
         <ReplayPanel />
         <ProfilePanel />
+        <TutorialOverlay />
+        <GlobalHelpTooltip />
       </Suspense>
-      {/* Tutorial system */}
-      <WelcomeModal />
-      <CoachMark />
-      <GlobalHelpTooltip />
     </div>
   );
 }

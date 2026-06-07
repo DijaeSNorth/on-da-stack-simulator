@@ -5,7 +5,7 @@ import { MultiplayerBadge } from './multiplayer/MultiplayerBadge';
 import { useTutorial } from '../store/tutorialStore';
 import { TutorialTooltip } from './tutorial/TutorialTooltip';
 import { TOOLTIPS } from '../store/tutorialStore';
-import { PulseBeacon } from './tutorial/TutorialOverlay';
+import { PulseBeacon } from './tutorial/PulseBeacon';
 import { getPhaseLabel } from '../engine/phaseMeta';
 import { BrandMark } from './branding/BrandMark';
 import { PlayerAvatar } from './profile/PlayerAvatar';

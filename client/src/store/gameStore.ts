@@ -10,7 +10,7 @@ import {
   addCounter, removeCounter, modifyLife, addCommanderDamage,
   nextPhase, setPhase, nextTurn, pushToStack, resolveTopStack,
   addTrigger, acknowledgeTrigger, drawCards, discardCard, createToken,
-  checkStateBasedActions, declareAttacker, declareBlocker, undoAction,
+  createTokens, checkStateBasedActions, declareAttacker, declareBlocker, undoAction,
   loadDeckIntoPlayer, createDefaultGameConfig, createCardState,
   triggerMyriad, clearCombatAssignments,
 } from '../engine/gameEngine';
@@ -111,6 +111,7 @@ const DEFAULT_PANEL_SIZES: UIState['panelSizes'] = {
   right: 280,
   deckBuilder: 430,
 };
+const MAX_TOKEN_BATCH = 250;
 
 function clampPanelSize(panel: keyof UIState['panelSizes'], value: number): number {
   const limits: Record<keyof UIState['panelSizes'], [number, number]> = {
@@ -227,6 +228,8 @@ export interface GameStore {
   moveCardToZone: (instanceId: string, toZone: CardState['zone'], toController?: string) => void;
   tapCard: (instanceId: string) => void;
   untapCard: (instanceId: string) => void;
+  tapCards: (instanceIds: string[]) => void;
+  untapCards: (instanceIds: string[]) => void;
   tapAllLands: (playerId: string) => void;
   untapAll: (playerId: string) => void;
   addCounterToCard: (instanceId: string, counterType: string, amount?: number) => void;
@@ -235,6 +238,7 @@ export interface GameStore {
   detachCard: (attachmentId: string) => void;
   transformCard: (instanceId: string) => void;
   createTokenCard: (controllerId: string, tokenDef: Parameters<typeof createToken>[2]) => void;
+  createTokenCards: (controllerId: string, tokenDef: Parameters<typeof createToken>[2], count?: number) => string[];
 
   modifyPlayerLife: (playerId: string, delta: number) => void;
   addCommanderDmg: (receivingPlayerId: string, commanderInstanceId: string, damage: number) => void;
@@ -257,6 +261,7 @@ export interface GameStore {
 
   addTriggerToQueue: (trigger: Omit<TriggerItem, 'id' | 'timestamp' | 'acknowledged' | 'missed'>) => void;
   ackTrigger: (triggerId: string) => void;
+  ackAllTriggers: () => void;
   applyTriggerShortcut: (triggerId: string) => void;
   /** Move a trigger up (toward index 0) in the queue — for APNAP ordering. */
   moveTriggerUp: (triggerId: string) => void;
@@ -1041,6 +1046,34 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     set({ game: { ...g, actionLog: [...g.actionLog, action] } });
   },
 
+  tapCards: (instanceIds) => {
+    let g = get().game;
+    const ids = [...new Set(instanceIds)].filter(id => {
+      const card = g.cards[id];
+      return card && card.zone === 'battlefield' && !card.tapped;
+    });
+    if (ids.length === 0) return;
+    for (const id of ids) g = tapCard(g, id, true);
+    const names = new Set(ids.map(id => g.cards[id]?.definition.name).filter(Boolean));
+    const label = names.size === 1 ? [...names][0] : 'permanent';
+    const action = createAction(g, g.activePlayerId, 'TAP', `Tapped ${ids.length} ${label}${ids.length === 1 ? '' : 's'}`, ids, { bulk: true });
+    set({ game: { ...g, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
+  },
+
+  untapCards: (instanceIds) => {
+    let g = get().game;
+    const ids = [...new Set(instanceIds)].filter(id => {
+      const card = g.cards[id];
+      return card && card.zone === 'battlefield' && card.tapped;
+    });
+    if (ids.length === 0) return;
+    for (const id of ids) g = tapCard(g, id, false);
+    const names = new Set(ids.map(id => g.cards[id]?.definition.name).filter(Boolean));
+    const label = names.size === 1 ? [...names][0] : 'permanent';
+    const action = createAction(g, g.activePlayerId, 'UNTAP', `Untapped ${ids.length} ${label}${ids.length === 1 ? '' : 's'}`, ids, { bulk: true });
+    set({ game: { ...g, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
+  },
+
   tapAllLands: (playerId) => {
     let g = get().game;
     const player = g.players.find(p => p.id === playerId);
@@ -1137,10 +1170,33 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   createTokenCard: (controllerId, tokenDef) => {
+    get().createTokenCards(controllerId, tokenDef, 1);
+  },
+
+  createTokenCards: (controllerId, tokenDef, count = 1) => {
     let g = get().game;
-    g = createToken(g, controllerId, tokenDef);
-    const action = createAction(g, controllerId, 'ADD_TOKEN', `Created ${tokenDef.name} token`);
+    const requestedCount = Math.max(0, Math.floor(count));
+    const safeCount = Math.min(requestedCount, MAX_TOKEN_BATCH);
+    if (safeCount === 0) return [];
+    const result = createTokens(g, controllerId, tokenDef, safeCount);
+    g = result.state;
+    const cappedText = requestedCount > safeCount ? ` (capped from ${requestedCount})` : '';
+    const action = createAction(
+      g,
+      controllerId,
+      'ADD_TOKEN',
+      `Created ${safeCount} ${tokenDef.name} token${safeCount === 1 ? '' : 's'}${cappedText}`,
+      result.tokenIds,
+      {
+        tokenName: tokenDef.name,
+        tokenCount: safeCount,
+        requestedCount,
+        capped: requestedCount > safeCount,
+        visualGroup: result.visualGroup,
+      },
+    );
     set({ game: { ...g, actionLog: [...g.actionLog, action] } });
+    return result.tokenIds;
   },
 
   // ── Player ────────────────────────────────────────────────────────────────
@@ -1381,6 +1437,32 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     set({ game: { ...g, stack: g.stack.filter(item => item.parentId !== triggerId), lastUpdatedAt: Date.now() } });
   },
 
+  ackAllTriggers: () => {
+    const g = get().game;
+    const pending = g.triggerQueue.filter(trigger => !trigger.acknowledged);
+    if (pending.length === 0) return;
+    const pendingIds = new Set(pending.map(trigger => trigger.id));
+    const action = createAction(
+      g,
+      g.activePlayerId,
+      'RESOLVE_STACK',
+      `Resolved ${pending.length} pending trigger${pending.length === 1 ? '' : 's'}`,
+      pending.flatMap(trigger => trigger.sourceInstanceId ? [trigger.sourceInstanceId] : []),
+      { triggerIds: [...pendingIds], bulk: true },
+    );
+    set({
+      game: {
+        ...g,
+        stack: g.stack.filter(item => !item.parentId || !pendingIds.has(item.parentId)),
+        triggerQueue: g.triggerQueue.map(trigger =>
+          pendingIds.has(trigger.id) ? { ...trigger, acknowledged: true } : trigger
+        ),
+        actionLog: [...g.actionLog, action],
+        lastUpdatedAt: Date.now(),
+      },
+    });
+  },
+
   applyTriggerShortcut: (triggerId) => {
     let g = get().game;
     const trigger = g.triggerQueue.find(t => t.id === triggerId);
@@ -1457,36 +1539,53 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
     if (trigger.effect.kind === 'createToken') {
       const effect = trigger.effect;
-      for (let index = 0; index < effect.count; index++) {
-        g = createToken(g, effect.controllerId, {
-          ...effect.token,
-          id: `token-${effect.token.name.toLowerCase().replace(/\s+/g, '-')}`,
-          cmc: 0,
-          colorIdentity: effect.token.colors,
-          isDoubleFaced: false,
-          legalities: {},
-        });
-      }
+      const requestedCount = Math.max(0, Math.floor(effect.count));
+      const safeCount = Math.min(requestedCount, MAX_TOKEN_BATCH);
+      const tokenResult = createTokens(g, effect.controllerId, {
+        ...effect.token,
+        id: `token-${effect.token.name.toLowerCase().replace(/\s+/g, '-')}`,
+        cmc: 0,
+        colorIdentity: effect.token.colors,
+        isDoubleFaced: false,
+        legalities: {},
+      }, safeCount);
+      g = tokenResult.state;
       g = {
         ...g,
         triggerQueue: g.triggerQueue.map(t =>
           t.id === triggerId
-            ? { ...t, acknowledged: true, data: { ...t.data, shortcutApplied: true, tokenName: effect.token.name, tokenCount: effect.count } }
+            ? {
+                ...t,
+                acknowledged: true,
+                data: {
+                  ...t.data,
+                  shortcutApplied: true,
+                  tokenName: effect.token.name,
+                  tokenCount: safeCount,
+                  requestedCount,
+                  capped: requestedCount > safeCount,
+                  visualGroup: tokenResult.visualGroup,
+                },
+              }
             : t
         ),
         stack: g.stack.filter(item => item.parentId !== triggerId),
       };
+      const cappedText = requestedCount > safeCount ? ` (capped from ${requestedCount})` : '';
       const action = createAction(
         g,
         trigger.controllerId,
         'ADD_TOKEN',
-        `${trigger.sourceName} shortcut: created ${effect.count} ${effect.token.name} token${effect.count === 1 ? '' : 's'}.`,
-        trigger.sourceInstanceId ? [trigger.sourceInstanceId] : [],
+        `${trigger.sourceName} shortcut: created ${safeCount} ${effect.token.name} token${safeCount === 1 ? '' : 's'}${cappedText}.`,
+        trigger.sourceInstanceId ? [trigger.sourceInstanceId, ...tokenResult.tokenIds] : tokenResult.tokenIds,
         {
           shortcut: 'createToken',
           triggerId,
           tokenName: effect.token.name,
-          tokenCount: effect.count,
+          tokenCount: safeCount,
+          requestedCount,
+          capped: requestedCount > safeCount,
+          visualGroup: tokenResult.visualGroup,
         },
       );
       set({ game: { ...g, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });

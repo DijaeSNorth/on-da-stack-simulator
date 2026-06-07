@@ -301,6 +301,10 @@ function moveToGraveyard(playerId: string, name: string): string {
   return id;
 }
 
+function countActions(type: string): number {
+  return useGameStore.getState().game.actionLog.filter(action => action.actionType === type).length;
+}
+
 async function multiplayerPlaythrough(stackDeck: Deck, graveyardDeck: Deck): Promise<void> {
   await loadTwoPlayerGame(stackDeck, graveyardDeck);
   const store = useGameStore.getState();
@@ -343,11 +347,97 @@ async function multiplayerPlaythrough(stackDeck: Deck, graveyardDeck: Deck): Pro
   assert(afterProliferate.players.find(player => player.id === 'p1')?.poisonCounters === 2, 'expected proliferate to add one poison counter');
   assert(afterProliferate.cards[agentId].counters.find(counter => counter.type === '+1/+1')?.count === 2, 'expected proliferate to add one +1/+1 counter');
 
+  useGameStore.getState().advanceTurn();
+  useGameStore.getState().advanceTurn();
+  assert(useGameStore.getState().game.activePlayerId === 'p1', 'expected turn cycle to return active player to Stack Pilot');
+
+  const chaosId = moveToHand('p1', 'Chaos Warp');
+  useGameStore.getState().castCard('p1', chaosId, { ids: ['p2'], labels: ['Graveyard Pilot'] });
+  const vialTrigger = useGameStore.getState().game.triggerQueue.find(trigger =>
+    !trigger.acknowledged &&
+    trigger.sourceName === 'Vial Smasher the Fierce' &&
+    trigger.effect?.kind === 'vialSmasherDamage'
+  );
+  assert(vialTrigger, 'expected Vial Smasher to create a first-spell trigger on the next Stack Pilot turn');
+  const p2LifeBeforeVial = useGameStore.getState().game.players.find(player => player.id === 'p2')!.life;
+  useGameStore.getState().applyTriggerShortcut(vialTrigger.id);
+  const p2LifeAfterVial = useGameStore.getState().game.players.find(player => player.id === 'p2')!.life;
+  assert(p2LifeAfterVial === p2LifeBeforeVial - vialTrigger.effect.manaValue, 'expected Vial shortcut to apply random-opponent damage equal to mana value');
+  assert(useGameStore.getState().game.stack.every(item => item.parentId !== vialTrigger.id), 'expected Vial shortcut to remove its stack reminder');
+
+  const counterId = moveToHand('p1', 'Counterspell');
+  useGameStore.getState().castCard('p1', counterId, { ids: [chaosId], labels: ['Chaos Warp'] });
+  const counterStack = useGameStore.getState().game.stack.find(item => item.sourceName === 'Counterspell');
+  assert(counterStack?.targetLabels?.includes('Chaos Warp'), 'expected Counterspell to show the spell it targets on stack');
+  useGameStore.getState().resolveStack();
+  const chaosStack = useGameStore.getState().game.stack.find(item => item.sourceName === 'Chaos Warp');
+  assert(chaosStack, 'expected Chaos Warp to remain on stack after Counterspell resolves for manual target resolution');
+  useGameStore.getState().counterSpell(chaosStack.id);
+  assert(useGameStore.getState().game.cards[chaosId].zone === 'graveyard', 'expected countered Chaos Warp to move to graveyard');
+
+  const tokenIds = useGameStore.getState().createTokenCards('p2', {
+    name: 'Zombie',
+    typeLine: 'Token Creature - Zombie',
+    power: '2',
+    toughness: '2',
+    colors: ['B'],
+    cardTypes: ['Creature'],
+    subTypes: ['Zombie'],
+  }, 180);
+  assert(tokenIds.length === 180, 'expected large token batch to create 180 tokens in one command');
+  const tokenGroups = new Set(tokenIds.map(id => useGameStore.getState().game.cards[id].visualGroup));
+  assert(tokenGroups.size === 1, 'expected large token batch to share one visual group for UI stacking');
+  const tokenAction = useGameStore.getState().game.actionLog.find(action =>
+    action.actionType === 'ADD_TOKEN' &&
+    action.data.tokenName === 'Zombie' &&
+    action.data.tokenCount === 180
+  );
+  assert(tokenAction, 'expected large token batch to be represented by one replay action');
+
+  for (let i = 0; i < 60; i++) {
+    useGameStore.getState().addTriggerToQueue({
+      sourceName: 'Purphoros, God of the Forge',
+      controllerId: 'p2',
+      text: `Token ETB damage reminder ${i + 1}`,
+      triggerType: 'ETB',
+      data: { stressIndex: i },
+    });
+  }
+  const massTriggers = useGameStore.getState().game.triggerQueue.filter(trigger =>
+    trigger.sourceName === 'Purphoros, God of the Forge' &&
+    !trigger.acknowledged
+  );
+  assert(massTriggers.length === 60, 'expected mass ETB stress to queue 60 independent trigger reminders');
+  useGameStore.getState().markTriggerMissed(massTriggers[0].id);
+  assert(useGameStore.getState().game.actionLog.some(action => action.data.reviewType === 'missed-trigger'), 'expected missed trigger to be tagged for replay review');
+  const beforeAckAll = countActions('RESOLVE_STACK');
+  useGameStore.getState().ackAllTriggers();
+  const afterAckAll = countActions('RESOLVE_STACK');
+  assert(afterAckAll === beforeAckAll + 1, 'expected bulk trigger acknowledgement to create one timeline action');
+  assert(useGameStore.getState().game.triggerQueue.filter(trigger => !trigger.acknowledged).length === 0, 'expected bulk trigger acknowledgement to clear pending trigger pressure');
+
+  const satyrId = moveToBattlefield('p2', 'Satyr Wayfinder');
+  useGameStore.getState().enterCombat();
+  useGameStore.getState().declareAttack(labId, 'p2');
+  useGameStore.getState().declareBlock(satyrId, labId);
+  assert(useGameStore.getState().game.cards[labId].attackTarget === 'p2', 'expected attacker to retain target arrow data');
+  assert(useGameStore.getState().game.cards[satyrId].blockTarget?.includes(labId), 'expected blocker to retain block arrow data');
+  useGameStore.getState().resolveCombatDamage();
+  useGameStore.getState().advanceTurn();
+  assert(useGameStore.getState().game.cards[labId].combatRole === 'none', 'expected attacker role to clear after combat turn advance');
+  assert(useGameStore.getState().game.cards[satyrId].combatRole === 'none', 'expected blocker role to clear after combat turn advance');
+  assert(useGameStore.getState().game.combat.attackers.length === 0, 'expected combat attackers to clear after stressed combat');
+
   const replay = createReplay(useGameStore.getState().game, 'Difficult Multiplayer Playthrough');
   const descriptions = replay.actionLog.map(action => action.description).join('\n');
   assert(descriptions.includes('Lightning Bolt'), 'expected replay to include targeted spell action');
   assert(descriptions.includes('Scry 2'), 'expected replay to include scry action');
   assert(replay.actionLog.some(action => action.actionType === 'PROLIFERATE'), 'expected replay to include proliferate action');
+  assert(replay.actionLog.some(action => action.actionType === 'COUNTER_SPELL'), 'expected replay to include counterspell interaction');
+  assert(replay.actionLog.some(action => action.actionType === 'ADD_TOKEN' && action.data.tokenCount === 180), 'expected replay to include compressed large-token action');
+  assert(replay.actionLog.some(action => action.data.reviewType === 'missed-trigger'), 'expected replay to preserve missed-trigger review marker');
+  assert(replay.actionLog.some(action => action.actionType === 'DECLARE_BLOCKER'), 'expected replay to include blocker declaration');
+  assert(replay.checkpoints.length >= 2, 'expected replay to include checkpoints across the multi-turn stress game');
   assert(replay.meta.actionCount === useGameStore.getState().game.actionLog.length, 'expected replay metadata to match action log length');
 }
 

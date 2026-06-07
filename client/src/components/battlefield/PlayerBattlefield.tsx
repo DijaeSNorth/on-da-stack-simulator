@@ -241,6 +241,8 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
 
   function renderTokenCloud(cloud: TokenCloud) {
     const expanded = expandedClouds.has(cloud.key);
+    const untappedIds = cloud.cards.filter(card => !card.tapped).map(card => card.instanceId);
+    const tappedIds = cloud.cards.filter(card => card.tapped).map(card => card.instanceId);
     return (
       <div
         key={cloud.key}
@@ -267,6 +269,52 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
         {cloud.counters.map(c => (
           <div key={c.type} style={{ fontSize: 8, color: '#6ee7b7' }}>{c.type}:{c.total}</div>
         ))}
+        {isLocal && (
+          <div style={{ display: 'flex', gap: 3, marginTop: 4 }}>
+            <button
+              type="button"
+              disabled={untappedIds.length === 0}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                store.tapCards(untappedIds);
+              }}
+              title={`Tap all untapped ${cloud.name} tokens`}
+              style={{
+                fontSize: 8,
+                padding: '2px 5px',
+                borderRadius: 3,
+                border: '1px solid #334155',
+                background: untappedIds.length === 0 ? 'rgba(15,23,42,0.5)' : '#1e293b',
+                color: untappedIds.length === 0 ? '#334155' : '#cbd5e1',
+                cursor: untappedIds.length === 0 ? 'default' : 'pointer',
+              }}
+            >
+              Tap
+            </button>
+            <button
+              type="button"
+              disabled={tappedIds.length === 0}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                store.untapCards(tappedIds);
+              }}
+              title={`Untap all tapped ${cloud.name} tokens`}
+              style={{
+                fontSize: 8,
+                padding: '2px 5px',
+                borderRadius: 3,
+                border: '1px solid #334155',
+                background: tappedIds.length === 0 ? 'rgba(15,23,42,0.5)' : '#1e293b',
+                color: tappedIds.length === 0 ? '#334155' : '#cbd5e1',
+                cursor: tappedIds.length === 0 ? 'default' : 'pointer',
+              }}
+            >
+              Untap
+            </button>
+          </div>
+        )}
       </div>
     );
   }

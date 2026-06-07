@@ -752,6 +752,20 @@ export function createToken(
   controllerId: string,
   tokenDef: Partial<CardDefinition> & { name: string }
 ): GameState {
+  return createTokens(state, controllerId, tokenDef, 1).state;
+}
+
+export function createTokens(
+  state: GameState,
+  controllerId: string,
+  tokenDef: Partial<CardDefinition> & { name: string },
+  count: number
+): { state: GameState; tokenIds: string[]; visualGroup: string } {
+  const safeCount = Math.max(0, Math.floor(count));
+  const tokenIds: string[] = [];
+  const visualGroup = `token-${tokenDef.name.toLowerCase().replace(/\s+/g, '-')}-${uuid()}`;
+  if (safeCount === 0) return { state, tokenIds, visualGroup };
+
   const fullDef: CardDefinition = {
     id: `token-${tokenDef.name.toLowerCase().replace(/\s+/g, '-')}-${uuid()}`,
     cmc: 0,
@@ -768,28 +782,38 @@ export function createToken(
     ...tokenDef,
   };
 
-  const cs = createCardState(fullDef, controllerId, 'library');
-  const tokenInstance: CardState = {
-    ...cs,
-    token: true,
-    zone: 'battlefield',
-    summoningSick: true,
-    visualX: Math.random() * 80 + 10,
-    visualY: Math.random() * 70 + 10,
-  };
+  const newCards = { ...state.cards };
+  for (let index = 0; index < safeCount; index++) {
+    const cs = createCardState(fullDef, controllerId, 'library');
+    const tokenInstance: CardState = {
+      ...cs,
+      token: true,
+      zone: 'battlefield',
+      summoningSick: true,
+      visualGroup,
+      visualX: Math.random() * 80 + 10,
+      visualY: Math.random() * 70 + 10,
+    };
+    tokenIds.push(tokenInstance.instanceId);
+    newCards[tokenInstance.instanceId] = tokenInstance;
+  }
 
   const newPlayers = state.players.map(p =>
     p.id === controllerId
-      ? { ...p, battlefield: [...p.battlefield, tokenInstance.instanceId] }
+      ? { ...p, battlefield: [...p.battlefield, ...tokenIds] }
       : p
   );
 
   return {
-    ...state,
-    cards: { ...state.cards, [tokenInstance.instanceId]: tokenInstance },
-    definitions: { ...state.definitions, [fullDef.id]: fullDef },
-    players: newPlayers,
-    lastUpdatedAt: Date.now(),
+    state: {
+      ...state,
+      cards: newCards,
+      definitions: { ...state.definitions, [fullDef.id]: fullDef },
+      players: newPlayers,
+      lastUpdatedAt: Date.now(),
+    },
+    tokenIds,
+    visualGroup,
   };
 }
 

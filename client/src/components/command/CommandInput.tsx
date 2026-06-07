@@ -4,18 +4,19 @@
 // Wired to useNLPCommand + useCombatFlow.
 // ──────────────────────────────────────────────────────────────────────────────
 
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { Suspense, lazy, useState, useRef, useCallback, useEffect } from 'react';
 import { useNLPCommand } from '../../hooks/useNLPCommand';
 import { useCombatFlow } from '../../hooks/useCombatFlow';
-import { CombatPanel } from '../combat/CombatPanel';
 import type { ResolvedIntent } from '../../engine/nlpParser';
 import { TutorialTooltip } from '../tutorial/TutorialTooltip';
 import { TOOLTIPS } from '../../store/tutorialStore';
-import { PulseBeacon } from '../tutorial/TutorialOverlay';
 import { useGameStore } from '../../store/gameStore';
 
 const MAX_HISTORY = 50;
 const MAX_SUGGESTIONS = 8;
+const CombatPanel = lazy(() =>
+  import('../combat/CombatPanel').then(module => ({ default: module.CombatPanel }))
+);
 
 export function CommandInput() {
   // Hide command bar entirely for spectators — hook called before guard
@@ -192,11 +193,13 @@ export function CommandInput() {
     <>
       {/* Combat panel overlay */}
       {combatFlow.panelOpen && (
-        <CombatPanel
-          attackerIds={combatFlow.attackerIds}
-          preAssignments={combatFlow.preAssignments}
-          onClose={closeCombat}
-        />
+        <Suspense fallback={null}>
+          <CombatPanel
+            attackerIds={combatFlow.attackerIds}
+            preAssignments={combatFlow.preAssignments}
+            onClose={closeCombat}
+          />
+        </Suspense>
       )}
 
       {/* Command bar */}

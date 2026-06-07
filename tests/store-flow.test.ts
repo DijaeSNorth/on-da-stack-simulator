@@ -14,7 +14,7 @@ import {
 } from '../client/src/engine/gameEngine';
 import { getEffectiveCardDefinition } from '../client/src/engine/cardFaces';
 import { parseCommand } from '../client/src/engine/nlpParser';
-import type { CardDefinition, GameState } from '../client/src/types/game';
+import type { CardDefinition, GameState, StackObject, TriggerItem } from '../client/src/types/game';
 
 let passed = 0;
 let failed = 0;
@@ -944,6 +944,148 @@ test('dredge command parses as replacement action, not graveyard casting', () =>
   const parsed = parseCommand('dredge stinkweed imp');
   assert(parsed.intent === 'DREDGE', `expected DREDGE intent, got ${parsed.intent}`);
   assert(parsed.cardName === 'Stinkweed Imp', `expected dredge card name, got ${parsed.cardName}`);
+});
+
+test('large token batches create commandable token piles with one log action', () => {
+  resetStore(makeGame(2));
+  const beforeActions = useGameStore.getState().game.actionLog.length;
+
+  const tokenIds = useGameStore.getState().createTokenCards('p1', {
+    name: 'Goblin',
+    power: '1',
+    toughness: '1',
+    colors: ['R'],
+    cardTypes: ['Creature'],
+    subTypes: ['Goblin'],
+    typeLine: 'Token Creature - Goblin',
+  }, 75);
+
+  const state = useGameStore.getState().game;
+  const p1 = state.players.find(player => player.id === 'p1')!;
+  const tokens = tokenIds.map(id => state.cards[id]);
+  const groups = new Set(tokens.map(card => card.visualGroup));
+  const action = state.actionLog[state.actionLog.length - 1];
+
+  assert(tokenIds.length === 75, `expected 75 token ids, got ${tokenIds.length}`);
+  assert(p1.battlefield.filter(id => tokenIds.includes(id)).length === 75, 'expected all tokens on p1 battlefield');
+  assert(tokens.every(card => card?.token && card.zone === 'battlefield'), 'expected every batch member to be a battlefield token');
+  assert(groups.size === 1, 'expected batch tokens to share a visual group');
+  assert(state.definitions[tokens[0].definitionId] !== undefined, 'expected shared token definition to be registered');
+  assert(state.actionLog.length === beforeActions + 1, 'expected one action log entry for the batch');
+  assert(action.actionType === 'ADD_TOKEN' && action.data?.tokenCount === 75, 'expected ADD_TOKEN action to summarize the batch');
+
+  useGameStore.getState().tapCard(tokenIds[0]);
+  assert(useGameStore.getState().game.cards[tokenIds[0]].tapped, 'expected first token to remain individually commandable');
+
+  useGameStore.getState().untapCards([tokenIds[0]]);
+  assert(!useGameStore.getState().game.cards[tokenIds[0]].tapped, 'expected bulk untap command to work on one token');
+
+  useGameStore.getState().tapCards(tokenIds);
+  const tappedState = useGameStore.getState().game;
+  const bulkTapAction = tappedState.actionLog.at(-1)!;
+  assert(tokenIds.every(id => tappedState.cards[id].tapped), 'expected bulk tap command to tap the whole token pile');
+  assert(bulkTapAction.actionType === 'TAP' && bulkTapAction.data?.bulk === true, 'expected bulk tap to produce one timeline action');
+});
+
+test('large token batches are capped before they can freeze the table', () => {
+  resetStore(makeGame(2));
+  const tokenIds = useGameStore.getState().createTokenCards('p1', {
+    name: 'Spirit',
+    power: '1',
+    toughness: '1',
+    colors: ['W'],
+    cardTypes: ['Creature'],
+    subTypes: ['Spirit'],
+    typeLine: 'Token Creature - Spirit',
+  }, 999);
+  const action = useGameStore.getState().game.actionLog.at(-1)!;
+
+  assert(tokenIds.length === 250, `expected capped token batch of 250, got ${tokenIds.length}`);
+  assert(action.data?.requestedCount === 999, 'expected requested count in action data');
+  assert(action.data?.capped === true, 'expected capped flag in action data');
+});
+
+test('token trigger shortcuts create large piles in one acknowledged action', () => {
+  const trigger: TriggerItem = {
+    id: 'trigger-token-batch',
+    sourceName: 'Field of the Dead',
+    controllerId: 'p1',
+    text: 'Create a 2/2 black Zombie creature token.',
+    triggerType: 'other',
+    acknowledged: false,
+    missed: false,
+    timestamp: Date.now(),
+    effect: {
+      kind: 'createToken',
+      controllerId: 'p1',
+      count: 60,
+      token: {
+        name: 'Zombie',
+        power: '2',
+        toughness: '2',
+        colors: ['B'],
+        cardTypes: ['Creature'],
+        subTypes: ['Zombie'],
+        keywords: [],
+        typeLine: 'Token Creature - Zombie',
+      },
+    },
+  };
+  const stackItem: StackObject = {
+    id: 'stack-token-batch',
+    type: 'triggered',
+    sourceName: 'Field of the Dead',
+    controllerId: 'p1',
+    text: trigger.text,
+    timestamp: Date.now(),
+    parentId: trigger.id,
+  };
+
+  resetStore({ ...makeGame(2), triggerQueue: [trigger], stack: [stackItem] });
+  useGameStore.getState().applyTriggerShortcut(trigger.id);
+
+  const state = useGameStore.getState().game;
+  const p1 = state.players.find(player => player.id === 'p1')!;
+  const zombies = p1.battlefield.map(id => state.cards[id]).filter(card => card.definition.name === 'Zombie');
+  const action = state.actionLog.at(-1)!;
+
+  assert(zombies.length === 60, `expected 60 zombie tokens, got ${zombies.length}`);
+  assert(state.triggerQueue[0].acknowledged, 'expected trigger to be acknowledged by shortcut');
+  assert(state.stack.every(item => item.parentId !== trigger.id), 'expected matching stack trigger to be removed');
+  assert(action.actionType === 'ADD_TOKEN' && action.data?.tokenCount === 60, 'expected one shortcut token action');
+});
+
+test('bulk trigger resolution acknowledges a large queue with one timeline entry', () => {
+  const triggers: TriggerItem[] = Array.from({ length: 80 }, (_, index) => ({
+    id: `trigger-${index}`,
+    sourceName: `Token Trigger ${index + 1}`,
+    controllerId: 'p1',
+    text: 'Whenever a creature enters, note this trigger.',
+    triggerType: 'ETB',
+    acknowledged: false,
+    missed: false,
+    timestamp: Date.now() + index,
+  }));
+  const stack: StackObject[] = triggers.map(trigger => ({
+    id: `stack-${trigger.id}`,
+    type: 'triggered',
+    sourceName: trigger.sourceName,
+    controllerId: trigger.controllerId,
+    text: trigger.text,
+    timestamp: trigger.timestamp,
+    parentId: trigger.id,
+  }));
+
+  resetStore({ ...makeGame(2), triggerQueue: triggers, stack });
+  useGameStore.getState().ackAllTriggers();
+
+  const state = useGameStore.getState().game;
+  const action = state.actionLog.at(-1)!;
+  assert(state.triggerQueue.every(trigger => trigger.acknowledged), 'expected every trigger to be acknowledged');
+  assert(state.stack.length === 0, 'expected stack entries linked to bulk-acked triggers to be removed');
+  assert(action.actionType === 'RESOLVE_STACK', 'expected bulk resolve action');
+  assert(action.data?.bulk === true, 'expected bulk marker in action data');
+  assert(Array.isArray(action.data?.triggerIds) && action.data.triggerIds.length === 80, 'expected all trigger ids in action data');
 });
 
 console.log(`\nStore flow tests: ${passed} passed, ${failed} failed`);

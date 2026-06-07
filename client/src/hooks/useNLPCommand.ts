@@ -265,16 +265,14 @@ export function useNLPCommand(onCombatIntent?: (intent: ResolvedIntent) => void)
       case 'CREATE_TOKEN': {
         if (!intent.token) return { success: false, message: 'Token definition incomplete' };
         const count = intent.token.count ?? 1;
-        for (let i = 0; i < count; i++) {
-          store.createTokenCard(localPlayerId, {
-            name: intent.token.name,
-            power: String(intent.token.power),
-            toughness: String(intent.token.toughness),
-            colors: intent.token.colors as import('../types/game').ManaColor[],
-            cardTypes: ['Creature'],
-            subTypes: intent.token.subTypes,
-          });
-        }
+        store.createTokenCards(localPlayerId, {
+          name: intent.token.name,
+          power: String(intent.token.power),
+          toughness: String(intent.token.toughness),
+          colors: intent.token.colors as import('../types/game').ManaColor[],
+          cardTypes: ['Creature'],
+          subTypes: intent.token.subTypes,
+        }, count);
         return { success: true, message: `Created ${count} ${intent.token.name} token(s)` };
       }
 
@@ -303,25 +301,23 @@ export function useNLPCommand(onCombatIntent?: (intent: ResolvedIntent) => void)
         const tokenShortcut = resolveTokenShortcut(raw);
         if (tokenShortcut) {
           const { entry, count } = tokenShortcut;
-          for (let i = 0; i < count; i++) {
-            for (const tok of entry.tokens) {
-              store.createTokenCard(localPlayerId, {
-                id: `token-${tok.name.toLowerCase().replace(/\s+/g, '-')}`,
-                name: tok.name,
-                power: tok.power,
-                toughness: tok.toughness,
-                colors: tok.colors,
-                cardTypes: tok.cardTypes as import('../types/game').CardType[],
-                subTypes: tok.subTypes,
-                keywords: tok.keywords,
-                oracleText: tok.oracleText ?? '',
-                typeLine: tok.typeLine,
-                isDoubleFaced: false,
-                legalities: {},
-                colorIdentity: tok.colors,
-                cmc: 0,
-              });
-            }
+          for (const tok of entry.tokens) {
+            store.createTokenCards(localPlayerId, {
+              id: `token-${tok.name.toLowerCase().replace(/\s+/g, '-')}`,
+              name: tok.name,
+              power: tok.power,
+              toughness: tok.toughness,
+              colors: tok.colors,
+              cardTypes: tok.cardTypes as import('../types/game').CardType[],
+              subTypes: tok.subTypes,
+              keywords: tok.keywords,
+              oracleText: tok.oracleText ?? '',
+              typeLine: tok.typeLine,
+              isDoubleFaced: false,
+              legalities: {},
+              colorIdentity: tok.colors,
+              cmc: 0,
+            }, count);
           }
           const names = entry.tokens.map(t => t.name).join(', ');
           return { success: true, message: `Created ${count}× ${names} token(s)` };
