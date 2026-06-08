@@ -257,8 +257,7 @@ type SyncMessage =
   | { type: 'DECK_REJECTED'; payload: SubmittedDeckPublicSummary }
   | { type: 'PLAYER_READY_CHANGED'; payload: { playerId: string; ready: boolean } }
   | { type: 'GAME_STATE_PATCH'; payload: GameStatePatchPayload }
-  | { type: 'GAME_STATE_RESYNC_REQUEST'; payload: { playerId: string; peerId: string; reason: string } }
-  | { type: 'GAME_STATE_PATCH_REQUEST'; payload: { playerId: string; peerId: string; reason: string } }
+  | { type: 'GAME_STATE_PATCH_REQUEST'; payload: { reason: string; sentAt: number } }
   | { type: 'GAME_ACTION_REQUEST'; payload: GameActionRequestPayload }
   | { type: 'HOST_MIGRATION'; payload: HostMigrationNotice }
   | { type: 'LEAVE_ROOM'; payload: { peerId: string } }
@@ -749,7 +748,7 @@ async function pollFirebaseRoom(): Promise<void> {
           applyReadyChange(payload.playerId, payload.ready);
           changed = true;
         }
-        if (parsed.message.type === 'GAME_STATE_RESYNC_REQUEST' || parsed.message.type === 'GAME_STATE_PATCH_REQUEST') {
+        if (parsed.message.type === 'GAME_STATE_PATCH_REQUEST') {
           changed = true;
         }
         if (parsed.message.type === 'START_GAME_ACK') {
@@ -1340,11 +1339,11 @@ function sendDeckSubmissionToHost(submission: DeckSubmission): void {
   }
 }
 
-export function requestGameStateResync(reason = 'manual-resync'): boolean {
+export function requestGameStatePatch(reason = 'manual-resync'): boolean {
   if (_isHost || !_playerId || !_peerId) return false;
   const msg: SyncMessage = {
-    type: 'GAME_STATE_RESYNC_REQUEST',
-    payload: { playerId: _playerId, peerId: _peerId, reason },
+    type: 'GAME_STATE_PATCH_REQUEST',
+    payload: { reason, sentAt: Date.now() },
   };
   if (_transportMode === 'firebase') {
     void writeFirebaseMessage(msg);
@@ -1358,7 +1357,7 @@ export function requestGameStateResync(reason = 'manual-resync'): boolean {
 }
 
 function requestFreshGameStatePatch(reason: string): void {
-  requestGameStateResync(reason);
+  requestGameStatePatch(reason);
 }
 
 function scheduleDeckSubmissionFallback(submission: DeckSubmission): void {
@@ -1444,8 +1443,8 @@ function attachHostConnectionHandlers(peer: Peer): void {
         const presence = _peers.get(conn.peer);
         if (presence) handleGameActionRequest(msg.payload as GameActionRequestPayload, presence);
       }
-      if (msg.type === 'GAME_STATE_RESYNC_REQUEST' || msg.type === 'GAME_STATE_PATCH_REQUEST') {
-        debugMultiplayer('host received GAME_STATE_RESYNC_REQUEST', {
+      if (msg.type === 'GAME_STATE_PATCH_REQUEST') {
+        debugMultiplayer('host received GAME_STATE_PATCH_REQUEST', {
           peerId: conn.peer,
           reason: (msg.payload as { reason?: string }).reason,
         });
@@ -1832,8 +1831,8 @@ export async function createRoom(
           const presence = _peers.get(conn.peer);
           if (presence) handleGameActionRequest(msg.payload as GameActionRequestPayload, presence);
         }
-        if (msg.type === 'GAME_STATE_RESYNC_REQUEST' || msg.type === 'GAME_STATE_PATCH_REQUEST') {
-          debugMultiplayer('host received GAME_STATE_RESYNC_REQUEST', {
+        if (msg.type === 'GAME_STATE_PATCH_REQUEST') {
+          debugMultiplayer('host received GAME_STATE_PATCH_REQUEST', {
             peerId: conn.peer,
             reason: (msg.payload as { reason?: string }).reason,
           });

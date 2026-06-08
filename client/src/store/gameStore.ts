@@ -29,7 +29,7 @@ import {
   broadcastState, updatePresence, kickPeer, sendStartGameAck, sendStartGameCommit,
   sendStartGamePrepare, getRoomCode, getPeerId, getPlayerId, getSessionId, getIsHost,
   getSyncStatus, isConfigured,
-  submitDeckToHost, setLocalPlayerReady, sendGameActionRequest, requestGameStateResync,
+  submitDeckToHost, setLocalPlayerReady, sendGameActionRequest, requestGameStatePatch,
   type RoomDeckSummary, type RoomPresence, type StartGameAck, type StartGameCommit,
   type StartGamePrepare, type SyncStatus,
 } from '../engine/multiplayerSync';
@@ -279,7 +279,7 @@ export interface GameStore {
   setMultiplayerPeers: (peers: Record<string, RoomPresence>) => void;
   updateMultiplayerPresence: (fields: Partial<RoomPresence>) => void;
   setMultiplayerReady: (ready: boolean) => void;
-  requestGameStateResync: (reason?: string) => boolean;
+  requestMultiplayerGamePatch: (reason?: string) => boolean;
 
   initGame: (config: GameConfig, players: {
     id: string;
@@ -1159,7 +1159,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     });
   },
 
-  requestGameStateResync: (reason = 'lobby-fallback-button') => requestGameStateResync(reason),
+  requestMultiplayerGamePatch: (reason = 'lobby-fallback-button') => requestGameStatePatch(reason),
 
   initGame: (config, players) => {
     const g = createEmptyGameState(config);
