@@ -2,6 +2,10 @@
 import type { CardDefinition, ManaCost, ManaColor, CardType, SuperType, CardFaceDefinition } from '../types/game';
 
 const SCRYFALL_BASE = 'https://api.scryfall.com';
+const SCRYFALL_HEADERS = {
+  Accept: 'application/json',
+  'User-Agent': 'On-Da-Stack Simulator/1.0',
+};
 
 // Simple in-memory cache
 const cardCache = new Map<string, CardDefinition>();
@@ -122,7 +126,7 @@ export async function fetchCardByName(name: string): Promise<CardDefinition | nu
   const request = (async () => {
     try {
       const url = `${SCRYFALL_BASE}/cards/named?fuzzy=${encodeURIComponent(name)}`;
-      const res = await fetch(url);
+      const res = await fetch(url, { headers: SCRYFALL_HEADERS });
       if (!res.ok) return null;
       const data = await res.json();
       const def = scryfallToDefinition(data);
@@ -143,7 +147,7 @@ export async function fetchCardAutocomplete(query: string): Promise<string[]> {
   const q = query.trim();
   if (q.length < 2) return [];
   try {
-    const res = await fetch(`${SCRYFALL_BASE}/cards/autocomplete?q=${encodeURIComponent(q)}`);
+    const res = await fetch(`${SCRYFALL_BASE}/cards/autocomplete?q=${encodeURIComponent(q)}`, { headers: SCRYFALL_HEADERS });
     if (!res.ok) return [];
     const data = await res.json();
     return Array.isArray(data.data)
@@ -179,7 +183,7 @@ export async function fetchCardsByNames(names: string[]): Promise<Map<string, Ca
     try {
       const res = await fetch(`${SCRYFALL_BASE}/cards/collection`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...SCRYFALL_HEADERS, 'Content-Type': 'application/json' },
         body: JSON.stringify({ identifiers: chunk.map(n => ({ name: n })) }),
       });
       if (!res.ok) throw new Error(`Collection lookup failed with HTTP ${res.status}`);

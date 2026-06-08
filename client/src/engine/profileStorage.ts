@@ -321,12 +321,16 @@ export interface ScryfallPrint {
 }
 
 const SCRYFALL_BASE = 'https://api.scryfall.com';
+const SCRYFALL_HEADERS = {
+  Accept: 'application/json',
+  'User-Agent': 'On-Da-Stack Simulator/1.0',
+};
 
 /** Fetch all prints of a card by oracle name, sorted by release date desc */
 export async function fetchCardPrints(cardName: string): Promise<ScryfallPrint[]> {
   try {
     const url = `${SCRYFALL_BASE}/cards/search?q=!"${encodeURIComponent(cardName)}"&unique=prints&order=released&dir=desc`;
-    const res = await fetch(url);
+    const res = await fetch(url, { headers: SCRYFALL_HEADERS });
     if (!res.ok) return [];
     const data = await res.json();
     if (!data.data) return [];

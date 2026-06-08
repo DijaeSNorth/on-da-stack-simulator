@@ -47,6 +47,12 @@ interface RemoteDecklist {
   warnings: string[];
 }
 
+interface RemoteFetchResult {
+  res: Response;
+  usedProxy: boolean;
+  failures: string[];
+}
+
 // ─── Format Parsers ───────────────────────────────────────────────────────────
 
 interface ParsedEntry {
@@ -58,6 +64,10 @@ interface ParsedEntry {
 const MAX_COMMANDERS = 2;
 const MAX_DECKLIST_CHARS = 250_000;
 const MAX_COPIES_PER_LINE = 250;
+const READ_ONLY_CORS_PROXIES = [
+  (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
+  (url: string) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+];
 
 /**
  * Normalize a card name from any common variation
@@ -293,8 +303,12 @@ async function fetchMoxfieldDeck(info: DeckUrlInfo): Promise<RemoteDecklist> {
 }
 
 async function fetchArchidektDeck(info: DeckUrlInfo): Promise<RemoteDecklist> {
-  const data = await fetchJson(`https://archidekt.com/api/decks/${info.id}/small/`);
-  const cards = Array.isArray(data.cards) ? data.cards : [];
+  const data = await fetchJson(`https://archidekt.com/api/decks/${info.id}/`);
+  let cards = Array.isArray(data.cards) ? data.cards : [];
+  if (cards.length === 0) {
+    const cardData = await fetchJson(`https://archidekt.com/api/decks/${info.id}/cards/`);
+    cards = Array.isArray(cardData) ? cardData : Array.isArray(cardData.cards) ? cardData.cards : [];
+  }
   const sections: Record<ParsedEntry['section'], string[]> = {
     commander: [],
     main: [],
@@ -321,7 +335,9 @@ async function fetchArchidektDeck(info: DeckUrlInfo): Promise<RemoteDecklist> {
     name: typeof data.name === 'string' ? data.name : undefined,
     text: lines.join('\n'),
     source: 'archidekt',
-    warnings: [],
+    warnings: cards.length === 0
+      ? ['Archidekt returned no cards for this deck. Make sure the deck is public and not empty.']
+      : [],
   };
 }
 
@@ -329,7 +345,8 @@ async function fetchTextExportCandidates(info: DeckUrlInfo, urls: string[]): Pro
   const failures: string[] = [];
   for (const url of urls) {
     try {
-      const res = await fetch(url, { headers: { Accept: 'text/plain,text/html,*/*' } });
+      const { res, usedProxy, failures: fetchFailures } = await fetchReadableUrl(url, { headers: { Accept: 'text/plain,text/html,*/*' } });
+      failures.push(...fetchFailures);
       if (!res.ok) {
         failures.push(`${res.status} ${url}`);
         continue;
@@ -341,9 +358,12 @@ async function fetchTextExportCandidates(info: DeckUrlInfo, urls: string[]): Pro
           name: getTitleFromHtml(raw),
           text,
           source: info.source,
-          warnings: info.source === 'tappedout'
-            ? ['TappedOut URL imports are best-effort. If this deck imports oddly, use TappedOut Export -> MTGO and paste the text.']
-            : [],
+          warnings: [
+            ...(usedProxy ? [`${formatDeckSource(info.source)} blocked direct browser import, so a read-only public fetch fallback was used.`] : []),
+            ...(info.source === 'tappedout'
+              ? ['TappedOut URL imports are best-effort. If this deck imports oddly, use TappedOut Export -> MTGO and paste the text.']
+              : []),
+          ],
         };
       }
     } catch (err) {
@@ -354,9 +374,34 @@ async function fetchTextExportCandidates(info: DeckUrlInfo, urls: string[]): Pro
 }
 
 async function fetchJson(url: string): Promise<any> {
-  const res = await fetch(url, { headers: { Accept: 'application/json' } });
+  const { res } = await fetchReadableUrl(url, { headers: { Accept: 'application/json' } });
   if (!res.ok) throw new Error(`Deck URL fetch failed with HTTP ${res.status}. Make sure the deck is public.`);
   return res.json();
+}
+
+async function fetchReadableUrl(url: string, init: RequestInit = {}): Promise<RemoteFetchResult> {
+  const failures: string[] = [];
+  try {
+    return { res: await fetch(url, init), usedProxy: false, failures };
+  } catch (err) {
+    failures.push(formatFetchFailure(url, err));
+  }
+
+  for (const proxy of READ_ONLY_CORS_PROXIES) {
+    const proxyUrl = proxy(url);
+    try {
+      return { res: await fetch(proxyUrl, init), usedProxy: true, failures };
+    } catch (err) {
+      failures.push(formatFetchFailure(proxyUrl, err));
+    }
+  }
+
+  throw new Error(failures.join('; ') || `Failed to fetch ${url}`);
+}
+
+function formatFetchFailure(url: string, err: unknown): string {
+  const reason = err instanceof Error ? err.message : String(err);
+  return `${url}: ${reason}`;
 }
 
 function boardToLines(header: string, board: unknown): string[] {

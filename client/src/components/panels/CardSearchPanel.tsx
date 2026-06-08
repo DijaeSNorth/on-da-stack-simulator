@@ -43,12 +43,17 @@ interface CardResult {
   cachedCard?: CachedCard;
 }
 
+const SCRYFALL_HEADERS = {
+  Accept: 'application/json',
+  'User-Agent': 'On-Da-Stack Simulator/1.0',
+};
+
 // ─── Scryfall fetch helpers ───────────────────────────────────────────────────
 
 async function fetchScryfallFuzzy(name: string): Promise<CardResult | null> {
   try {
     const url = `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(name)}`;
-    const res = await fetch(url);
+    const res = await fetch(url, { headers: SCRYFALL_HEADERS });
     if (!res.ok) return null;
     const card: ScryfallCard = await res.json();
     return scryfallToResult(card);
@@ -60,7 +65,7 @@ async function fetchScryfallFuzzy(name: string): Promise<CardResult | null> {
 async function fetchScryfallSearch(query: string, signal?: AbortSignal): Promise<CardResult[]> {
   try {
     const url = `https://api.scryfall.com/cards/search?q=${encodeURIComponent(query)}&order=name&page=1`;
-    const res = await fetch(url, { signal });
+    const res = await fetch(url, { signal, headers: SCRYFALL_HEADERS });
     if (!res.ok) return [];
     const data = await res.json();
     const cards: ScryfallCard[] = data.data ?? [];
