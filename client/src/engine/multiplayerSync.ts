@@ -584,8 +584,8 @@ function refreshLobbyState(status?: LobbyState['status']): LobbyState | null {
   return _lobbyState;
 }
 
-function broadcastLobbyState(): void {
-  const lobby = refreshLobbyState();
+function broadcastLobbyState(status?: LobbyState['status']): void {
+  const lobby = refreshLobbyState(status);
   if (!lobby) return;
   const msg: SyncMessage = { type: 'LOBBY_STATE', payload: lobby };
   if (_transportMode === 'firebase') {
@@ -2134,11 +2134,31 @@ export function sendStartGameCommit(commit: StartGameCommit): void {
     return;
   }
   if (!_isHost) return;
+  sendStartGameCommitBurst(commit, playingGame, 0);
+}
+
+function sendStartGameCommitBurst(commit: StartGameCommit, playingGame: GameState, attempt: number): void {
+  if (!_isHost) return;
+  broadcastLobbyState('playing');
   for (const conn of _connections.values()) {
+    sendStartGameCommitToConnection(conn, commit, playingGame, attempt);
+  }
+  const hasOpenConnections = [..._connections.values()].some(conn => conn.open);
+  if (attempt < 5 && hasOpenConnections) {
+    globalThis.setTimeout(() => sendStartGameCommitBurst(commit, playingGame, attempt + 1), 500);
+  }
+}
+
+function sendStartGameCommitToConnection(
+  conn: DataConnection,
+  commit: StartGameCommit,
+  playingGame: GameState,
+  attempt: number,
+): void {
     const presence = _peers.get(conn.peer);
-    if (!conn.open || !presence || presence.isSpectator || presence.seatIndex < 0) continue;
+    if (!conn.open || !presence || presence.isSpectator || presence.seatIndex < 0) return;
     const viewerGamePlayerId = playingGame.players[presence.seatIndex]?.id;
-    if (!viewerGamePlayerId) continue;
+    if (!viewerGamePlayerId) return;
     const payload: StartGameCommit = {
       ...commit,
       gameId: commit.gameId ?? playingGame.id,
@@ -2151,13 +2171,13 @@ export function sendStartGameCommit(commit: StartGameCommit): void {
       playerId: presence.playerId,
       viewerGamePlayerId,
       seatIndex: presence.seatIndex,
+      attempt,
     });
     sendMessage(conn, { type: 'START_GAME_COMMIT', payload });
     sendMessage(conn, {
       type: 'GAME_STATE_PATCH',
       payload: createGamePatchForPlayer(playingGame, viewerGamePlayerId),
     }, { coalesceState: true });
-  }
 }
 
 function createGamePatchForPlayer(game: GameState, playerId: string): GameStatePatchPayload {
