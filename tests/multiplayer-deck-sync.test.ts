@@ -5,7 +5,7 @@
  */
 
 import { createCardState, createDefaultGameConfig, createEmptyGameState, createPlayer } from '../client/src/engine/gameEngine';
-import { mergeRemoteSeatDeckState, type RoomPresence } from '../client/src/engine/multiplayerSync';
+import { mergeRemoteSeatDeckState, resolveIncomingPeerGameState, type RoomPresence } from '../client/src/engine/multiplayerSync';
 import type { CardDefinition, CardState, GameState } from '../client/src/types/game';
 
 function assert(condition: boolean, message: string): void {
@@ -117,5 +117,15 @@ for (const playerCount of [2, 3, 4] as const) {
 
 const spectatorMerge = mergeRemoteSeatDeckState(makeGame(4, 10_000), makeGame(4, 1_000), presence('spectator-peer', -1, true));
 assert(spectatorMerge === null, 'expected spectator game snapshots not to merge deck state');
+
+const lobbyHostGame = makeGame(4, 1_000);
+const lobbyRemoteWithoutDeck = makeGame(4, 2_000);
+const ignoredLobbySnapshot = resolveIncomingPeerGameState(lobbyHostGame, lobbyRemoteWithoutDeck, presence('peer-seat-2', 1));
+assert(ignoredLobbySnapshot === null, 'expected host lobby to ignore newer whole-game snapshots that do not contain a sender deck merge');
+
+const playingHostGame = { ...makeGame(4, 1_000), status: 'playing' as const };
+const playingRemoteGame = { ...makeGame(4, 2_000), status: 'playing' as const };
+const acceptedPlayingSnapshot = resolveIncomingPeerGameState(playingHostGame, playingRemoteGame, presence('peer-seat-2', 1));
+assert(acceptedPlayingSnapshot === playingRemoteGame, 'expected active gameplay to keep accepting newer snapshots for player actions');
 
 console.log('PASS multiplayer deck sync merges only the sending player seat for 2-4 players');

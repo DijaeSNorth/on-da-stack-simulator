@@ -96,6 +96,8 @@ const CONNECT_TIMEOUT_MS = 12000;
 // Heartbeat interval to keep DataChannels alive through NAT (ms)
 const HEARTBEAT_MS = 20000;
 const HOST_MIGRATION_DELAY_MS = 1800;
+const DATA_CHANNEL_LOW_WATER_BYTES = 64 * 1024;
+const DATA_CHANNEL_HIGH_WATER_BYTES = 256 * 1024;
 
 // ─── Internal state ───────────────────────────────────────────────────────────
 
@@ -113,6 +115,9 @@ const _connections: Map<string, DataConnection> = new Map();
 // Joiner-side: single connection to host
 let _hostConn: DataConnection | null = null;
 let _latestGame: GameState | null = null;
+const _pendingStateMessages: Map<string, SyncMessage> = new Map();
+const _bufferDrainHandlers: Map<string, () => void> = new Map();
+const _connectionHealthHandlers: Map<string, () => void> = new Map();
 
 // Presence table — host owns the authoritative copy; joiners mirror it
 const _peers: Map<string, RoomPresence> = new Map();
@@ -122,6 +127,16 @@ let _onGameUpdate: ((game: GameState) => void) | null = null;
 let _onPresenceUpdate: ((players: Record<string, RoomPresence>) => void) | null = null;
 let _onStatusChange: ((status: SyncStatus) => void) | null = null;
 
+type SyncMessage =
+  | { type: 'PRESENCE'; payload: RoomPresence }
+  | { type: 'GAME_STATE'; payload: GameState }
+  | { type: 'PRESENCE_BROADCAST'; payload: Record<string, RoomPresence> }
+  | { type: 'HOST_MIGRATION'; payload: HostMigrationNotice }
+  | { type: 'LEAVE_ROOM'; payload: { peerId: string } }
+  | { type: 'KICKED'; payload: { reason: string } }
+  | { type: 'PING'; payload: { sentAt: number } }
+  | { type: 'PONG'; payload: { sentAt: number } };
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function setStatus(s: SyncStatus) {
@@ -129,13 +144,133 @@ function setStatus(s: SyncStatus) {
   _onStatusChange?.(s);
 }
 
+function parseSyncMessage(raw: unknown): SyncMessage | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const msg = raw as { type?: unknown; payload?: unknown };
+  if (typeof msg.type !== 'string') return null;
+  if (![
+    'PRESENCE',
+    'GAME_STATE',
+    'PRESENCE_BROADCAST',
+    'HOST_MIGRATION',
+    'LEAVE_ROOM',
+    'KICKED',
+    'PING',
+    'PONG',
+  ].includes(msg.type)) return null;
+  return msg as SyncMessage;
+}
+
+function getDataChannel(conn: DataConnection): RTCDataChannel | undefined {
+  return (conn as DataConnection & { dataChannel?: RTCDataChannel }).dataChannel;
+}
+
+function cleanupConnection(conn: DataConnection): void {
+  _pendingStateMessages.delete(conn.peer);
+  const dataChannel = getDataChannel(conn);
+  const bufferDrain = _bufferDrainHandlers.get(conn.peer);
+  if (dataChannel && bufferDrain) {
+    dataChannel.removeEventListener?.('bufferedamountlow', bufferDrain);
+  }
+  _bufferDrainHandlers.delete(conn.peer);
+
+  const healthCleanup = _connectionHealthHandlers.get(conn.peer);
+  healthCleanup?.();
+  _connectionHealthHandlers.delete(conn.peer);
+}
+
+function flushPendingStateMessage(conn: DataConnection): void {
+  const pending = _pendingStateMessages.get(conn.peer);
+  if (!pending || !conn.open) return;
+
+  const dataChannel = getDataChannel(conn);
+  if (dataChannel && dataChannel.readyState !== 'open') return;
+  if (dataChannel && dataChannel.bufferedAmount > DATA_CHANNEL_LOW_WATER_BYTES) return;
+
+  _pendingStateMessages.delete(conn.peer);
+  try {
+    conn.send(pending);
+  } catch {
+    _pendingStateMessages.set(conn.peer, pending);
+  }
+}
+
+function watchBufferedStateDrain(conn: DataConnection): void {
+  const dataChannel = getDataChannel(conn);
+  if (!dataChannel || _bufferDrainHandlers.has(conn.peer)) return;
+  dataChannel.bufferedAmountLowThreshold = DATA_CHANNEL_LOW_WATER_BYTES;
+  const handler = () => flushPendingStateMessage(conn);
+  dataChannel.addEventListener?.('bufferedamountlow', handler);
+  _bufferDrainHandlers.set(conn.peer, handler);
+}
+
+function sendMessage(conn: DataConnection, msg: SyncMessage, options: { coalesceState?: boolean } = {}): boolean {
+  if (!conn.open) return false;
+  const dataChannel = getDataChannel(conn);
+  if (dataChannel && dataChannel.readyState !== 'open') return false;
+
+  if (options.coalesceState && dataChannel && dataChannel.bufferedAmount > DATA_CHANNEL_HIGH_WATER_BYTES) {
+    _pendingStateMessages.set(conn.peer, msg);
+    watchBufferedStateDrain(conn);
+    return false;
+  }
+
+  try {
+    conn.send(msg);
+    return true;
+  } catch {
+    if (options.coalesceState) {
+      _pendingStateMessages.set(conn.peer, msg);
+      watchBufferedStateDrain(conn);
+    }
+    return false;
+  }
+}
+
+function watchPeerConnection(conn: DataConnection, onLost: () => void): void {
+  const pc = (conn as DataConnection & { peerConnection?: RTCPeerConnection }).peerConnection;
+  if (!pc || _connectionHealthHandlers.has(conn.peer)) return;
+
+  const handleStateChange = () => {
+    if (
+      pc.connectionState === 'failed' ||
+      pc.connectionState === 'closed' ||
+      pc.iceConnectionState === 'failed' ||
+      pc.iceConnectionState === 'closed'
+    ) {
+      onLost();
+    }
+  };
+  pc.addEventListener?.('connectionstatechange', handleStateChange);
+  pc.addEventListener?.('iceconnectionstatechange', handleStateChange);
+  _connectionHealthHandlers.set(conn.peer, () => {
+    pc.removeEventListener?.('connectionstatechange', handleStateChange);
+    pc.removeEventListener?.('iceconnectionstatechange', handleStateChange);
+  });
+}
+
+function markPeerOffline(conn: DataConnection): void {
+  const p = _peers.get(conn.peer);
+  if (p) _peers.set(conn.peer, { ...p, online: false, lastSeen: Date.now() });
+  cleanupConnection(conn);
+  _connections.delete(conn.peer);
+  broadcastPresence();
+}
+
+function cleanupAllConnections(): void {
+  for (const conn of _connections.values()) cleanupConnection(conn);
+  if (_hostConn) cleanupConnection(_hostConn);
+  _connections.clear();
+  _pendingStateMessages.clear();
+  _bufferDrainHandlers.clear();
+  _connectionHealthHandlers.clear();
+}
+
 function broadcastPresence() {
   if (!_isHost) return;
   const payload = Object.fromEntries(_peers);
   for (const conn of _connections.values()) {
-    if (conn.open) {
-      conn.send({ type: 'PRESENCE_BROADCAST', payload });
-    }
+    sendMessage(conn, { type: 'PRESENCE_BROADCAST', payload });
   }
   _onPresenceUpdate?.(payload);
 }
@@ -299,12 +434,20 @@ export function mergeRemoteSeatDeckState(
   };
 }
 
+export function resolveIncomingPeerGameState(
+  hostGame: GameState | null,
+  remoteGame: GameState,
+  presence?: RoomPresence,
+): GameState | null {
+  if (!hostGame) return remoteGame;
+  const mergedDeckState = mergeRemoteSeatDeckState(hostGame, remoteGame, presence);
+  if (mergedDeckState) return mergedDeckState;
+  if (hostGame.status === 'lobby') return null;
+  return remoteGame.lastUpdatedAt > hostGame.lastUpdatedAt ? remoteGame : null;
+}
+
 function applyIncomingGameFromPeer(conn: DataConnection, game: GameState): void {
-  const mergedDeckState = _latestGame
-    ? mergeRemoteSeatDeckState(_latestGame, game, _peers.get(conn.peer))
-    : null;
-  const nextGame = mergedDeckState
-    ?? (!_latestGame || game.lastUpdatedAt > _latestGame.lastUpdatedAt ? game : null);
+  const nextGame = resolveIncomingPeerGameState(_latestGame, game, _peers.get(conn.peer));
 
   if (!nextGame) return;
   _latestGame = nextGame;
@@ -360,14 +503,16 @@ function autoAssignSeat(presence: RoomPresence): { isSpectator: boolean; seatInd
 function attachHostConnectionHandlers(peer: Peer): void {
   peer.on('connection', (conn: DataConnection) => {
     _connections.set(conn.peer, conn);
+    watchPeerConnection(conn, () => markPeerOffline(conn));
 
     conn.on('open', () => {
-      if (_latestGame) conn.send({ type: 'GAME_STATE', payload: _latestGame });
+      if (_latestGame) sendMessage(conn, { type: 'GAME_STATE', payload: _latestGame }, { coalesceState: true });
       broadcastPresence();
     });
 
     conn.on('data', (raw: unknown) => {
-      const msg = raw as { type: string; payload?: unknown };
+      const msg = parseSyncMessage(raw);
+      if (!msg) return;
       if (msg.type === 'PRESENCE') {
         const presence = msg.payload as RoomPresence;
         pruneStaleDuplicatePresence(presence);
@@ -385,6 +530,7 @@ function attachHostConnectionHandlers(peer: Peer): void {
         broadcastPresence();
       }
       if (msg.type === 'LEAVE_ROOM') {
+        cleanupConnection(conn);
         _peers.delete(conn.peer);
         _connections.delete(conn.peer);
         conn.close();
@@ -396,7 +542,7 @@ function attachHostConnectionHandlers(peer: Peer): void {
       }
       if (msg.type === 'PING') {
         const payload = msg.payload as { sentAt?: number } | undefined;
-        conn.send({ type: 'PONG', payload: { sentAt: payload?.sentAt ?? Date.now() } });
+        sendMessage(conn, { type: 'PONG', payload: { sentAt: payload?.sentAt ?? Date.now() } });
       }
       if (msg.type === 'PONG') {
         const payload = msg.payload as { sentAt?: number } | undefined;
@@ -408,13 +554,11 @@ function attachHostConnectionHandlers(peer: Peer): void {
     });
 
     conn.on('close', () => {
-      const p = _peers.get(conn.peer);
-      if (p) _peers.set(conn.peer, { ...p, online: false });
-      _connections.delete(conn.peer);
-      broadcastPresence();
+      markPeerOffline(conn);
     });
 
     conn.on('error', () => {
+      cleanupConnection(conn);
       _connections.delete(conn.peer);
     });
   });
@@ -446,8 +590,8 @@ function becomeMigratedHost(reason: HostMigrationNotice['reason']): void {
   if (!_roomCode || !_peerId) return;
   _isHost = true;
   _stopHeartbeat();
-  if (_hostConn) { _hostConn.close(); _hostConn = null; }
-  _connections.clear();
+  if (_hostConn) { cleanupConnection(_hostConn); _hostConn.close(); _hostConn = null; }
+  cleanupAllConnections();
   if (_peer) { _peer.destroy(); _peer = null; }
 
   for (const [peerId, presence] of _peers.entries()) {
@@ -470,7 +614,7 @@ function becomeMigratedHost(reason: HostMigrationNotice['reason']): void {
       peers: Object.fromEntries(_peers),
     };
     for (const conn of _connections.values()) {
-      if (conn.open) conn.send({ type: 'HOST_MIGRATION', payload: notice });
+      sendMessage(conn, { type: 'HOST_MIGRATION', payload: notice });
     }
     broadcastPresence();
     if (_latestGame) broadcastState(_latestGame);
@@ -490,28 +634,45 @@ function connectToMigratedHost(candidatePeerId: string): void {
     serialization: 'json',
   });
   _hostConn = conn;
+  watchPeerConnection(conn, () => startHostMigration('host-disconnected'));
 
   conn.on('open', () => {
-    conn.send({
+    const presence: RoomPresence = {
+      peerId: _peerId!,
+      name: self?.name ?? 'Player',
+      color: self?.color ?? '#3b82f6',
+      avatarInitial: self?.avatarInitial,
+      avatarStyle: self?.avatarStyle,
+      avatarImage: self?.avatarImage,
+      seatIndex: self?.seatIndex ?? -1,
+      isSpectator: self?.isSpectator ?? true,
+      isHostPeer: false,
+      connectionQuality: self?.connectionQuality,
+      online: true,
+      lastSeen: Date.now(),
+    };
+    sendMessage(conn, {
       type: 'PRESENCE',
-      payload: {
-        ...(self ?? {}),
-        peerId: _peerId!,
-        online: true,
-        lastSeen: Date.now(),
-      },
+      payload: presence,
     });
     setStatus('joined');
     _startHeartbeat();
   });
 
   conn.on('data', (raw: unknown) => handleJoinerMessage(conn, raw));
-  conn.on('close', () => startHostMigration('host-disconnected'));
-  conn.on('error', () => startHostMigration('host-disconnected'));
+  conn.on('close', () => {
+    cleanupConnection(conn);
+    startHostMigration('host-disconnected');
+  });
+  conn.on('error', () => {
+    cleanupConnection(conn);
+    startHostMigration('host-disconnected');
+  });
 }
 
 function handleJoinerMessage(conn: DataConnection, raw: unknown): void {
-  const msg = raw as { type: string; payload?: unknown };
+  const msg = parseSyncMessage(raw);
+  if (!msg) return;
 
   if (msg.type === 'KICKED') {
     leaveRoom(false);
@@ -556,7 +717,7 @@ function handleJoinerMessage(conn: DataConnection, raw: unknown): void {
 
   if (msg.type === 'PING') {
     const payload = msg.payload as { sentAt?: number } | undefined;
-    conn.send({ type: 'PONG', payload: { sentAt: payload?.sentAt ?? Date.now() } });
+    sendMessage(conn, { type: 'PONG', payload: { sentAt: payload?.sentAt ?? Date.now() } });
   }
 }
 
@@ -569,7 +730,7 @@ export async function createRoom(
   setStatus('connecting');
   _isHost = true;
   _latestGame = _initialGame;
-  _connections.clear();
+  cleanupAllConnections();
   _peers.clear();
 
   const code = generateRoomCode();
@@ -611,14 +772,16 @@ export async function createRoom(
     // Accept incoming connections from joiners
     peer.on('connection', (conn: DataConnection) => {
       _connections.set(conn.peer, conn);
+      watchPeerConnection(conn, () => markPeerOffline(conn));
 
       conn.on('open', () => {
-        if (_latestGame) conn.send({ type: 'GAME_STATE', payload: _latestGame });
+        if (_latestGame) sendMessage(conn, { type: 'GAME_STATE', payload: _latestGame }, { coalesceState: true });
         broadcastPresence();
       });
 
       conn.on('data', (raw: unknown) => {
-        const msg = raw as { type: string; payload: unknown };
+        const msg = parseSyncMessage(raw);
+        if (!msg) return;
         if (msg.type === 'PRESENCE') {
           const presence = msg.payload as RoomPresence;
           pruneStaleDuplicatePresence(presence);
@@ -636,6 +799,7 @@ export async function createRoom(
           broadcastPresence();
         }
         if (msg.type === 'LEAVE_ROOM') {
+          cleanupConnection(conn);
           _peers.delete(conn.peer);
           _connections.delete(conn.peer);
           conn.close();
@@ -647,7 +811,7 @@ export async function createRoom(
         }
         if (msg.type === 'PING') {
           const payload = msg.payload as { sentAt?: number } | undefined;
-          conn.send({ type: 'PONG', payload: { sentAt: payload?.sentAt ?? Date.now() } });
+          sendMessage(conn, { type: 'PONG', payload: { sentAt: payload?.sentAt ?? Date.now() } });
         }
         if (msg.type === 'PONG') {
           const payload = msg.payload as { sentAt?: number } | undefined;
@@ -659,13 +823,11 @@ export async function createRoom(
       });
 
       conn.on('close', () => {
-        const p = _peers.get(conn.peer);
-        if (p) _peers.set(conn.peer, { ...p, online: false });
-        _connections.delete(conn.peer);
-        broadcastPresence();
+        markPeerOffline(conn);
       });
 
       conn.on('error', () => {
+        cleanupConnection(conn);
         _connections.delete(conn.peer);
       });
     });
@@ -706,15 +868,17 @@ export async function joinRoom(
         serialization: 'json',
       });
       _hostConn = conn;
+      watchPeerConnection(conn, () => startHostMigration('host-disconnected'));
 
       conn.on('open', () => {
         clearTimeout(timeout);
         // Send our presence to the host
-        conn.send({ type: 'PRESENCE', payload: { ...presence, online: true, lastSeen: Date.now() } });
+        sendMessage(conn, { type: 'PRESENCE', payload: { ...presence, online: true, lastSeen: Date.now() } });
       });
 
       conn.on('data', (raw: unknown) => {
-        const msg = raw as { type: string; payload: unknown };
+        const msg = parseSyncMessage(raw);
+        if (!msg) return;
 
         if (msg.type === 'KICKED') {
           clearTimeout(timeout);
@@ -779,15 +943,17 @@ export async function joinRoom(
 
         if (msg.type === 'PING') {
           const payload = msg.payload as { sentAt?: number } | undefined;
-          conn.send({ type: 'PONG', payload: { sentAt: payload?.sentAt ?? Date.now() } });
+          sendMessage(conn, { type: 'PONG', payload: { sentAt: payload?.sentAt ?? Date.now() } });
         }
       });
 
       conn.on('close', () => {
+        cleanupConnection(conn);
         startHostMigration('host-disconnected');
       });
 
       conn.on('error', (err: Error) => {
+        cleanupConnection(conn);
         clearTimeout(timeout);
         if ((conn as any)._joinResolved === true) {
           startHostMigration('host-disconnected');
@@ -816,15 +982,13 @@ export async function joinRoom(
 
 export function broadcastState(game: GameState): void {
   _latestGame = game;
-  const msg = { type: 'GAME_STATE', payload: game };
+  const msg: SyncMessage = { type: 'GAME_STATE', payload: game };
   if (!_isHost) {
-    if (_hostConn?.open) _hostConn.send(msg);
+    if (_hostConn?.open) sendMessage(_hostConn, msg, { coalesceState: true });
     return;
   }
   for (const conn of _connections.values()) {
-    if (conn.open) {
-      conn.send(msg);
-    }
+    sendMessage(conn, msg, { coalesceState: true });
   }
 }
 
@@ -840,7 +1004,7 @@ export function updatePresence(fields: Partial<RoomPresence>): void {
     // Joiner sends updated presence to host
     if (_hostConn?.open) {
       const existing = _peers.get(_peerId!) ?? {} as RoomPresence;
-      _hostConn.send({
+      sendMessage(_hostConn, {
         type: 'PRESENCE',
         payload: { ...existing, ...fields, lastSeen: Date.now(), online: true },
       });
@@ -855,9 +1019,10 @@ export function kickPeer(peerId: string, reason = 'Removed by host.'): boolean {
   const hadPresence = _peers.delete(peerId);
   const conn = _connections.get(peerId);
   if (conn?.open) {
-    conn.send({ type: 'KICKED', payload: { reason } });
+    sendMessage(conn, { type: 'KICKED', payload: { reason } });
     conn.close();
   }
+  if (conn) cleanupConnection(conn);
   _connections.delete(peerId);
   broadcastPresence();
   return hadPresence || Boolean(conn);
@@ -891,7 +1056,7 @@ export function requestHostMigrationBeforeLeave(): boolean {
   };
 
   for (const conn of _connections.values()) {
-    if (conn.open) conn.send({ type: 'HOST_MIGRATION', payload: notice });
+    sendMessage(conn, { type: 'HOST_MIGRATION', payload: notice });
   }
   broadcastPresence();
   return true;
@@ -901,11 +1066,11 @@ export function leaveRoom(notifyHost = true): void {
   _stopHeartbeat();
   if (_migrationTimer) { clearTimeout(_migrationTimer); _migrationTimer = null; }
   if (notifyHost && !_isHost && _peerId && _hostConn?.open) {
-    _hostConn.send({ type: 'LEAVE_ROOM', payload: { peerId: _peerId } });
+    sendMessage(_hostConn, { type: 'LEAVE_ROOM', payload: { peerId: _peerId } });
   }
-  if (_hostConn) { _hostConn.close(); _hostConn = null; }
+  if (_hostConn) { cleanupConnection(_hostConn); _hostConn.close(); _hostConn = null; }
   for (const conn of _connections.values()) conn.close();
-  _connections.clear();
+  cleanupAllConnections();
   _peers.clear();
   if (_peer) { _peer.destroy(); _peer = null; }
   _latestGame = null;
@@ -922,13 +1087,13 @@ export function leaveRoom(notifyHost = true): void {
 function _startHeartbeat() {
   _stopHeartbeat();
   _heartbeatTimer = setInterval(() => {
-    const ping = { type: 'PING', payload: { sentAt: Date.now() } };
+    const ping: SyncMessage = { type: 'PING', payload: { sentAt: Date.now() } };
     if (_isHost) {
       for (const conn of _connections.values()) {
-        if (conn.open) conn.send(ping);
+        sendMessage(conn, ping);
       }
     } else {
-      if (_hostConn?.open) _hostConn.send(ping);
+      if (_hostConn?.open) sendMessage(_hostConn, ping);
       else startHostMigration('host-disconnected');
     }
   }, HEARTBEAT_MS);
