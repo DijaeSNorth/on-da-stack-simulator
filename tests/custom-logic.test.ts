@@ -8,7 +8,7 @@
  *   4. Custom replacement/rule metadata becomes active modifier warnings
  */
 
-import { detectDeckUrl, fetchDecklistFromUrl, parseDeckLogicFile } from '../client/src/engine/deckImport';
+import { parseDeckLogicFile } from '../client/src/engine/deckImport';
 import {
   detectAttackTriggers,
   detectCastTriggers,
@@ -368,64 +368,6 @@ console.log('=== Custom modifier detection ===');
   const flags = getActiveModifiers(makeState([card]));
   assert(flags.some(f => f.text.includes('Tapped Treasure')), 'Expected custom rule modifier flag');
   assert(flags.some(f => f.text.includes('tokens would die')), 'Expected replacement modifier flag');
-}
-
-console.log('=== Deck URL detection and import adapters ===');
-{
-  assert(detectDeckUrl('https://www.moxfield.com/decks/abc123')?.source === 'moxfield', 'Expected Moxfield URL detection');
-  assert(detectDeckUrl('https://archidekt.com/decks/123456/example')?.id === '123456', 'Expected Archidekt deck id detection');
-  assert(detectDeckUrl('https://www.mtggoldfish.com/deck/7443928#paper')?.source === 'mtggoldfish', 'Expected MTGGoldfish URL detection');
-  assert(detectDeckUrl('https://tappedout.net/mtg-decks/sample-deck/')?.source === 'tappedout', 'Expected TappedOut URL detection');
-
-  const originalFetch = globalThis.fetch;
-  const fetchedTargets: string[] = [];
-  const archidektPayload = {
-    name: 'Archidekt Practice',
-    cards: [
-      { quantity: 1, categories: ['Commander'], card: { oracleCard: { name: 'Muldrotha, the Gravetide' } } },
-      { quantity: 1, categories: ['Ramp'], card: { oracleCard: { name: 'Command Tower' } } },
-    ],
-  };
-  globalThis.fetch = (async (url: RequestInfo | URL) => {
-    const target = String(url);
-    fetchedTargets.push(target);
-    if (target.includes('api2.moxfield.com')) {
-      return new Response(JSON.stringify({
-        name: 'Moxfield Practice',
-        commanders: {
-          commander: { quantity: 1, card: { name: 'Atraxa, Praetors\' Voice' } },
-        },
-        mainboard: {
-          sol: { quantity: 1, card: { name: 'Sol Ring' } },
-        },
-        sideboard: {},
-        maybeboard: {},
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    }
-    if (target === 'https://archidekt.com/api/decks/123456/') {
-      throw new TypeError('Failed to fetch');
-    }
-    if (target.includes('api.allorigins.win') && decodeURIComponent(target).includes('https://archidekt.com/api/decks/123456/')) {
-      return new Response(JSON.stringify(archidektPayload), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    }
-    return new Response('Deck\n1 Lightning Bolt\nSideboard\n1 Pyroblast', { status: 200 });
-  }) as typeof fetch;
-
-  const moxfield = await fetchDecklistFromUrl('https://www.moxfield.com/decks/abc123');
-  assert(moxfield.name === 'Moxfield Practice', 'Expected Moxfield deck name');
-  assert(moxfield.text.includes('Commander'), 'Expected Moxfield commander section');
-  assert(moxfield.text.includes('1 Sol Ring'), 'Expected Moxfield mainboard card');
-
-  const archidekt = await fetchDecklistFromUrl('https://archidekt.com/decks/123456/example');
-  assert(archidekt.text.includes('1 Muldrotha, the Gravetide'), 'Expected Archidekt commander card');
-  assert(archidekt.text.includes('1 Command Tower'), 'Expected Archidekt main card');
-  assert(fetchedTargets.includes('https://archidekt.com/api/decks/123456/'), 'Expected full Archidekt endpoint, not small metadata endpoint');
-  assert(!fetchedTargets.some(target => target.includes('/small/')), 'Archidekt import should not use the small endpoint');
-
-  const goldfish = await fetchDecklistFromUrl('https://www.mtggoldfish.com/deck/7443928');
-  assert(goldfish.text.includes('1 Lightning Bolt'), 'Expected text-export deck card');
-
-  globalThis.fetch = originalFetch;
 }
 
 console.log('Custom logic tests passed.');

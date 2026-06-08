@@ -3,7 +3,6 @@ import { useGameStore } from '../../store/gameStore';
 import {
   deleteDeck,
   exportDeckAsText,
-  importDeckFromUrl,
   importDecklist,
   loadFavoriteDeckIds,
   MAX_STORED_DECKS,
@@ -53,7 +52,6 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
   const [newCardSection, setNewCardSection] = useState<DeckBuilderSection>('main');
   const [exchangeText, setExchangeText] = useState('');
   const [logicText, setLogicText] = useState('');
-  const [deckSourceUrl, setDeckSourceUrl] = useState('');
   const [status, setStatus] = useState('');
   const [triggerEvent, setTriggerEvent] = useState('');
   const [triggerEffect, setTriggerEffect] = useState('');
@@ -194,21 +192,6 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
       store.saveDeckToStorage(result.deck);
     }
     setStatus(result.errors.length ? result.errors.join(' ') : `Imported ${result.cardCount} cards. ${result.warnings[0] ?? ''}`);
-  }
-
-  async function handleImportUrl() {
-    if (!deckSourceUrl.trim()) return;
-    setStatus('Importing deck URL...');
-    const result = await importDeckFromUrl(deckSourceUrl, draft.name || 'Solo Lab Import', playerId, logicText, {
-      captureFetchedCardData: true,
-    });
-    setDraft(result.deck);
-    setSelectedCard(result.deck.commanders[0] ?? result.deck.cards[0]?.name ?? '');
-    refreshExchange(result.deck);
-    setDeckSourceUrl('');
-    if (savedDecks.length >= MAX_STORED_DECKS) setSaveLimitOpen(true);
-    if (liveSyncEnabled) await syncDeckForTesting(result.deck);
-    setStatus(result.errors.length ? result.errors.join(' ') : `Imported ${result.cardCount} cards from URL. ${result.warnings[0] ?? ''}`);
   }
 
   function handleExportFile(deckToExport = draft) {
@@ -480,7 +463,7 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
           <input
             ref={fileInputRef}
             type="file"
-            accept=".json,.txt,.dec,.dek"
+            accept=".txt,.dek,.dec,.csv,.json,.cod,.dck,text/plain,text/csv,application/json,application/xml,text/xml"
             onChange={event => void handleImportFile(event.target.files?.[0])}
             style={{ display: 'none' }}
           />
@@ -571,20 +554,11 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
           <span>Deck Text</span>
           <button data-help-title="Apply Deck Text" data-help-body="Parses the deck text box and updates the current draft. Import warnings stay visible so user mistakes are easy to correct." data-help-placement="top" onClick={handleImport} style={buttonStyle('#1d4ed8', '#dbeafe')}>Apply Text</button>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 6 }}>
-          <input
-            value={deckSourceUrl}
-            onChange={event => setDeckSourceUrl(event.target.value)}
-            placeholder="Moxfield / Archidekt / MTGGoldfish / TappedOut URL"
-            style={inputStyle}
-          />
-          <button data-help-title="Import Deck URL" data-help-body="Fetches a deck from supported public sites and converts it into the live solo build with card data where available." data-help-placement="top" onClick={() => void handleImportUrl()} style={buttonStyle('#123642', '#67e8f9')}>Import URL</button>
-        </div>
         <textarea
           data-testid="solo-import-export-text"
           value={exchangeText}
           onChange={event => setExchangeText(event.target.value)}
-          placeholder="Paste a decklist here, or use the live text generated from the current build."
+          placeholder="Paste a decklist here, upload a deck file, or use the live text generated from the current build."
           rows={compact ? 5 : 8}
           style={textareaStyle}
         />

@@ -207,6 +207,37 @@ try {
     assert(textFile.deckText?.includes('Sol Ring'), 'expected non-JSON files to load as deck text');
     assert(textFile.warnings.some(warning => warning.includes('plain-text decklist')), 'expected non-JSON import warning');
 
+    const mtgoXml = parseDeckFilePayload([
+      '<?xml version="1.0" encoding="utf-8"?>',
+      '<Deck>',
+      '<Cards Quantity="1" Name="Sol Ring" Sideboard="false" />',
+      '<Cards Quantity="2" Name="Counterspell" Sideboard="true" />',
+      '</Deck>',
+    ].join('\n'));
+    assert(mtgoXml.deckText?.includes('Deck\n1 Sol Ring'), 'expected MTGO XML deck file to convert main deck cards to text');
+    assert(mtgoXml.deckText?.includes('Sideboard\n2 Counterspell'), 'expected MTGO XML sideboard cards to convert to text');
+
+    const cockatriceXml = parseDeckFilePayload([
+      '<cockatrice_deck>',
+      '<zone name="command"><card number="1" name="Atraxa, Praetors&apos; Voice"/></zone>',
+      '<zone name="main"><card number="1" name="Command Tower"/><card number="1" name="Sol Ring"/></zone>',
+      '</cockatrice_deck>',
+    ].join('\n'));
+    assert(cockatriceXml.deckText?.includes("Commander\n1 Atraxa, Praetors' Voice"), 'expected Cockatrice command zone to convert to commander text');
+    assert(cockatriceXml.deckText?.includes('Deck\n1 Command Tower'), 'expected Cockatrice main zone to convert to deck text');
+
+    const genericJson = parseDeckFilePayload(JSON.stringify({
+      commanders: { 'Vial Smasher the Fierce': { quantity: 1 } },
+      mainboard: {
+        'Command Tower': { quantity: 1 },
+        'Sol Ring': { quantity: 1 },
+      },
+      sideboard: [{ name: 'Pyroblast', count: 1 }],
+    }));
+    assert(genericJson.deckText?.includes('Commander\n1 Vial Smasher the Fierce'), 'expected generic JSON commanders to convert to text');
+    assert(genericJson.deckText?.includes('Deck\n1 Command Tower'), 'expected generic JSON mainboard to convert to text');
+    assert(genericJson.deckText?.includes('Sideboard\n1 Pyroblast'), 'expected generic JSON sideboard to convert to text');
+
     const invalidJson = parseDeckFilePayload('{"notDeck":true}');
     assert(Boolean(invalidJson.error), 'expected unrelated JSON to be rejected with an error');
   }

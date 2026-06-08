@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import {
-  importDeckFromUrl,
   importDecklist,
+  parseDeckFilePayload,
   saveDeck,
   loadFavoriteDeckIds,
   toggleFavoriteDeck,
@@ -30,7 +30,6 @@ interface PlayerSetup {
 
 type GameMode = 'solo' | 'table';
 type PlayerCount = 1 | 2 | 3 | 4 | 5 | 6;
-type ImportMode = 'text' | 'url';
 
 const DEFAULT_COLORS = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899'];
 
@@ -58,17 +57,17 @@ export function LobbyScreen() {
   );
   const [startingLife, setStartingLife] = useState(40);
   const [activePlayerTab, setActivePlayerTab] = useState(0);
-  const [importMode, setImportMode] = useState<ImportMode>('text');
   const [deckText, setDeckText] = useState('');
-  const [deckUrl, setDeckUrl] = useState('');
   const [customLogicText, setCustomLogicText] = useState('');
   const [deckName, setDeckName] = useState('');
   const [importing, setImporting] = useState(false);
   const [importError, setImportError] = useState('');
+  const [importNotice, setImportNotice] = useState('');
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const [houseRules, setHouseRules] = useState<Set<string>>(new Set());
   const [favoriteDeckIds, setFavoriteDeckIds] = useState<string[]>(() => loadFavoriteDeckIds());
   const [exitOpen, setExitOpen] = useState(false);
+  const deckFileInputRef = useRef<HTMLInputElement | null>(null);
 
   function applyActiveProfileToSeat0() {
     const profile = getActiveProfile();
@@ -184,17 +183,47 @@ export function LobbyScreen() {
     setPlayers(prev => prev.map((p, i) => i === idx ? { ...p, ...update } : p));
   }
 
-  async function handleImport() {
-    if (importMode === 'text' && !deckText.trim()) return;
-    if (importMode === 'url' && !deckUrl.trim()) return;
+  async function handleDeckFileUpload(file: File | null) {
+    if (!file) return;
     setImporting(true);
     setImportError('');
+    setImportNotice('');
+    setImportResult(null);
+    try {
+      const raw = await file.text();
+      const fallbackName = file.name.replace(/\.[^.]+$/, '').trim() || 'Imported Deck File';
+      const parsed = parseDeckFilePayload(raw, fallbackName);
+      if (parsed.error) {
+        setImportError(parsed.error);
+        return;
+      }
+      if (!parsed.deckText?.trim()) {
+        setImportError('That file did not contain a readable decklist.');
+        return;
+      }
+      setDeckText(parsed.deckText);
+      if (parsed.logicText?.trim()) setCustomLogicText(parsed.logicText);
+      setDeckName(current => current.trim() ? current : parsed.deck?.name ?? fallbackName);
+      setImportNotice([
+        `Loaded ${file.name} into the text importer.`,
+        ...parsed.warnings,
+      ].filter(Boolean).join(' '));
+    } catch (err) {
+      setImportError(err instanceof Error ? err.message : 'Deck file upload failed.');
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  async function handleImport() {
+    if (!deckText.trim()) return;
+    setImporting(true);
+    setImportError('');
+    setImportNotice('');
     setImportResult(null);
     try {
       const importOptions = { allowBannedCards: houseRules.has('allow_banned_cards') };
-      const result = importMode === 'url'
-        ? await importDeckFromUrl(deckUrl, deckName, undefined, customLogicText, importOptions)
-        : await importDecklist(deckText, deckName || 'Imported Deck', undefined, undefined, customLogicText, importOptions);
+      const result = await importDecklist(deckText, deckName || 'Imported Deck', undefined, undefined, customLogicText, importOptions);
       setImportResult(result);
     } catch (err) {
       setImportError(err instanceof Error ? err.message : 'Deck import failed.');
@@ -215,8 +244,8 @@ export function LobbyScreen() {
     await store.loadDeck(targetPlayerId, deck);
     setImportResult(null);
     setImportError('');
+    setImportNotice('');
     setDeckText('');
-    setDeckUrl('');
     setCustomLogicText('');
   }
 
@@ -796,36 +825,7 @@ export function LobbyScreen() {
             <div>
               <div style={{ fontSize: 10, color: '#64748b', marginBottom: 6 }}>
                 Import New Deck
-                <span style={{ color: '#334155' }}> · Supports URL, MTGO, CSV</span>
-              </div>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 6 }}>
-                {(['url', 'text'] as const).map(mode => (
-                  <button
-                    key={mode}
-                    data-testid={`btn-import-mode-${mode}`}
-                    data-help-title={mode === 'url' ? 'Import From Website' : 'Paste Deck Text'}
-                    data-help-body={mode === 'url' ? 'Fetches a public decklist from supported sites, then validates card names, commander count, size, and banned-card warnings.' : 'Lets you paste a decklist directly. The importer checks format issues and preserves custom logic notes when provided.'}
-                    data-help-placement="top"
-                    onClick={() => {
-                      setImportMode(mode);
-                      setImportError('');
-                      setImportResult(null);
-                    }}
-                    style={{
-                      padding: '6px 8px',
-                      background: importMode === mode ? '#1e3a5f' : '#1e293b',
-                      color: importMode === mode ? '#bfdbfe' : '#94a3b8',
-                      border: `1px solid ${importMode === mode ? '#60a5fa' : '#334155'}`,
-                      borderRadius: 5,
-                      cursor: 'pointer',
-                      fontSize: 10,
-                      fontWeight: 700,
-                      textTransform: 'uppercase',
-                    }}
-                  >
-                    {mode === 'url' ? 'Website URL' : 'Paste Text'}
-                  </button>
-                ))}
+                <span style={{ color: '#334155' }}> · Upload TXT, DEK, DEC, CSV, JSON, COD</span>
               </div>
               <input
                 placeholder="Deck name"
@@ -838,45 +838,72 @@ export function LobbyScreen() {
                   fontSize: 11, color: '#e2e8f0', outline: 'none',
                 }}
               />
-              {importMode === 'url' ? (
-                <div>
-                  <input
-                    placeholder="https://www.moxfield.com/decks/... or Archidekt / MTGGoldfish / TappedOut"
-                    value={deckUrl}
-                    onChange={e => setDeckUrl(e.target.value)}
-                    data-testid="input-deck-url"
-                    style={{
-                      width: '100%',
-                      boxSizing: 'border-box',
-                      background: '#1e293b',
-                      border: '1px solid #334155',
-                      borderRadius: 5,
-                      padding: '8px 10px',
-                      fontSize: 11,
-                      color: '#e2e8f0',
-                      outline: 'none',
-                    }}
-                  />
-                  <div style={{ fontSize: 9, color: '#475569', marginTop: 5, lineHeight: 1.35 }}>
-                    Public Moxfield and Archidekt links import directly. MTGGoldfish and TappedOut use their public text exports when available.
-                  </div>
+              <input
+                ref={deckFileInputRef}
+                type="file"
+                accept=".txt,.dek,.dec,.csv,.json,.cod,.dck,text/plain,text/csv,application/json,application/xml,text/xml"
+                onChange={event => {
+                  void handleDeckFileUpload(event.target.files?.[0] ?? null);
+                  event.currentTarget.value = '';
+                }}
+                style={{ display: 'none' }}
+              />
+              <button
+                type="button"
+                data-testid="btn-upload-deck-file"
+                data-help-title="Upload Deck File"
+                data-help-body="Reads common deck export files and converts them into editable text before validation. Nothing is fetched from deck websites."
+                data-help-example="Works well with plain text, MTGO .dek/.dec, CSV, On-Da-Stack JSON, and Cockatrice .cod exports."
+                data-help-placement="top"
+                onClick={() => deckFileInputRef.current?.click()}
+                disabled={importing}
+                style={{
+                  width: '100%',
+                  marginBottom: 6,
+                  padding: '7px 10px',
+                  background: '#1e293b',
+                  color: importing ? '#475569' : '#bfdbfe',
+                  border: '1px solid #334155',
+                  borderRadius: 5,
+                  cursor: importing ? 'wait' : 'pointer',
+                  fontSize: 10,
+                  fontWeight: 700,
+                  textTransform: 'uppercase',
+                }}
+              >
+                Upload Deck File
+              </button>
+              <textarea
+                placeholder="Paste your decklist here or upload a deck file...&#10;&#10;Example:&#10;Commander&#10;1 Atraxa, Praetors' Voice&#10;&#10;Deck&#10;1 Sol Ring&#10;1 Command Tower&#10;..."
+                value={deckText}
+                onChange={e => {
+                  setDeckText(e.target.value);
+                  setImportNotice('');
+                }}
+                data-testid="input-decklist"
+                rows={8}
+                style={{
+                  width: '100%', boxSizing: 'border-box',
+                  background: '#1e293b', border: '1px solid #334155',
+                  borderRadius: 5, padding: '8px 10px',
+                  fontSize: 10, color: '#e2e8f0', outline: 'none',
+                  resize: 'vertical', fontFamily: 'monospace',
+                  lineHeight: 1.5,
+                }}
+              />
+              {importNotice && (
+                <div data-testid="deck-import-file-notice" style={{
+                  marginTop: 6,
+                  fontSize: 10,
+                  color: '#bfdbfe',
+                  background: 'rgba(30,58,95,0.22)',
+                  border: '1px solid #1e3a5f',
+                  borderRadius: 5,
+                  padding: '6px 8px',
+                  lineHeight: 1.35,
+                }}>
+                  {importNotice}
                 </div>
-              ) : (
-                <textarea
-                  placeholder="Paste your decklist here...&#10;&#10;Example:&#10;Commander&#10;1 Atraxa, Praetors' Voice&#10;&#10;Deck&#10;1 Sol Ring&#10;1 Command Tower&#10;..."
-                  value={deckText}
-                  onChange={e => setDeckText(e.target.value)}
-                  data-testid="input-decklist"
-                  rows={8}
-                  style={{
-                    width: '100%', boxSizing: 'border-box',
-                    background: '#1e293b', border: '1px solid #334155',
-                    borderRadius: 5, padding: '8px 10px',
-                    fontSize: 10, color: '#e2e8f0', outline: 'none',
-                    resize: 'vertical', fontFamily: 'monospace',
-                    lineHeight: 1.5,
-                  }}
-                />
               )}
               <details style={{ marginTop: 8 }}>
                 <summary style={{
@@ -912,12 +939,12 @@ export function LobbyScreen() {
               </details>
               <button
                 data-testid="btn-import-deck"
-                data-help-title={importMode === 'url' ? 'Fetch And Validate' : 'Import And Validate'}
-                data-help-body="Imports the deck, pulls card information where possible, saves it to a deck slot, and reports warnings without blocking practice games."
+                data-help-title="Import And Validate"
+                data-help-body="Validates the pasted or uploaded deck text, pulls card information where possible, saves it to a deck slot, and reports warnings without blocking practice games."
                 data-help-example="Commander mode needs loaded decks before starting; Solo mode can start without one."
                 data-help-placement="top"
                 onClick={handleImport}
-                disabled={importing || (importMode === 'text' ? !deckText.trim() : !deckUrl.trim())}
+                disabled={importing || !deckText.trim()}
                 style={{
                   width: '100%', marginTop: 8, padding: '8px 0',
                   background: importing ? '#374151' : '#1d4ed8',
@@ -926,7 +953,7 @@ export function LobbyScreen() {
                   fontSize: 11, fontWeight: 700,
                 }}
               >
-                {importing ? 'Importing...' : importMode === 'url' ? 'Fetch & Validate' : 'Import & Validate'}
+                {importing ? 'Importing...' : 'Import & Validate'}
               </button>
               {importError && (
                 <div data-testid="deck-import-error" style={{

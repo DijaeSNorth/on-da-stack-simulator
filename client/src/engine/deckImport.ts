@@ -32,27 +32,6 @@ export interface ImportOptions {
   captureFetchedCardData?: boolean;
 }
 
-export type DeckUrlSource = 'moxfield' | 'archidekt' | 'mtggoldfish' | 'tappedout' | 'unknown';
-
-export interface DeckUrlInfo {
-  source: DeckUrlSource;
-  id?: string;
-  url: string;
-}
-
-interface RemoteDecklist {
-  name?: string;
-  text: string;
-  source: DeckUrlSource;
-  warnings: string[];
-}
-
-interface RemoteFetchResult {
-  res: Response;
-  usedProxy: boolean;
-  failures: string[];
-}
-
 // ─── Format Parsers ───────────────────────────────────────────────────────────
 
 interface ParsedEntry {
@@ -64,10 +43,6 @@ interface ParsedEntry {
 const MAX_COMMANDERS = 2;
 const MAX_DECKLIST_CHARS = 250_000;
 const MAX_COPIES_PER_LINE = 250;
-const READ_ONLY_CORS_PROXIES = [
-  (url: string) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-  (url: string) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
-];
 
 /**
  * Normalize a card name from any common variation
@@ -193,294 +168,160 @@ function parseRaw(raw: string, warnings?: string[]): ParsedEntry[] {
   return parseTextDecklist(trimmed, warnings);
 }
 
-export interface DeckLogicParseResult {
-  logicFile?: DeckLogic;
-  errors: string[];
-  warnings: string[];
+function decodeXmlAttribute(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
 }
 
-export function detectDeckUrl(value: string): DeckUrlInfo | null {
-  const trimmed = value.trim();
-  if (!/^https?:\/\//i.test(trimmed)) return null;
-
-  let url: URL;
-  try {
-    url = new URL(trimmed);
-  } catch {
-    return null;
-  }
-
-  const host = url.hostname.replace(/^www\./i, '').toLowerCase();
-  const path = url.pathname;
-
-  if (host === 'moxfield.com') {
-    const id = path.match(/\/decks\/([^/?#]+)/i)?.[1];
-    return { source: 'moxfield', id, url: trimmed };
-  }
-  if (host === 'archidekt.com') {
-    const id = path.match(/\/decks\/(\d+)/i)?.[1];
-    return { source: 'archidekt', id, url: trimmed };
-  }
-  if (host === 'mtggoldfish.com') {
-    const id = path.match(/\/deck\/(?:arena_download\/)?(\d+)/i)?.[1];
-    return { source: 'mtggoldfish', id, url: trimmed };
-  }
-  if (host === 'tappedout.net') {
-    const id = path.match(/\/mtg-decks\/([^/?#]+)/i)?.[1];
-    return { source: 'tappedout', id, url: trimmed };
-  }
-
-  return { source: 'unknown', url: trimmed };
+function readXmlAttribute(tag: string, name: string): string | undefined {
+  const match = tag.match(new RegExp(`\\b${name}\\s*=\\s*["']([^"']+)["']`, 'i'));
+  return match ? decodeXmlAttribute(match[1]) : undefined;
 }
 
-export async function importDeckFromUrl(
-  url: string,
-  deckName: string = '',
-  playerId?: string,
-  customRulesText?: string,
-  options: ImportOptions = {}
-): Promise<ImportResult> {
-  const remote = await fetchDecklistFromUrl(url);
-  const fallbackName = remote.name || deckName || `${formatDeckSource(remote.source)} Import`;
-  const result = await importDecklist(remote.text, deckName || fallbackName, url, playerId, customRulesText, options);
-  return {
-    ...result,
-    warnings: [
-      `Imported from ${formatDeckSource(remote.source)} URL.`,
-      ...remote.warnings,
-      ...result.warnings,
-    ],
+function deckSectionsToText(sections: {
+  commander?: ParsedEntry[];
+  main?: ParsedEntry[];
+  sideboard?: ParsedEntry[];
+  maybeboard?: ParsedEntry[];
+}): string {
+  const lines: string[] = [];
+  const addSection = (label: string, entries: ParsedEntry[] = []) => {
+    if (entries.length === 0) return;
+    if (lines.length > 0) lines.push('');
+    lines.push(label);
+    for (const entry of entries) lines.push(`${entry.count} ${entry.name}`);
   };
+  addSection('Commander', sections.commander);
+  addSection('Deck', sections.main);
+  addSection('Sideboard', sections.sideboard);
+  addSection('Maybeboard', sections.maybeboard);
+  return lines.join('\n');
 }
 
-export async function fetchDecklistFromUrl(value: string): Promise<RemoteDecklist> {
-  const info = detectDeckUrl(value);
-  if (!info) {
-    throw new Error('Paste a full public deck URL beginning with http:// or https://.');
-  }
-  if (!info.id && info.source !== 'unknown') {
-    throw new Error(`Could not find a deck id in that ${formatDeckSource(info.source)} URL.`);
-  }
+function parseXmlDeckText(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!/^<\?xml|^<deck|^<cockatrice_deck/i.test(trimmed)) return null;
 
-  if (info.source === 'moxfield') return fetchMoxfieldDeck(info);
-  if (info.source === 'archidekt') return fetchArchidektDeck(info);
-  if (info.source === 'mtggoldfish') return fetchTextExportCandidates(info, [
-    `https://www.mtggoldfish.com/deck/download/${info.id}`,
-    `https://www.mtggoldfish.com/deck/arena_download/${info.id}`,
-    info.url,
-  ]);
-  if (info.source === 'tappedout') return fetchTextExportCandidates(info, [
-    `${info.url.replace(/\/?$/, '/')}\?fmt=txt`,
-    `${info.url.replace(/\/?$/, '/')}\?fmt=mtgo`,
-    info.url,
-  ]);
-
-  throw new Error('That deck site is not supported yet. Try Moxfield, Archidekt, MTGGoldfish, or TappedOut.');
-}
-
-function formatDeckSource(source: DeckUrlSource): string {
-  if (source === 'mtggoldfish') return 'MTGGoldfish';
-  if (source === 'tappedout') return 'TappedOut';
-  if (source === 'moxfield') return 'Moxfield';
-  if (source === 'archidekt') return 'Archidekt';
-  return 'Deck URL';
-}
-
-async function fetchMoxfieldDeck(info: DeckUrlInfo): Promise<RemoteDecklist> {
-  const data = await fetchJson(`https://api2.moxfield.com/v3/decks/all/${info.id}`);
-  const lines = [
-    ...boardToLines('Commander', data.commanders),
-    ...boardToLines('Deck', data.mainboard),
-    ...boardToLines('Sideboard', data.sideboard),
-    ...boardToLines('Maybeboard', data.maybeboard),
-  ];
-  return {
-    name: typeof data.name === 'string' ? data.name : undefined,
-    text: lines.join('\n'),
-    source: 'moxfield',
-    warnings: [],
-  };
-}
-
-async function fetchArchidektDeck(info: DeckUrlInfo): Promise<RemoteDecklist> {
-  const data = await fetchJson(`https://archidekt.com/api/decks/${info.id}/`);
-  let cards = Array.isArray(data.cards) ? data.cards : [];
-  if (cards.length === 0) {
-    const cardData = await fetchJson(`https://archidekt.com/api/decks/${info.id}/cards/`);
-    cards = Array.isArray(cardData) ? cardData : Array.isArray(cardData.cards) ? cardData.cards : [];
-  }
-  const sections: Record<ParsedEntry['section'], string[]> = {
+  const sections: Record<ParsedEntry['section'], ParsedEntry[]> = {
     commander: [],
     main: [],
     sideboard: [],
     maybeboard: [],
   };
 
-  for (const entry of cards) {
-    const quantity = Number(entry.quantity ?? entry.qty ?? entry.count ?? 1) || 1;
-    const name = getArchidektCardName(entry);
-    if (!name) continue;
-    const section = getArchidektSection(entry);
-    sections[section].push(`${quantity} ${name}`);
-  }
-
-  const lines = [
-    ...sectionLines('Commander', sections.commander),
-    ...sectionLines('Deck', sections.main),
-    ...sectionLines('Sideboard', sections.sideboard),
-    ...sectionLines('Maybeboard', sections.maybeboard),
-  ];
-
-  return {
-    name: typeof data.name === 'string' ? data.name : undefined,
-    text: lines.join('\n'),
-    source: 'archidekt',
-    warnings: cards.length === 0
-      ? ['Archidekt returned no cards for this deck. Make sure the deck is public and not empty.']
-      : [],
+  const addCard = (section: ParsedEntry['section'], name?: string, countValue?: string | number) => {
+    const cardName = normalizeName(name ?? '');
+    if (!cardName) return;
+    const parsedCount = typeof countValue === 'number' ? countValue : Number.parseInt(String(countValue ?? '1'), 10);
+    const count = Number.isFinite(parsedCount) && parsedCount > 0 ? parsedCount : 1;
+    sections[section].push({ section, name: cardName, count });
   };
-}
 
-async function fetchTextExportCandidates(info: DeckUrlInfo, urls: string[]): Promise<RemoteDecklist> {
-  const failures: string[] = [];
-  for (const url of urls) {
-    try {
-      const { res, usedProxy, failures: fetchFailures } = await fetchReadableUrl(url, { headers: { Accept: 'text/plain,text/html,*/*' } });
-      failures.push(...fetchFailures);
-      if (!res.ok) {
-        failures.push(`${res.status} ${url}`);
-        continue;
-      }
-      const raw = await res.text();
-      const text = normalizeRemoteDeckText(raw);
-      if (parseRaw(text).length > 0) {
-        return {
-          name: getTitleFromHtml(raw),
-          text,
-          source: info.source,
-          warnings: [
-            ...(usedProxy ? [`${formatDeckSource(info.source)} blocked direct browser import, so a read-only public fetch fallback was used.`] : []),
-            ...(info.source === 'tappedout'
-              ? ['TappedOut URL imports are best-effort. If this deck imports oddly, use TappedOut Export -> MTGO and paste the text.']
-              : []),
-          ],
-        };
-      }
-    } catch (err) {
-      failures.push(err instanceof Error ? err.message : String(err));
-    }
-  }
-  throw new Error(`Could not read a decklist from ${formatDeckSource(info.source)}. The site may block browser imports; use its text/MTGO export and paste the list instead. ${failures.length ? `Tried: ${failures.join('; ')}` : ''}`);
-}
-
-async function fetchJson(url: string): Promise<any> {
-  const { res } = await fetchReadableUrl(url, { headers: { Accept: 'application/json' } });
-  if (!res.ok) throw new Error(`Deck URL fetch failed with HTTP ${res.status}. Make sure the deck is public.`);
-  return res.json();
-}
-
-async function fetchReadableUrl(url: string, init: RequestInit = {}): Promise<RemoteFetchResult> {
-  const failures: string[] = [];
-  try {
-    return { res: await fetch(url, init), usedProxy: false, failures };
-  } catch (err) {
-    failures.push(formatFetchFailure(url, err));
-  }
-
-  for (const proxy of READ_ONLY_CORS_PROXIES) {
-    const proxyUrl = proxy(url);
-    try {
-      return { res: await fetch(proxyUrl, init), usedProxy: true, failures };
-    } catch (err) {
-      failures.push(formatFetchFailure(proxyUrl, err));
+  const zoneRegex = /<zone\b[^>]*name=["']([^"']+)["'][^>]*>([\s\S]*?)<\/zone>/gi;
+  let zoneMatch: RegExpExecArray | null;
+  while ((zoneMatch = zoneRegex.exec(trimmed)) !== null) {
+    const zoneName = zoneMatch[1].toLowerCase();
+    const section: ParsedEntry['section'] =
+      /command|commander|general/.test(zoneName) ? 'commander'
+        : /side/.test(zoneName) ? 'sideboard'
+          : /maybe/.test(zoneName) ? 'maybeboard'
+            : 'main';
+    const cardTags = zoneMatch[2].match(/<card\b[^>]*\/?>/gi) ?? [];
+    for (const tag of cardTags) {
+      addCard(section, readXmlAttribute(tag, 'name'), readXmlAttribute(tag, 'number') ?? readXmlAttribute(tag, 'quantity'));
     }
   }
 
-  throw new Error(failures.join('; ') || `Failed to fetch ${url}`);
+  const standaloneCards = trimmed.match(/<Cards?\b[^>]*\/?>/gi) ?? [];
+  for (const tag of standaloneCards) {
+    const sideboard = /^(true|1|yes)$/i.test(readXmlAttribute(tag, 'Sideboard') ?? '');
+    addCard(sideboard ? 'sideboard' : 'main', readXmlAttribute(tag, 'Name') ?? readXmlAttribute(tag, 'name'), readXmlAttribute(tag, 'Quantity') ?? readXmlAttribute(tag, 'number'));
+  }
+
+  const text = deckSectionsToText(sections);
+  return text.trim() ? text : null;
 }
 
-function formatFetchFailure(url: string, err: unknown): string {
-  const reason = err instanceof Error ? err.message : String(err);
-  return `${url}: ${reason}`;
+function readJsonCardName(value: unknown, fallbackName?: string): string {
+  if (typeof value === 'string') return normalizeName(value);
+  if (!value || typeof value !== 'object') return normalizeName(fallbackName ?? '');
+  const item = value as Record<string, unknown>;
+  const card = item.card && typeof item.card === 'object' ? item.card as Record<string, unknown> : undefined;
+  const oracleCard = card?.oracleCard && typeof card.oracleCard === 'object' ? card.oracleCard as Record<string, unknown> : undefined;
+  return normalizeName(
+    String(
+      item.name ??
+      item.cardName ??
+      card?.name ??
+      oracleCard?.name ??
+      fallbackName ??
+      '',
+    ),
+  );
 }
 
-function boardToLines(header: string, board: unknown): string[] {
-  const entries = Object.values((board && typeof board === 'object') ? board as Record<string, unknown> : {});
-  return sectionLines(header, entries.map(entry => {
-    const item = entry as Record<string, any>;
-    const quantity = Number(item.quantity ?? item.qty ?? item.count ?? 1) || 1;
-    const name = getRemoteCardName(item);
-    return name ? `${quantity} ${name}` : '';
-  }).filter(Boolean));
+function readJsonCardCount(value: unknown): number {
+  if (typeof value === 'number') return value;
+  if (!value || typeof value !== 'object') return 1;
+  const item = value as Record<string, unknown>;
+  const raw = item.count ?? item.quantity ?? item.qty ?? item.number ?? item.amount;
+  const parsed = Number.parseInt(String(raw ?? '1'), 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
 }
 
-function sectionLines(header: string, lines: string[]): string[] {
-  if (lines.length === 0) return [];
-  return [header, ...lines, ''];
+function extractJsonEntries(value: unknown, section: ParsedEntry['section']): ParsedEntry[] {
+  if (!value) return [];
+  if (Array.isArray(value)) {
+    return value
+      .map(item => ({ section, name: readJsonCardName(item), count: readJsonCardCount(item) }))
+      .filter(entry => entry.name);
+  }
+  if (typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([key, item]) => ({ section, name: readJsonCardName(item, key), count: readJsonCardCount(item) }))
+      .filter(entry => entry.name);
+  }
+  return [];
 }
 
-function getRemoteCardName(item: Record<string, any>): string {
-  return String(
-    item.card?.name ??
-    item.card?.oracleCard?.name ??
-    item.oracleCard?.name ??
-    item.name ??
-    ''
-  ).trim();
+function parseJsonDeckText(parsed: Record<string, unknown>): string | null {
+  const source = (parsed.deck && typeof parsed.deck === 'object')
+    ? parsed.deck as Record<string, unknown>
+    : parsed;
+  const sections = {
+    commander: [
+      ...extractJsonEntries(source.commanders, 'commander'),
+      ...extractJsonEntries(source.generals, 'commander'),
+      ...extractJsonEntries(source.commandZone, 'commander'),
+    ],
+    main: [
+      ...extractJsonEntries(source.mainboard, 'main'),
+      ...extractJsonEntries(source.mainBoard, 'main'),
+      ...extractJsonEntries(source.main, 'main'),
+      ...extractJsonEntries(source.cards, 'main'),
+      ...extractJsonEntries(source.decklist, 'main'),
+    ],
+    sideboard: [
+      ...extractJsonEntries(source.sideboard, 'sideboard'),
+      ...extractJsonEntries(source.sideBoard, 'sideboard'),
+    ],
+    maybeboard: [
+      ...extractJsonEntries(source.maybeboard, 'maybeboard'),
+      ...extractJsonEntries(source.maybeBoard, 'maybeboard'),
+    ],
+  };
+  const text = deckSectionsToText(sections);
+  return text.trim() ? text : null;
 }
 
-function getArchidektCardName(entry: Record<string, any>): string {
-  return String(
-    entry.card?.oracleCard?.name ??
-    entry.card?.name ??
-    entry.oracleCard?.name ??
-    entry.name ??
-    entry.cardName ??
-    ''
-  ).trim();
-}
-
-function getArchidektSection(entry: Record<string, any>): ParsedEntry['section'] {
-  const categories = [
-    ...(Array.isArray(entry.categories) ? entry.categories : []),
-    ...(Array.isArray(entry.category) ? entry.category : []),
-    entry.category,
-  ].map(value => String(value ?? '').toLowerCase());
-
-  if (categories.some(value => value.includes('commander'))) return 'commander';
-  if (categories.some(value => value.includes('sideboard'))) return 'sideboard';
-  if (categories.some(value => value.includes('maybeboard') || value.includes('maybe'))) return 'maybeboard';
-  return 'main';
-}
-
-function normalizeRemoteDeckText(raw: string): string {
-  const textarea = raw.match(/<textarea[^>]*>([\s\S]*?)<\/textarea>/i)?.[1];
-  const source = textarea || raw;
-  return decodeHtmlEntities(source)
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/(div|p|tr|li|h\d)>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ')
-    .split('\n')
-    .map(line => line.replace(/\s+/g, ' ').trim())
-    .filter(line => /^(\d+x?\s+|Commanders?:?$|Main Deck:?$|Deck:?$|Mainboard:?$|Sideboard:?$|Maybeboard:?$|SB:)/i.test(line))
-    .map(line => line.replace(/^SB:\s*/i, 'Sideboard\n'))
-    .join('\n');
-}
-
-function getTitleFromHtml(raw: string): string | undefined {
-  const title = raw.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1];
-  if (!title) return undefined;
-  return decodeHtmlEntities(title).replace(/\s+-\s+.*$/, '').trim() || undefined;
-}
-
-function decodeHtmlEntities(value: string): string {
-  return value
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, ' ');
+export interface DeckLogicParseResult {
+  logicFile?: DeckLogic;
+  errors: string[];
+  warnings: string[];
 }
 
 /**
@@ -1078,6 +919,14 @@ export function parseDeckFilePayload(text: string, fallbackName = 'Imported Deck
     };
   }
 
+  const xmlDeckText = parseXmlDeckText(trimmed);
+  if (xmlDeckText) {
+    return {
+      deckText: xmlDeckText,
+      warnings: ['Converted XML deck file to plain text for validation.'],
+    };
+  }
+
   try {
     const parsed = JSON.parse(trimmed) as Record<string, unknown>;
     const deckLike = parsed?.deck;
@@ -1097,9 +946,16 @@ export function parseDeckFilePayload(text: string, fallbackName = 'Imported Deck
         warnings: ['Deck file did not include a saved deck object, so its text export was loaded into the importer.'],
       };
     }
+    const jsonDeckText = parseJsonDeckText(parsed);
+    if (jsonDeckText) {
+      return {
+        deckText: jsonDeckText,
+        warnings: ['Converted JSON deck file to plain text for validation.'],
+      };
+    }
     return {
       warnings: [],
-      error: 'This JSON file is not an On-Da-Stack deck export.',
+      error: 'This JSON file does not look like a supported deck export.',
     };
   } catch {
     return {
