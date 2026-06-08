@@ -30,7 +30,7 @@
  */
 
 import Peer, { type DataConnection } from 'peerjs';
-import type { GameState, PlayerAvatarImage } from '../types/game';
+import type { CardState, GameState, Player, PlayerAvatarImage } from '../types/game';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -235,6 +235,83 @@ export function chooseMigrationHost(
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 
+function playerHasLoadedDeck(player?: Player): boolean {
+  return Boolean(player?.deckId && ((player.library?.length ?? 0) > 0 || (player.commandZone?.length ?? 0) > 0));
+}
+
+function remapCardOwner(card: CardState, remotePlayerId: string, hostPlayerId: string): CardState {
+  if (remotePlayerId === hostPlayerId) return card;
+  return {
+    ...card,
+    ownerId: card.ownerId === remotePlayerId ? hostPlayerId : card.ownerId,
+    controllerId: card.controllerId === remotePlayerId ? hostPlayerId : card.controllerId,
+  };
+}
+
+export function mergeRemoteSeatDeckState(
+  hostGame: GameState,
+  remoteGame: GameState,
+  presence?: RoomPresence,
+): GameState | null {
+  if (!presence || presence.isSpectator || presence.seatIndex < 0) return null;
+
+  const hostPlayer = hostGame.players[presence.seatIndex];
+  if (!hostPlayer) return null;
+
+  const remotePlayer = remoteGame.players.find(player => player.id === hostPlayer.id)
+    ?? remoteGame.players[presence.seatIndex];
+  if (!playerHasLoadedDeck(remotePlayer)) return null;
+
+  const remotePlayerId = remotePlayer.id;
+  const hostPlayerId = hostPlayer.id;
+  const remoteOwnedCards = Object.fromEntries(
+    Object.entries(remoteGame.cards)
+      .filter(([, card]) => card.ownerId === remotePlayerId || card.controllerId === remotePlayerId)
+      .map(([id, card]) => [id, remapCardOwner(card, remotePlayerId, hostPlayerId)]),
+  );
+  const hostCardsWithoutSeatDeck = Object.fromEntries(
+    Object.entries(hostGame.cards)
+      .filter(([, card]) => card.ownerId !== hostPlayerId && card.controllerId !== hostPlayerId),
+  );
+
+  const players = hostGame.players.map((player, index) => index === presence.seatIndex ? {
+    ...hostPlayer,
+    deckId: remotePlayer.deckId,
+    commanders: [...remotePlayer.commanders],
+    commanderDamage: { ...remotePlayer.commanderDamage },
+    commanderCastCount: { ...remotePlayer.commanderCastCount },
+    hand: [...remotePlayer.hand],
+    library: [...remotePlayer.library],
+    battlefield: [...remotePlayer.battlefield],
+    graveyard: [...remotePlayer.graveyard],
+    exile: [...remotePlayer.exile],
+    sideboard: [...remotePlayer.sideboard],
+    maybeboard: [...remotePlayer.maybeboard],
+    commandZone: [...remotePlayer.commandZone],
+  } : player);
+
+  return {
+    ...hostGame,
+    players,
+    cards: { ...hostCardsWithoutSeatDeck, ...remoteOwnedCards },
+    definitions: { ...hostGame.definitions, ...remoteGame.definitions },
+    lastUpdatedAt: Date.now(),
+  };
+}
+
+function applyIncomingGameFromPeer(conn: DataConnection, game: GameState): void {
+  const mergedDeckState = _latestGame
+    ? mergeRemoteSeatDeckState(_latestGame, game, _peers.get(conn.peer))
+    : null;
+  const nextGame = mergedDeckState
+    ?? (!_latestGame || game.lastUpdatedAt > _latestGame.lastUpdatedAt ? game : null);
+
+  if (!nextGame) return;
+  _latestGame = nextGame;
+  _onGameUpdate?.(nextGame);
+  broadcastState(nextGame);
+}
+
 export function initMultiplayer(
   onGameUpdate: (game: GameState) => void,
   onPresenceUpdate: (players: Record<string, RoomPresence>) => void,
@@ -315,11 +392,7 @@ function attachHostConnectionHandlers(peer: Peer): void {
       }
       if (msg.type === 'GAME_STATE') {
         const game = msg.payload as GameState;
-        if (!_latestGame || game.lastUpdatedAt > _latestGame.lastUpdatedAt) {
-          _latestGame = game;
-          _onGameUpdate?.(game);
-          broadcastState(game);
-        }
+        applyIncomingGameFromPeer(conn, game);
       }
       if (msg.type === 'PING') {
         const payload = msg.payload as { sentAt?: number } | undefined;
@@ -570,11 +643,7 @@ export async function createRoom(
         }
         if (msg.type === 'GAME_STATE') {
           const game = msg.payload as GameState;
-          if (!_latestGame || game.lastUpdatedAt > _latestGame.lastUpdatedAt) {
-            _latestGame = game;
-            _onGameUpdate?.(game);
-            broadcastState(game);
-          }
+          applyIncomingGameFromPeer(conn, game);
         }
         if (msg.type === 'PING') {
           const payload = msg.payload as { sentAt?: number } | undefined;

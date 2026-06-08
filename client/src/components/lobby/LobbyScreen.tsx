@@ -107,7 +107,7 @@ export function LobbyScreen() {
         avatarInitial: gamePlayer?.avatarInitial ?? existing?.avatarInitial,
         avatarStyle: gamePlayer?.avatarStyle ?? existing?.avatarStyle,
         avatarImage: gamePlayer?.avatarImage ?? existing?.avatarImage,
-        deckId: gamePlayer?.deckId ?? existing?.deckId,
+        deckId: gamePlayer?.deckId,
       };
     }));
   }, [store.multiplayer.status, store.game.config.playerCount, store.game.players]);
@@ -121,7 +121,7 @@ export function LobbyScreen() {
   const activeSetupPlayer = activeSeat ? {
     ...activeSeat,
     id: activeGamePlayer?.id ?? activeSeat.id,
-    deckId: activeGamePlayer?.deckId ?? activeSeat.deckId,
+    deckId: gameMode === 'table' ? activeGamePlayer?.deckId : activeSeat.deckId,
   } : undefined;
   const isLocalSpectator = gameMode === 'table' && (localPresence?.isSpectator ?? store.multiplayer.isSpectator);
   const seatedPeers = getSeatedLobbyPeers(store.multiplayer.peers, playerCount);
