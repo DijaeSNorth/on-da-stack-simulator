@@ -222,6 +222,7 @@ export interface GameStore {
     avatarImage?: PlayerAvatarImage;
   }[]) => void;
   loadDeck: (playerId: string, deck: Deck) => Promise<void>;
+  clearLoadedDeck: (playerId: string) => void;
   addPracticeDummy: () => void;
   removePracticeDummy: (playerId: string) => void;
   startGame: () => void;
@@ -882,6 +883,55 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const newState = await loadDeckIntoPlayer(get().game, playerId, normalizeCommanderDeck(deck));
     const flags = getLoadedBannedCardFlags(newState, playerId);
     set({ game: newState, ui: withAssistantMessages(get().ui, newState, flags) });
+  },
+
+  clearLoadedDeck: (playerId) => {
+    const current = get().game;
+    const player = current.players.find(p => p.id === playerId);
+    if (!player?.deckId) return;
+
+    const ownedCardIds = new Set([
+      ...player.library,
+      ...player.hand,
+      ...player.battlefield,
+      ...player.graveyard,
+      ...player.exile,
+      ...player.commandZone,
+      ...player.sideboard,
+      ...player.maybeboard,
+      ...player.commanders,
+    ]);
+    const cards = Object.fromEntries(
+      Object.entries(current.cards).filter(([id, card]) => (
+        !ownedCardIds.has(id) &&
+        card.ownerId !== playerId &&
+        card.controllerId !== playerId
+      ))
+    );
+    const players = current.players.map(p => p.id === playerId ? {
+      ...p,
+      deckId: undefined,
+      library: [],
+      hand: [],
+      battlefield: [],
+      graveyard: [],
+      exile: [],
+      commandZone: [],
+      sideboard: [],
+      maybeboard: [],
+      commanders: [],
+    } : p);
+
+    set({
+      game: {
+        ...current,
+        players,
+        cards,
+        stack: current.stack.filter(item => !ownedCardIds.has(item.sourceInstanceId ?? '')),
+        triggerQueue: current.triggerQueue.filter(trigger => !ownedCardIds.has(trigger.sourceInstanceId ?? '')),
+        lastUpdatedAt: Date.now(),
+      },
+    });
   },
 
   addPracticeDummy: () => {

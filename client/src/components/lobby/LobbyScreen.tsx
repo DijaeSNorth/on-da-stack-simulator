@@ -90,6 +90,28 @@ export function LobbyScreen() {
     applyActiveProfileToSeat0();
   }, []);
 
+  useEffect(() => {
+    const inTableRoom = ['host', 'joined', 'migrating'].includes(store.multiplayer.status);
+    const syncedCount = store.game.config.playerCount;
+    if (!inTableRoom || syncedCount < 2) return;
+    const nextCount = Math.min(6, Math.max(2, syncedCount)) as PlayerCount;
+    setGameMode('table');
+    setPlayerCount(nextCount);
+    setPlayers(prev => Array.from({ length: nextCount }, (_, index) => {
+      const gamePlayer = store.game.players[index];
+      const existing = prev[index];
+      return {
+        id: gamePlayer?.id ?? existing?.id ?? crypto.randomUUID(),
+        name: gamePlayer?.name ?? existing?.name ?? `Open Seat ${index + 1}`,
+        color: gamePlayer?.color ?? existing?.color ?? DEFAULT_COLORS[index],
+        avatarInitial: gamePlayer?.avatarInitial ?? existing?.avatarInitial,
+        avatarStyle: gamePlayer?.avatarStyle ?? existing?.avatarStyle,
+        avatarImage: gamePlayer?.avatarImage ?? existing?.avatarImage,
+        deckId: gamePlayer?.deckId ?? existing?.deckId,
+      };
+    }));
+  }, [store.multiplayer.status, store.game.config.playerCount, store.game.players]);
+
   const savedDecks = store.decks;
   const localPresence = store.multiplayer.peerId ? store.multiplayer.peers[store.multiplayer.peerId] : undefined;
   const localSeatIndex = gameMode === 'table' && localPresence && localPresence.seatIndex >= 0 ? localPresence.seatIndex : 0;
@@ -193,6 +215,24 @@ export function LobbyScreen() {
     setDeckText('');
     setDeckUrl('');
     setCustomLogicText('');
+  }
+
+  function toggleDeckForPlayer(deck: Deck) {
+    const targetPlayerId = gameMode === 'table'
+      ? store.localPlayerId || resolveSeatPlayerId(setupPlayerIndex, store.game.players, players)
+      : activeSetupPlayer?.id ?? '';
+    if (!targetPlayerId || isLocalSpectator) {
+      setImportError('Switch to Player before assigning a deck.');
+      return;
+    }
+    const assigned = activeSetupPlayer?.deckId === deck.id;
+    if (assigned) {
+      updatePlayer(setupPlayerIndex, { deckId: undefined });
+      store.clearLoadedDeck(targetPlayerId);
+      setImportError('');
+      return;
+    }
+    void assignDeckToPlayer(deck);
   }
 
   async function saveDeckAndAssign() {
@@ -725,7 +765,10 @@ export function LobbyScreen() {
                             }}
                           >Fav</button>
                           <button
-                            onClick={() => assignDeckToPlayer(deck)}
+                            type="button"
+                            aria-pressed={assigned}
+                            title={assigned ? 'Click to stop using this deck for your lobby seat' : 'Use this deck for your lobby seat'}
+                            onClick={() => toggleDeckForPlayer(deck)}
                             disabled={isLocalSpectator}
                             style={{
                               fontSize: 9, padding: '3px 8px',
@@ -733,7 +776,7 @@ export function LobbyScreen() {
                               color: isLocalSpectator ? '#334155' : assigned ? '#fff' : '#94a3b8',
                               border: 'none', borderRadius: 3, cursor: isLocalSpectator ? 'not-allowed' : 'pointer',
                             }}
-                          >{assigned ? 'Assigned' : 'Use'}</button>
+                          >{assigned ? 'Using' : 'Use'}</button>
                         </div>
                       </div>
                     );

@@ -5,8 +5,8 @@
  */
 
 import { syncGamePlayerMetadataFromPresence, useGameStore } from '../client/src/store/gameStore';
-import { createDefaultGameConfig, createEmptyGameState, createPlayer } from '../client/src/engine/gameEngine';
-import type { GameState } from '../client/src/types/game';
+import { createCardState, createDefaultGameConfig, createEmptyGameState, createPlayer } from '../client/src/engine/gameEngine';
+import type { CardDefinition, GameState } from '../client/src/types/game';
 import type { RoomPresence } from '../client/src/engine/multiplayerSync';
 
 function assert(condition: boolean, message: string): void {
@@ -92,4 +92,44 @@ assert(syncedGame.players[1].name === 'Guest Profile', 'presence sync should upd
 assert(syncedGame.players[1].color === '#f59e0b', 'presence sync should update seat color');
 assert(syncedGame.lastUpdatedAt === baseSyncGame.lastUpdatedAt, 'presence sync should not change the game clock');
 
-console.log('PASS multiplayer role switching and presence seat metadata sync');
+const testDef: CardDefinition = {
+  id: 'test-card',
+  name: 'Test Creature',
+  manaCost: { raw: '{1}{G}', cmc: 2, generic: 1, G: 1 },
+  cmc: 2,
+  typeLine: 'Creature - Test',
+  superTypes: [],
+  cardTypes: ['Creature'],
+  subTypes: ['Test'],
+  oracleText: '',
+  colors: ['G'],
+  colorIdentity: ['G'],
+  keywords: [],
+  legalities: {},
+};
+const loadedGame = makeGame();
+const card = createCardState(testDef, 'p2', 'library');
+useGameStore.setState(state => ({
+  ...state,
+  game: {
+    ...loadedGame,
+    cards: { [card.instanceId]: card },
+    players: loadedGame.players.map(player => player.id === 'p2' ? {
+      ...player,
+      deckId: 'deck-p2',
+      library: [card.instanceId],
+    } : player),
+    stack: [{ id: 'stack-1', type: 'spell', sourceInstanceId: card.instanceId, sourceName: card.definition.name, controllerId: 'p2', text: 'Test spell', timestamp: Date.now() }],
+    triggerQueue: [{ id: 'trigger-1', sourceInstanceId: card.instanceId, sourceName: card.definition.name, controllerId: 'p2', text: 'Test trigger', triggerType: 'cast', acknowledged: false, missed: false, timestamp: Date.now() }],
+  },
+}));
+useGameStore.getState().clearLoadedDeck('p2');
+const cleared = useGameStore.getState().game;
+const clearedPlayer = cleared.players.find(player => player.id === 'p2');
+assert(clearedPlayer?.deckId === undefined, 'deck toggle off should clear player deck id');
+assert(clearedPlayer?.library.length === 0, 'deck toggle off should clear loaded library');
+assert(!cleared.cards[card.instanceId], 'deck toggle off should remove loaded card instances');
+assert(cleared.stack.length === 0, 'deck toggle off should remove stack objects from unloaded cards');
+assert(cleared.triggerQueue.length === 0, 'deck toggle off should remove queued triggers from unloaded cards');
+
+console.log('PASS multiplayer role switching, presence sync, and deck usage toggle clearing');
