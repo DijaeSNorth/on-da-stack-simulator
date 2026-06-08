@@ -257,6 +257,7 @@ type SyncMessage =
   | { type: 'DECK_REJECTED'; payload: SubmittedDeckPublicSummary }
   | { type: 'PLAYER_READY_CHANGED'; payload: { playerId: string; ready: boolean } }
   | { type: 'GAME_STATE_PATCH'; payload: GameStatePatchPayload }
+  | { type: 'GAME_STATE_PATCH_REQUEST'; payload: { playerId: string; peerId: string; reason: string } }
   | { type: 'GAME_ACTION_REQUEST'; payload: GameActionRequestPayload }
   | { type: 'HOST_MIGRATION'; payload: HostMigrationNotice }
   | { type: 'LEAVE_ROOM'; payload: { peerId: string } }
@@ -745,6 +746,9 @@ async function pollFirebaseRoom(): Promise<void> {
         if (parsed.message.type === 'PLAYER_READY_CHANGED') {
           const payload = parsed.message.payload as { playerId: string; ready: boolean };
           applyReadyChange(payload.playerId, payload.ready);
+          changed = true;
+        }
+        if (parsed.message.type === 'GAME_STATE_PATCH_REQUEST') {
           changed = true;
         }
         if (parsed.message.type === 'START_GAME_ACK') {
@@ -1335,6 +1339,19 @@ function sendDeckSubmissionToHost(submission: DeckSubmission): void {
   }
 }
 
+function requestFreshGameStatePatch(reason: string): void {
+  if (_isHost || !_playerId || !_peerId) return;
+  const msg: SyncMessage = {
+    type: 'GAME_STATE_PATCH_REQUEST',
+    payload: { playerId: _playerId, peerId: _peerId, reason },
+  };
+  if (_transportMode === 'firebase') {
+    void writeFirebaseMessage(msg);
+    return;
+  }
+  if (_hostConn?.open) sendMessage(_hostConn, msg);
+}
+
 function scheduleDeckSubmissionFallback(submission: DeckSubmission): void {
   clearDeckSubmissionFallback();
   if (_isHost) return;
@@ -1417,6 +1434,13 @@ function attachHostConnectionHandlers(peer: Peer): void {
       if (msg.type === 'GAME_ACTION_REQUEST') {
         const presence = _peers.get(conn.peer);
         if (presence) handleGameActionRequest(msg.payload as GameActionRequestPayload, presence);
+      }
+      if (msg.type === 'GAME_STATE_PATCH_REQUEST') {
+        debugMultiplayer('host received GAME_STATE_PATCH_REQUEST', {
+          peerId: conn.peer,
+          reason: (msg.payload as { reason?: string }).reason,
+        });
+        sendSanitizedGamePatch(conn);
       }
       if (msg.type === 'START_GAME_ACK') {
         debugMultiplayer('host receiving START_GAME_ACK', {
@@ -1581,6 +1605,12 @@ function handleJoinerMessage(conn: DataConnection, raw: unknown): void {
   if (msg.type === 'LOBBY_STATE') {
     _lobbyState = msg.payload as LobbyState;
     _onLobbyUpdate?.(_lobbyState);
+    if (_lobbyState.status === 'playing' && _latestGame?.status !== 'playing') {
+      debugMultiplayer('joiner received playing LOBBY_STATE without playing game; requesting patch', {
+        roomCode: _lobbyState.roomCode,
+      });
+      requestFreshGameStatePatch('lobby-playing-without-game');
+    }
   }
 
   if (msg.type === 'DECK_VALIDATED' || msg.type === 'DECK_REJECTED') {
@@ -1620,6 +1650,12 @@ function handleJoinerMessage(conn: DataConnection, raw: unknown): void {
     const patch = msg.payload as GameStatePatchPayload;
     if (patch.sanitizedGame) {
       _latestGame = patch.sanitizedGame;
+      if (_latestGame.status === 'playing') {
+        debugMultiplayer('joiner received GAME_STATE_PATCH with status playing', {
+          gameId: _latestGame.id,
+          seq: patch.seq,
+        });
+      }
       if (_latestGame.status === 'playing' && _lobbyState) {
         _lobbyState = { ..._lobbyState, status: 'playing', updatedAt: Date.now() };
         _onLobbyUpdate?.(_lobbyState);
@@ -1643,12 +1679,12 @@ function handleJoinerMessage(conn: DataConnection, raw: unknown): void {
       gameId: commit.gameId ?? commit.game.id,
       status: commit.game.status,
     });
-    _latestGame = commit.game;
+    _latestGame = { ...commit.game, status: 'playing' };
     if (_latestGame.status === 'playing' && _lobbyState) {
       _lobbyState = { ..._lobbyState, status: 'playing', updatedAt: Date.now() };
       _onLobbyUpdate?.(_lobbyState);
     }
-    _onStartCommit?.(commit);
+    _onStartCommit?.({ ...commit, game: _latestGame });
   }
 
   if (msg.type === 'HOST_MIGRATION') {
@@ -1786,6 +1822,13 @@ export async function createRoom(
         if (msg.type === 'GAME_ACTION_REQUEST') {
           const presence = _peers.get(conn.peer);
           if (presence) handleGameActionRequest(msg.payload as GameActionRequestPayload, presence);
+        }
+        if (msg.type === 'GAME_STATE_PATCH_REQUEST') {
+          debugMultiplayer('host received GAME_STATE_PATCH_REQUEST', {
+            peerId: conn.peer,
+            reason: (msg.payload as { reason?: string }).reason,
+          });
+          sendSanitizedGamePatch(conn);
         }
         if (msg.type === 'START_GAME_ACK') {
           debugMultiplayer('host receiving START_GAME_ACK', {
@@ -1930,6 +1973,12 @@ export async function joinRoom(
         if (msg.type === 'LOBBY_STATE') {
           _lobbyState = msg.payload as LobbyState;
           _onLobbyUpdate?.(_lobbyState);
+          if (_lobbyState.status === 'playing' && _latestGame?.status !== 'playing') {
+            debugMultiplayer('joiner received playing LOBBY_STATE without playing game; requesting patch', {
+              roomCode: _lobbyState.roomCode,
+            });
+            requestFreshGameStatePatch('lobby-playing-without-game');
+          }
         }
 
         if (msg.type === 'GAME_STATE') {
@@ -1943,6 +1992,12 @@ export async function joinRoom(
           if (patch.sanitizedGame) {
             _latestGame = patch.sanitizedGame;
             receivedGame = _latestGame;
+            if (_latestGame.status === 'playing') {
+              debugMultiplayer('joiner received GAME_STATE_PATCH with status playing', {
+                gameId: _latestGame.id,
+                seq: patch.seq,
+              });
+            }
             if (_latestGame.status === 'playing' && _lobbyState) {
               _lobbyState = { ..._lobbyState, status: 'playing', updatedAt: Date.now() };
               _onLobbyUpdate?.(_lobbyState);
@@ -1970,12 +2025,12 @@ export async function joinRoom(
             gameId: commit.gameId ?? commit.game.id,
             status: commit.game.status,
           });
-          _latestGame = commit.game;
+          _latestGame = { ...commit.game, status: 'playing' };
           if (_latestGame.status === 'playing' && _lobbyState) {
             _lobbyState = { ..._lobbyState, status: 'playing', updatedAt: Date.now() };
             _onLobbyUpdate?.(_lobbyState);
           }
-          _onStartCommit?.(commit);
+          _onStartCommit?.({ ...commit, game: _latestGame });
         }
 
         if (msg.type === 'PONG') {
@@ -2042,7 +2097,8 @@ export function sendStartGamePrepare(prepare: StartGamePrepare): void {
   });
   const msg: SyncMessage = { type: 'START_GAME_PREPARE', payload: prepare };
   for (const conn of _connections.values()) {
-    if (conn.open) sendMessage(conn, msg);
+    const presence = _peers.get(conn.peer);
+    if (conn.open && presence && !presence.isSpectator && presence.seatIndex >= 0) sendMessage(conn, msg);
   }
 }
 

@@ -851,15 +851,36 @@ export const useGameStore = create<GameStore>()((set, get) => ({
             multiplayer.peerId,
             currentLocalPlayerId,
           );
+          if (syncedGame.status === 'playing') {
+            console.debug('[multiplayer] joiner received GAME_STATE_PATCH with status playing', {
+              gameId: syncedGame.id,
+              localPlayerId,
+            });
+          }
           applyingRemoteMultiplayerGame = true;
-          set({
+          set(s => ({
             game: syncedGame,
             localPlayerId,
+            multiplayer: syncedGame.status === 'playing' && s.multiplayer.lobby
+              ? {
+                ...s.multiplayer,
+                lobby: { ...s.multiplayer.lobby, status: 'playing', updatedAt: Date.now() },
+              }
+              : s.multiplayer,
             ui: syncedGame.status === 'playing'
               ? { ...ui, screen: 'game', lobbyOpen: false }
               : ui,
-          });
+          }));
           applyingRemoteMultiplayerGame = false;
+          if (syncedGame.status === 'playing') {
+            const applied = useGameStore.getState();
+            console.debug('[multiplayer] joiner state after apply', {
+              screen: applied.ui.screen,
+              lobbyOpen: applied.ui.lobbyOpen,
+              gameStatus: applied.game.status,
+              localPlayerId: applied.localPlayerId,
+            });
+          }
         }
       },
       // onPresenceUpdate — someone joined/left
@@ -898,7 +919,8 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       (ack: StartGameAck) => get().handleMultiplayerStartAck(ack),
       (commit: StartGameCommit) => {
         clearStartGameHandshakeTimer();
-        const syncedGame = ensureGameHasSeatsForPresence(commit.game, get().multiplayer.peers);
+        const committedGame: GameState = { ...commit.game, status: 'playing' };
+        const syncedGame = ensureGameHasSeatsForPresence(committedGame, get().multiplayer.peers);
         const localPlayerId = resolveLocalPlayerIdFromPresence(
           syncedGame,
           get().multiplayer.peers,
@@ -925,6 +947,13 @@ export const useGameStore = create<GameStore>()((set, get) => ({
           ui: { ...s.ui, screen: 'game', lobbyOpen: false },
         }));
         applyingRemoteMultiplayerGame = false;
+        const applied = useGameStore.getState();
+        console.debug('[multiplayer] joiner state after apply', {
+          screen: applied.ui.screen,
+          lobbyOpen: applied.ui.lobbyOpen,
+          gameStatus: applied.game.status,
+          localPlayerId: applied.localPlayerId,
+        });
       },
       (lobby: LobbyState) => {
         set(s => ({ multiplayer: { ...s.multiplayer, lobby } }));

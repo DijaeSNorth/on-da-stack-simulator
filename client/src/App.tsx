@@ -37,10 +37,14 @@ const GlobalHelpTooltip = lazy(() =>
   import('./components/tutorial/GlobalHelpTooltip').then(module => ({ default: module.GlobalHelpTooltip }))
 );
 
+let multiplayerListenersInitialized = false;
+
 export default function App() {
   const ui = useGameStore(s => s.ui);
   const game = useGameStore(s => s.game);
   const localPlayerId = useGameStore(s => s.localPlayerId);
+  const initMultiplayerListeners = useGameStore(s => s.initMultiplayerListeners);
+  const setLobbyOpen = useGameStore(s => s.setLobbyOpen);
   const rightPanelOpen = useGameStore(s => s.ui.rightPanelOpen);
   const setPanelSize = useGameStore(s => s.setPanelSize);
   const resetPanelSizes = useGameStore(s => s.resetPanelSizes);
@@ -49,11 +53,27 @@ export default function App() {
   const appliedMobileLayout = useRef(false);
 
   useEffect(() => {
+    if (multiplayerListenersInitialized) return;
+    multiplayerListenersInitialized = true;
+    initMultiplayerListeners();
+  }, [initMultiplayerListeners]);
+
+  useEffect(() => {
     if (isMobile && !appliedMobileLayout.current) {
       appliedMobileLayout.current = true;
       if (rightPanelOpen) toggleRightPanel();
     }
   }, [isMobile, rightPanelOpen, toggleRightPanel]);
+
+  useEffect(() => {
+    if (game.status === 'playing' && ui.screen !== 'game') {
+      console.debug('[multiplayer] App safety switching playing game to game screen', {
+        gameId: game.id,
+        currentScreen: ui.screen,
+      });
+      setLobbyOpen(false);
+    }
+  }, [game.id, game.status, setLobbyOpen, ui.screen]);
 
   if (ui.screen === 'lobby') {
     return (

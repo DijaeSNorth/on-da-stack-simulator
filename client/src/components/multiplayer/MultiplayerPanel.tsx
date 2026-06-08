@@ -48,11 +48,6 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
   const isHost = multiplayer.status === 'host';
   const isMigrating = multiplayer.status === 'migrating';
 
-  // Init listeners once
-  useEffect(() => {
-    store.initMultiplayerListeners();
-  }, []);
-
   function applyActiveProfile() {
     const profile = getActiveProfile();
     if (!profile) return;
