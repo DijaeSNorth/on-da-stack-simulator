@@ -120,7 +120,8 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
     setTimeout(() => setCopied(false), 1500);
   }
 
-  const peers = Object.values(multiplayer.peers);
+  const peers = Object.values(multiplayer.peers)
+    .sort((a, b) => Number(b.online) - Number(a.online) || a.seatIndex - b.seatIndex || a.name.localeCompare(b.name));
   const localPeer = multiplayer.peerId ? multiplayer.peers[multiplayer.peerId] : undefined;
   const isSpectator = localPeer?.isSpectator ?? multiplayer.isSpectator;
   const takenSeats = new Set(
@@ -164,6 +165,11 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
       return;
     }
     store.updateMultiplayerPresence({ isSpectator: false, seatIndex: preferredSeat });
+  }
+
+  function kickPeerFromLobby(peerId: string) {
+    setError('');
+    store.kickMultiplayerPeer(peerId);
   }
 
   // ─── Connected state ──────────────────────────────────────────────────────
@@ -278,6 +284,27 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
                 </div>
                 {isHost && p.peerId === multiplayer.peerId && (
                   <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 4px', borderRadius: 3, background: '#166534', color: '#4ade80' }}>HOST</span>
+                )}
+                {isHost && p.peerId !== multiplayer.peerId && (
+                  <button
+                    data-testid={`btn-kick-peer-${p.peerId}`}
+                    data-help-title="Kick From Lobby"
+                    data-help-body="Host-only action. Removes this player or stale entry from the lobby and frees their seat."
+                    data-help-placement="top"
+                    onClick={() => kickPeerFromLobby(p.peerId)}
+                    style={{
+                      padding: '4px 8px',
+                      borderRadius: 5,
+                      border: '1px solid #7f1d1d',
+                      background: '#2a1014',
+                      color: '#fca5a5',
+                      cursor: 'pointer',
+                      fontSize: 10,
+                      fontWeight: 700,
+                    }}
+                  >
+                    Kick
+                  </button>
                 )}
               </div>
                 );

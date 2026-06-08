@@ -26,7 +26,7 @@ import { createReplay, saveReplayToStorage } from '../engine/replayEngine';
 import { getActiveProfile } from '../engine/profileStorage';
 import {
   initMultiplayer, createRoom, joinRoom, leaveRoom,
-  broadcastState, updatePresence, getRoomCode, getPeerId, getIsHost,
+  broadcastState, updatePresence, kickPeer, getRoomCode, getPeerId, getIsHost,
   getSyncStatus, isConfigured,
   type RoomPresence, type SyncStatus,
 } from '../engine/multiplayerSync';
@@ -200,6 +200,7 @@ export interface GameStore {
     asSpectator?: boolean,
   ) => Promise<void>;
   leaveMultiplayerRoom: () => void;
+  kickMultiplayerPeer: (peerId: string) => void;
   setMultiplayerStatus: (status: SyncStatus) => void;
   setMultiplayerPeers: (peers: Record<string, RoomPresence>) => void;
   updateMultiplayerPresence: (fields: Partial<RoomPresence>) => void;
@@ -648,6 +649,10 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       },
       // onStatusChange
       (status: SyncStatus) => {
+        if (status === 'disconnected') {
+          set({ multiplayer: { ...DEFAULT_MULTIPLAYER, configured: isConfigured() }, localPlayerId: '' });
+          return;
+        }
         set(s => ({
           multiplayer: {
             ...s.multiplayer,
@@ -729,6 +734,10 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     set(s => ({
       multiplayer: { ...DEFAULT_MULTIPLAYER, configured: isConfigured() },
     }));
+  },
+
+  kickMultiplayerPeer: (peerId) => {
+    kickPeer(peerId, 'You were removed from the lobby by the host.');
   },
 
   setMultiplayerStatus: (status) =>

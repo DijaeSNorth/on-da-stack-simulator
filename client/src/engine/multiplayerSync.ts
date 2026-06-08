@@ -23,6 +23,8 @@
  *   { type: 'GAME_STATE', payload: GameState }
  *   { type: 'PRESENCE_BROADCAST', payload: Record<string, RoomPresence> }
  *   { type: 'HOST_MIGRATION', payload: HostMigrationNotice }
+ *   { type: 'LEAVE_ROOM', payload: { peerId: string } }
+ *   { type: 'KICKED', payload: { reason: string } }
  *   { type: 'PING', payload: { sentAt: number } }
  *   { type: 'PONG', payload: { sentAt: number } }
  */
@@ -183,6 +185,36 @@ function markKnownHostOffline(): void {
   }
 }
 
+function presenceIdentityKey(presence: Pick<RoomPresence, 'name'>): string {
+  return presence.name.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+export function pruneDuplicatePeerPresence(
+  peers: Record<string, RoomPresence>,
+  incoming: Pick<RoomPresence, 'peerId' | 'name'>,
+): Record<string, RoomPresence> {
+  const incomingKey = presenceIdentityKey(incoming);
+  if (!incomingKey) return peers;
+  return Object.fromEntries(
+    Object.entries(peers).filter(([peerId, presence]) => (
+      peerId === incoming.peerId ||
+      presence.online ||
+      presenceIdentityKey(presence) !== incomingKey
+    )),
+  );
+}
+
+function replacePeers(nextPeers: Record<string, RoomPresence>): void {
+  _peers.clear();
+  for (const [peerId, presence] of Object.entries(nextPeers)) {
+    _peers.set(peerId, presence);
+  }
+}
+
+function pruneStaleDuplicatePresence(incoming: RoomPresence): void {
+  replacePeers(pruneDuplicatePeerPresence(Object.fromEntries(_peers), incoming));
+}
+
 export function chooseMigrationHost(
   peers: Record<string, RoomPresence>,
   currentPeerId?: string | null,
@@ -261,6 +293,7 @@ function attachHostConnectionHandlers(peer: Peer): void {
       const msg = raw as { type: string; payload?: unknown };
       if (msg.type === 'PRESENCE') {
         const presence = msg.payload as RoomPresence;
+        pruneStaleDuplicatePresence(presence);
         const assignment = autoAssignSeat(presence);
 
         _peers.set(presence.peerId, {
@@ -272,6 +305,12 @@ function attachHostConnectionHandlers(peer: Peer): void {
           lastSeen: Date.now(),
         });
 
+        broadcastPresence();
+      }
+      if (msg.type === 'LEAVE_ROOM') {
+        _peers.delete(conn.peer);
+        _connections.delete(conn.peer);
+        conn.close();
         broadcastPresence();
       }
       if (msg.type === 'GAME_STATE') {
@@ -401,6 +440,11 @@ function connectToMigratedHost(candidatePeerId: string): void {
 function handleJoinerMessage(conn: DataConnection, raw: unknown): void {
   const msg = raw as { type: string; payload?: unknown };
 
+  if (msg.type === 'KICKED') {
+    leaveRoom(false);
+    return;
+  }
+
   if (msg.type === 'PRESENCE_BROADCAST') {
     const players = msg.payload as Record<string, RoomPresence>;
     _peers.clear();
@@ -504,6 +548,7 @@ export async function createRoom(
         const msg = raw as { type: string; payload: unknown };
         if (msg.type === 'PRESENCE') {
           const presence = msg.payload as RoomPresence;
+          pruneStaleDuplicatePresence(presence);
           const assignment = autoAssignSeat(presence);
 
           _peers.set(presence.peerId, {
@@ -515,6 +560,12 @@ export async function createRoom(
             lastSeen: Date.now(),
           });
 
+          broadcastPresence();
+        }
+        if (msg.type === 'LEAVE_ROOM') {
+          _peers.delete(conn.peer);
+          _connections.delete(conn.peer);
+          conn.close();
           broadcastPresence();
         }
         if (msg.type === 'GAME_STATE') {
@@ -594,6 +645,17 @@ export async function joinRoom(
 
       conn.on('data', (raw: unknown) => {
         const msg = raw as { type: string; payload: unknown };
+
+        if (msg.type === 'KICKED') {
+          clearTimeout(timeout);
+          const payload = msg.payload as { reason?: string } | undefined;
+          const reason = payload?.reason || 'You were removed from the lobby by the host.';
+          leaveRoom(false);
+          if ((conn as any)._joinResolved !== true) {
+            reject(new Error(reason));
+          }
+          return;
+        }
 
         if (msg.type === 'HOST_MIGRATION') {
           handleJoinerMessage(conn, raw);
@@ -716,6 +778,19 @@ export function updatePresence(fields: Partial<RoomPresence>): void {
 
 // ─── Leave ────────────────────────────────────────────────────────────────────
 
+export function kickPeer(peerId: string, reason = 'Removed by host.'): boolean {
+  if (!_isHost || !_peerId || peerId === _peerId) return false;
+  const hadPresence = _peers.delete(peerId);
+  const conn = _connections.get(peerId);
+  if (conn?.open) {
+    conn.send({ type: 'KICKED', payload: { reason } });
+    conn.close();
+  }
+  _connections.delete(peerId);
+  broadcastPresence();
+  return hadPresence || Boolean(conn);
+}
+
 export function requestHostMigrationBeforeLeave(): boolean {
   if (!_isHost || !_roomCode || !_peerId) return false;
   const candidates = Object.fromEntries(
@@ -750,17 +825,22 @@ export function requestHostMigrationBeforeLeave(): boolean {
   return true;
 }
 
-export function leaveRoom(): void {
+export function leaveRoom(notifyHost = true): void {
   _stopHeartbeat();
   if (_migrationTimer) { clearTimeout(_migrationTimer); _migrationTimer = null; }
+  if (notifyHost && !_isHost && _peerId && _hostConn?.open) {
+    _hostConn.send({ type: 'LEAVE_ROOM', payload: { peerId: _peerId } });
+  }
   if (_hostConn) { _hostConn.close(); _hostConn = null; }
   for (const conn of _connections.values()) conn.close();
   _connections.clear();
   _peers.clear();
   if (_peer) { _peer.destroy(); _peer = null; }
+  _latestGame = null;
   _roomCode = null;
   _peerId = null;
   _isHost = false;
+  _onPresenceUpdate?.({});
   setStatus('disconnected');
 }
 

@@ -4,7 +4,7 @@
  * Run with: npx tsx tests/automatic-seat-assignment.test.ts
  */
 
-import { chooseAutomaticSeat, type RoomPresence } from '../client/src/engine/multiplayerSync';
+import { chooseAutomaticSeat, pruneDuplicatePeerPresence, type RoomPresence } from '../client/src/engine/multiplayerSync';
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -44,4 +44,14 @@ const fullTable = chooseAutomaticSeat({
 assert(fullTable.isSpectator, 'expected full table player request to become spectator');
 assert(fullTable.seatIndex === -1, 'expected full table player request to have no seat');
 
-console.log('PASS automatic seat assignment fills open seats and falls back to spectator');
+const duplicatePeers: Record<string, RoomPresence> = {
+  oldOfflineAlex: { ...presence('oldOfflineAlex', 1, false, false), name: 'Alex' },
+  onlineAlex: { ...presence('onlineAlex', 2), name: 'Alex' },
+  offlineSam: { ...presence('offlineSam', 3, false, false), name: 'Sam' },
+};
+const pruned = pruneDuplicatePeerPresence(duplicatePeers, { ...presence('newAlex', 0), name: 'Alex' });
+assert(!pruned.oldOfflineAlex, 'expected old offline duplicate with same player name to be removed');
+assert(pruned.onlineAlex, 'expected online player with same name to be preserved');
+assert(pruned.offlineSam, 'expected unrelated offline player to be preserved');
+
+console.log('PASS automatic seat assignment fills open seats, handles full tables, and prunes stale duplicate rejoins');
