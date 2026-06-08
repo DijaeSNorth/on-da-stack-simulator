@@ -763,7 +763,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const requestedSeatIndex = asSpectator ? -1 : Math.max(0, seatIndex);
     const current = get();
     const requestedPlayerId = current.game.players[requestedSeatIndex]?.id ?? '';
-    const { game: remoteGame, peerId: joinedPeerId, isSpectator, seatIndex: assignedSeatIndex } = await joinRoom(code, {
+    const { game: remoteGame, peerId: joinedPeerId, peers: joinedPeers, isSpectator, seatIndex: assignedSeatIndex } = await joinRoom(code, {
       peerId,
       name: peerName,
       color: peerColor,
@@ -777,11 +777,13 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     // P2P: joinRoom returns null game — joiner keeps existing local state
     // until host broadcasts the authoritative state on next game action.
     const currentGame = get().game;
-    const resolvedGame = remoteGame ?? currentGame;
+    const resolvedGame = syncGamePlayerMetadataFromPresence(remoteGame ?? currentGame, joinedPeers);
+    const self = joinedPeers[joinedPeerId];
+    const localSeatIndex = self && !self.isSpectator ? self.seatIndex : assignedSeatIndex;
     // Spectators get no local player id — they observe only
-    const playerId = isSpectator
+    const playerId = (self?.isSpectator ?? isSpectator)
       ? ''
-      : (resolvedGame.players[assignedSeatIndex]?.id ?? resolvedGame.players[0]?.id ?? '');
+      : (resolvedGame.players[localSeatIndex]?.id ?? resolvedGame.players[0]?.id ?? '');
     set(s => ({
       game: resolvedGame,
       localPlayerId: playerId,
@@ -790,8 +792,9 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         status: 'joined',
         roomCode: code.toUpperCase(),
         peerId: joinedPeerId,
+        peers: joinedPeers,
         isHost: false,
-        isSpectator,
+        isSpectator: self?.isSpectator ?? isSpectator,
         configured: true,
       },
     }));

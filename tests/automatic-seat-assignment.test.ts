@@ -33,6 +33,10 @@ const fillsLowestOpen = chooseAutomaticSeat(peers, 4, presence('newPlayer', 0));
 assert(!fillsLowestOpen.isSpectator, 'expected player request to become a player');
 assert(fillsLowestOpen.seatIndex === 1, 'expected automatic assignment to fill the lowest open seat');
 
+const joinerAfterHostSeat = chooseAutomaticSeat({ host: presence('host', 0) }, 2, presence('joinerPeer', 0));
+assert(!joinerAfterHostSeat.isSpectator, 'expected joiner to become a player when one seat is open');
+assert(joinerAfterHostSeat.seatIndex === 1, 'expected joiner-side auto assignment to avoid occupied host seat 1');
+
 const spectator = chooseAutomaticSeat(peers, 4, presence('newSpectator', -1, true));
 assert(spectator.isSpectator, 'expected spectator request to stay spectator');
 assert(spectator.seatIndex === -1, 'expected spectator to have no seat');

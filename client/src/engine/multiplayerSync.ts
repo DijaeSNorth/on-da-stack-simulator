@@ -79,6 +79,15 @@ export interface RoomMeta {
   players: Record<string, RoomPresence>;
 }
 
+export interface JoinRoomResult {
+  game: GameState | null;
+  hostId: string;
+  peerId: string;
+  peers: Record<string, RoomPresence>;
+  isSpectator: boolean;
+  seatIndex: number;
+}
+
 export type SyncStatus =
   | 'disconnected'
   | 'connecting'
@@ -593,7 +602,7 @@ async function createFirebaseRoom(
 async function joinFirebaseRoom(
   code: string,
   presence: Omit<RoomPresence, 'online' | 'lastSeen'>,
-): Promise<{ game: GameState | null; hostId: string; peerId: string; isSpectator: boolean; seatIndex: number }> {
+): Promise<JoinRoomResult> {
   const roomCode = code.toUpperCase().trim();
   const room = await firebaseRequest<FirebaseRoomRelay | null>(firebaseRoomPath(roomCode), 'GET');
   if (!room) throw new Error(`Room ${roomCode} not found in Firebase fallback.`);
@@ -618,12 +627,14 @@ async function joinFirebaseRoom(
   };
   _peers.set(_peerId, finalPresence);
   await writeFirebasePeerPresence(finalPresence);
+  const peers = Object.fromEntries(_peers);
   setStatus('joined');
   startFirebasePolling();
   return {
     game: room.game,
     hostId: room.hostId,
     peerId: _peerId,
+    peers,
     isSpectator: assignment.isSpectator,
     seatIndex: assignment.seatIndex,
   };
@@ -1307,7 +1318,7 @@ export async function createRoom(
 export async function joinRoom(
   code: string,
   presence: Omit<RoomPresence, 'online' | 'lastSeen'>,
-): Promise<{ game: GameState | null; hostId: string; peerId: string; isSpectator: boolean; seatIndex: number }> {
+): Promise<JoinRoomResult> {
   setStatus('connecting');
   _transportMode = 'peerjs';
   _isHost = false;
@@ -1392,6 +1403,7 @@ export async function joinRoom(
               game: receivedGame,
               hostId: hostPeerId(_roomCode!),
               peerId: _peerId!,
+              peers: players,
               isSpectator,
               seatIndex: assignedSeatIndex,
             });
