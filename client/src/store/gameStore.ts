@@ -905,11 +905,23 @@ export const useGameStore = create<GameStore>()((set, get) => ({
           get().multiplayer.peerId,
           get().localPlayerId,
         );
+        console.debug('[multiplayer] joiner applying game screen', {
+          commitId: commit.id,
+          gameId: commit.gameId ?? syncedGame.id,
+          status: syncedGame.status,
+          localPlayerId,
+        });
         applyingRemoteMultiplayerGame = true;
         set(s => ({
           game: syncedGame,
           localPlayerId,
-          multiplayer: { ...s.multiplayer, startHandshake: null },
+          multiplayer: {
+            ...s.multiplayer,
+            lobby: s.multiplayer.lobby
+              ? { ...s.multiplayer.lobby, status: 'playing', updatedAt: Date.now() }
+              : s.multiplayer.lobby,
+            startHandshake: null,
+          },
           ui: { ...s.ui, screen: 'game', lobbyOpen: false },
         }));
         applyingRemoteMultiplayerGame = false;
@@ -1417,15 +1429,22 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const seatIndex = self?.seatIndex ?? -1;
     const pendingGame = ensureGameHasSeatsForPresence(state.game, state.multiplayer.peers);
     const seatPlayer = seatIndex >= 0 ? pendingGame.players[seatIndex] : undefined;
-    const expectedDeckHash = self?.playerId ? prepare.deckHashes[self.playerId] : undefined;
-    const actualDeckHash = self?.deck?.deckHash;
+    const preparePlayer = self?.playerId
+      ? prepare.playerList.find(player => player.playerId === self.playerId)
+      : undefined;
+    const authoritativeDeck = self?.playerId
+      ? state.multiplayer.lobby?.submittedDecks?.[self.playerId]
+      : undefined;
+    const expectedDeckHash = preparePlayer?.deckHash ?? (self?.playerId ? prepare.deckHashes[self.playerId] : undefined);
+    const actualDeckHash = authoritativeDeck?.deckHash ?? self?.deck?.deckHash;
+    const authoritativeDeckValid = authoritativeDeck?.status === 'valid';
     const ready = Boolean(
       self?.isSpectator ||
-      (self?.deckStatus === 'valid' && self.ready && seatPlayer?.deckId && actualDeckHash && actualDeckHash === expectedDeckHash)
+      (authoritativeDeckValid && preparePlayer && actualDeckHash && actualDeckHash === expectedDeckHash)
     );
     const reason = ready
       ? undefined
-      : 'Seat or loaded deck was not visible when the start check arrived.';
+      : `Automatic start check failed: deck status ${authoritativeDeck?.status ?? self?.deckStatus ?? 'none'}, deck hash ${actualDeckHash ? 'present' : 'missing'}.`;
 
     set(s => ({
       multiplayer: {
@@ -1452,7 +1471,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       peerId: state.multiplayer.peerId,
       sessionId: state.multiplayer.sessionId ?? undefined,
       seatIndex,
-      deckId: seatPlayer?.deckId,
+      deckId: preparePlayer?.deckId ?? seatPlayer?.deckId,
       deckHash: actualDeckHash,
       ready,
       reason,
@@ -1516,6 +1535,9 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       game,
       multiplayer: {
         ...s.multiplayer,
+        lobby: s.multiplayer.lobby
+          ? { ...s.multiplayer.lobby, status: 'playing', updatedAt: Date.now() }
+          : s.multiplayer.lobby,
         startHandshake: null,
       },
       ui: { ...s.ui, screen: 'game', lobbyOpen: false },

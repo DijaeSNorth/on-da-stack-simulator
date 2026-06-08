@@ -243,6 +243,10 @@ let _onLobbyUpdate: ((lobby: LobbyState) => void) | null = null;
 let _onDeckSubmitted: ((submission: DeckSubmission, presence: RoomPresence) => void | Promise<void>) | null = null;
 let _onGameActionRequest: ((request: GameActionRequestPayload, presence: RoomPresence) => void) | null = null;
 
+function debugMultiplayer(event: string, data?: Record<string, unknown>): void {
+  console.debug(`[multiplayer] ${event}`, data ?? {});
+}
+
 type SyncMessage =
   | { type: 'PRESENCE'; payload: RoomPresence }
   | { type: 'GAME_STATE'; payload: GameState }
@@ -1415,6 +1419,13 @@ function attachHostConnectionHandlers(peer: Peer): void {
         if (presence) handleGameActionRequest(msg.payload as GameActionRequestPayload, presence);
       }
       if (msg.type === 'START_GAME_ACK') {
+        debugMultiplayer('host receiving START_GAME_ACK', {
+          id: (msg.payload as StartGameAck).id,
+          playerId: (msg.payload as StartGameAck).playerId,
+          peerId: (msg.payload as StartGameAck).peerId,
+          ready: (msg.payload as StartGameAck).ready,
+          reason: (msg.payload as StartGameAck).reason,
+        });
         _onStartAck?.(msg.payload as StartGameAck);
       }
       if (msg.type === 'PING') {
@@ -1609,17 +1620,34 @@ function handleJoinerMessage(conn: DataConnection, raw: unknown): void {
     const patch = msg.payload as GameStatePatchPayload;
     if (patch.sanitizedGame) {
       _latestGame = patch.sanitizedGame;
+      if (_latestGame.status === 'playing' && _lobbyState) {
+        _lobbyState = { ..._lobbyState, status: 'playing', updatedAt: Date.now() };
+        _onLobbyUpdate?.(_lobbyState);
+      }
       _onGameUpdate?.(patch.sanitizedGame);
     }
   }
 
   if (msg.type === 'START_GAME_PREPARE') {
+    debugMultiplayer('joiner receiving START_GAME_PREPARE', {
+      id: (msg.payload as StartGamePrepare).id,
+      requiredPeerIds: (msg.payload as StartGamePrepare).requiredPeerIds,
+    });
     _onStartPrepare?.(msg.payload as StartGamePrepare);
   }
 
   if (msg.type === 'START_GAME_COMMIT') {
     const commit = msg.payload as StartGameCommit;
+    debugMultiplayer('joiner receiving START_GAME_COMMIT', {
+      id: commit.id,
+      gameId: commit.gameId ?? commit.game.id,
+      status: commit.game.status,
+    });
     _latestGame = commit.game;
+    if (_latestGame.status === 'playing' && _lobbyState) {
+      _lobbyState = { ..._lobbyState, status: 'playing', updatedAt: Date.now() };
+      _onLobbyUpdate?.(_lobbyState);
+    }
     _onStartCommit?.(commit);
   }
 
@@ -1760,6 +1788,13 @@ export async function createRoom(
           if (presence) handleGameActionRequest(msg.payload as GameActionRequestPayload, presence);
         }
         if (msg.type === 'START_GAME_ACK') {
+          debugMultiplayer('host receiving START_GAME_ACK', {
+            id: (msg.payload as StartGameAck).id,
+            playerId: (msg.payload as StartGameAck).playerId,
+            peerId: (msg.payload as StartGameAck).peerId,
+            ready: (msg.payload as StartGameAck).ready,
+            reason: (msg.payload as StartGameAck).reason,
+          });
           _onStartAck?.(msg.payload as StartGameAck);
         }
         if (msg.type === 'PING') {
@@ -1908,6 +1943,10 @@ export async function joinRoom(
           if (patch.sanitizedGame) {
             _latestGame = patch.sanitizedGame;
             receivedGame = _latestGame;
+            if (_latestGame.status === 'playing' && _lobbyState) {
+              _lobbyState = { ..._lobbyState, status: 'playing', updatedAt: Date.now() };
+              _onLobbyUpdate?.(_lobbyState);
+            }
             _onGameUpdate?.(_latestGame);
           }
         }
@@ -1917,12 +1956,25 @@ export async function joinRoom(
         }
 
         if (msg.type === 'START_GAME_PREPARE') {
+          debugMultiplayer('joiner receiving START_GAME_PREPARE', {
+            id: (msg.payload as StartGamePrepare).id,
+            requiredPeerIds: (msg.payload as StartGamePrepare).requiredPeerIds,
+          });
           _onStartPrepare?.(msg.payload as StartGamePrepare);
         }
 
         if (msg.type === 'START_GAME_COMMIT') {
           const commit = msg.payload as StartGameCommit;
+          debugMultiplayer('joiner receiving START_GAME_COMMIT', {
+            id: commit.id,
+            gameId: commit.gameId ?? commit.game.id,
+            status: commit.game.status,
+          });
           _latestGame = commit.game;
+          if (_latestGame.status === 'playing' && _lobbyState) {
+            _lobbyState = { ..._lobbyState, status: 'playing', updatedAt: Date.now() };
+            _onLobbyUpdate?.(_lobbyState);
+          }
           _onStartCommit?.(commit);
         }
 
@@ -1983,6 +2035,11 @@ export function sendStartGamePrepare(prepare: StartGamePrepare): void {
   if (_transportMode === 'firebase') {
     return;
   }
+  debugMultiplayer('host sending START_GAME_PREPARE', {
+    id: prepare.id,
+    requiredPeerIds: prepare.requiredPeerIds,
+    players: prepare.playerList.map(player => ({ playerId: player.playerId, peerId: player.peerId, seatIndex: player.seatIndex })),
+  });
   const msg: SyncMessage = { type: 'START_GAME_PREPARE', payload: prepare };
   for (const conn of _connections.values()) {
     if (conn.open) sendMessage(conn, msg);
@@ -1990,6 +2047,13 @@ export function sendStartGamePrepare(prepare: StartGamePrepare): void {
 }
 
 export function sendStartGameAck(ack: StartGameAck): void {
+  debugMultiplayer('joiner sending START_GAME_ACK', {
+    id: ack.id,
+    playerId: ack.playerId,
+    peerId: ack.peerId,
+    ready: ack.ready,
+    reason: ack.reason,
+  });
   const msg: SyncMessage = { type: 'START_GAME_ACK', payload: ack };
   if (_transportMode === 'firebase') {
     void writeFirebaseMessage(msg);
@@ -1999,7 +2063,8 @@ export function sendStartGameAck(ack: StartGameAck): void {
 }
 
 export function sendStartGameCommit(commit: StartGameCommit): void {
-  _latestGame = commit.game;
+  const playingGame: GameState = { ...commit.game, status: 'playing' };
+  _latestGame = playingGame;
   if (_transportMode === 'firebase') {
     if (_isHost) void writeFirebaseRoomSnapshot();
     return;
@@ -2007,13 +2072,27 @@ export function sendStartGameCommit(commit: StartGameCommit): void {
   if (!_isHost) return;
   for (const conn of _connections.values()) {
     const presence = _peers.get(conn.peer);
-    if (!conn.open || !presence) continue;
+    if (!conn.open || !presence || presence.isSpectator || presence.seatIndex < 0) continue;
+    const viewerGamePlayerId = playingGame.players[presence.seatIndex]?.id;
+    if (!viewerGamePlayerId) continue;
     const payload: StartGameCommit = {
       ...commit,
-      publicGameState: createPublicGameState(commit.game),
-      game: sanitizeGameStateForPlayer(commit.game, presence.playerId),
+      gameId: commit.gameId ?? playingGame.id,
+      publicGameState: createPublicGameState(playingGame),
+      game: sanitizeGameStateForPlayer(playingGame, viewerGamePlayerId),
     };
+    debugMultiplayer('host sending START_GAME_COMMIT', {
+      id: commit.id,
+      peerId: presence.peerId,
+      playerId: presence.playerId,
+      viewerGamePlayerId,
+      seatIndex: presence.seatIndex,
+    });
     sendMessage(conn, { type: 'START_GAME_COMMIT', payload });
+    sendMessage(conn, {
+      type: 'GAME_STATE_PATCH',
+      payload: createGamePatchForPlayer(playingGame, viewerGamePlayerId),
+    }, { coalesceState: true });
   }
 }
 
@@ -2030,9 +2109,11 @@ function sendSanitizedGamePatch(conn: DataConnection, game = _latestGame): void 
   if (!game) return;
   const presence = _peers.get(conn.peer);
   if (!presence) return;
+  const viewerGamePlayerId = presence.seatIndex >= 0 ? game.players[presence.seatIndex]?.id : undefined;
+  if (!viewerGamePlayerId) return;
   sendMessage(conn, {
     type: 'GAME_STATE_PATCH',
-    payload: createGamePatchForPlayer(game, presence.playerId),
+    payload: createGamePatchForPlayer(game, viewerGamePlayerId),
   }, { coalesceState: true });
 }
 

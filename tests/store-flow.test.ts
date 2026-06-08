@@ -69,7 +69,9 @@ function makeGame(playerCount: 2 | 3 | 4 | 5 | 6 = 2): GameState {
 
 function makePresence(peerId: string, seatIndex: number, isHostPeer = false): RoomPresence {
   return {
+    playerId: `player-${peerId}`,
     peerId,
+    sessionId: `session-${peerId}`,
     name: peerId,
     color: '#3b82f6',
     seatIndex,
@@ -213,6 +215,7 @@ test('multiplayer start waits for joiner ack before committing', () => {
         'host-peer': makePresence('host-peer', 0, true),
         'guest-peer': makePresence('guest-peer', 1),
       },
+      lobby: null,
       startHandshake: null,
     },
   }));
@@ -228,6 +231,7 @@ test('multiplayer start waits for joiner ack before committing', () => {
 
   useGameStore.getState().handleMultiplayerStartAck({
     id: state.multiplayer.startHandshake!.id,
+    playerId: 'player-guest-peer',
     peerId: 'guest-peer',
     seatIndex: 1,
     deckId: 'guest-deck',
@@ -239,6 +243,84 @@ test('multiplayer start waits for joiner ack before committing', () => {
   assert(state.game.status === 'playing', 'expected acked multiplayer start to enter the game');
   assert(state.ui.screen === 'game', 'expected acked multiplayer start to close lobby');
   assert(state.game.players.every(player => player.hand.length === 7), 'expected committed game to draw opening hands for all players');
+});
+
+test('joiner auto-acks start prepare from authoritative lobby deck status', () => {
+  let game = makeGame(2);
+  game = addLibrary(addLibrary(game, 'p1', 'host-auth'), 'p2', 'guest-auth');
+  resetStore({ ...game, status: 'lobby' });
+  useGameStore.setState(state => ({
+    ...state,
+    localPlayerId: 'p2',
+    multiplayer: {
+      ...state.multiplayer,
+      status: 'joined',
+      roomCode: 'ROOM-AUTH',
+      peerId: 'guest-peer',
+      playerId: 'player-guest-peer',
+      sessionId: 'session-guest-peer',
+      isHost: false,
+      isSpectator: false,
+      configured: true,
+      peers: {
+        'host-peer': makePresence('host-peer', 0, true),
+        'guest-peer': {
+          ...makePresence('guest-peer', 1),
+          deckStatus: 'submitted',
+          ready: true,
+          deck: {
+            id: 'guest-deck',
+            name: 'Guest Deck',
+            cardCount: 100,
+            commanders: ['Guest Commander'],
+            deckHash: 'guest-hash',
+            status: 'submitted',
+          },
+        },
+      },
+      lobby: {
+        roomId: 'ROOM-AUTH',
+        roomCode: 'ROOM-AUTH',
+        hostPeerId: 'host-peer',
+        minPlayers: 2,
+        maxPlayers: 6,
+        status: 'lobby',
+        updatedAt: Date.now(),
+        players: {},
+        submittedDecks: {
+          'player-guest-peer': {
+            playerId: 'player-guest-peer',
+            deckId: 'guest-deck',
+            deckName: 'Guest Deck',
+            commanderNames: ['Guest Commander'],
+            cardCount: 100,
+            deckHash: 'guest-hash',
+            status: 'valid',
+            errors: [],
+            warnings: [],
+          },
+        },
+      },
+      startHandshake: null,
+    },
+  }));
+
+  const prepare = {
+    id: 'prepare-auth',
+    hostPeerId: 'host-peer',
+    gameId: 'game-auth',
+    playerList: [{ playerId: 'player-guest-peer', peerId: 'guest-peer', seatIndex: 1, deckId: 'guest-deck', deckHash: 'guest-hash' }],
+    deckHashes: { 'player-guest-peer': 'guest-hash' },
+    turnOrder: ['player-host-peer', 'player-guest-peer'],
+    requiredPeerIds: ['guest-peer'],
+    createdAt: Date.now(),
+    deadline: Date.now() + 5000,
+    deadlineAt: Date.now() + 5000,
+  };
+  useGameStore.getState().handleMultiplayerStartPrepare(prepare);
+  const state = useGameStore.getState();
+  assert(state.multiplayer.startHandshake?.ackedPeerIds.includes('guest-peer'), 'expected joiner to auto-ack from authoritative valid lobby deck');
+  assert(state.multiplayer.startHandshake?.missingPeerIds.length === 0, 'expected joiner prepare to have no missing ack after auto-ack');
 });
 
 test('multiplayer start fallback commits if a joiner ack is missing', () => {
@@ -260,6 +342,7 @@ test('multiplayer start fallback commits if a joiner ack is missing', () => {
         'host-peer': makePresence('host-peer', 0, true),
         'guest-peer': makePresence('guest-peer', 1),
       },
+      lobby: null,
       startHandshake: null,
     },
   }));
