@@ -15,7 +15,13 @@ import { getActiveProfile } from '../../engine/profileStorage';
 import { BrandMark } from '../branding/BrandMark';
 import { PlayerAvatar } from '../profile/PlayerAvatar';
 import { ExitGameModal } from '../exit/ExitGameModal';
-import { canStartCommanderTable, getSeatedLobbyPeers, getTableDeckStatus, resolveSeatPlayerId } from '../../engine/lobbyReadiness';
+import {
+  canStartCommanderTable,
+  getSeatedLobbyPeers,
+  getTableDeckStatus,
+  resolveLocalDeckSeatTarget,
+  resolveSeatPlayerId,
+} from '../../engine/lobbyReadiness';
 import type { Deck, PlayerAvatarImage } from '../../types/game';
 
 interface PlayerSetup {
@@ -117,9 +123,16 @@ export function LobbyScreen() {
   const localPresence = store.multiplayer.peerId ? store.multiplayer.peers[store.multiplayer.peerId] : undefined;
   const localSeatIndex = gameMode === 'table' && localPresence && localPresence.seatIndex >= 0 ? localPresence.seatIndex : 0;
   const setupPlayerIndex = gameMode === 'solo' ? activePlayerTab : localSeatIndex;
-  const localTablePlayerId = gameMode === 'table' && localPresence && !localPresence.isSpectator && localPresence.seatIndex >= 0
-    ? resolveSeatPlayerId(localPresence.seatIndex, store.game.players, players)
-    : '';
+  const localDeckSeatTarget = gameMode === 'table'
+    ? resolveLocalDeckSeatTarget({
+      peerId: store.multiplayer.peerId,
+      peers: store.multiplayer.peers,
+      gamePlayers: store.game.players,
+      seats: players,
+    })
+    : null;
+  const localTablePlayerId = localDeckSeatTarget?.assigned ? localDeckSeatTarget.playerId : '';
+  const tableDeckControlsEnabled = gameMode !== 'table' || Boolean(localDeckSeatTarget?.assigned);
   const activeSeat = players[setupPlayerIndex] ?? players[0];
   const activeGamePlayer = gameMode === 'table' ? store.game.players[setupPlayerIndex] : undefined;
   const activeSetupPlayer = activeSeat ? {
@@ -251,11 +264,13 @@ export function LobbyScreen() {
   }
 
   async function assignDeckToPlayer(deck: Deck) {
-    const targetPlayerId = gameMode === 'table'
-      ? localTablePlayerId || store.localPlayerId || resolveSeatPlayerId(setupPlayerIndex, store.game.players, players)
-      : activeSetupPlayer?.id ?? '';
+    const targetPlayerId = gameMode === 'table' ? localTablePlayerId : activeSetupPlayer?.id ?? '';
     if (!targetPlayerId || isLocalSpectator) {
-      setImportError('Switch to Player before assigning a deck.');
+      setImportError(gameMode === 'table'
+        ? localDeckSeatTarget?.reason === 'spectator'
+          ? 'Switch to Player before assigning a deck.'
+          : 'Waiting for your assigned lobby seat before assigning a deck.'
+        : 'Choose a player before assigning a deck.');
       return;
     }
     updatePlayer(setupPlayerIndex, { deckId: deck.id });
@@ -268,11 +283,13 @@ export function LobbyScreen() {
   }
 
   function toggleDeckForPlayer(deck: Deck) {
-    const targetPlayerId = gameMode === 'table'
-      ? localTablePlayerId || store.localPlayerId || resolveSeatPlayerId(setupPlayerIndex, store.game.players, players)
-      : activeSetupPlayer?.id ?? '';
+    const targetPlayerId = gameMode === 'table' ? localTablePlayerId : activeSetupPlayer?.id ?? '';
     if (!targetPlayerId || isLocalSpectator) {
-      setImportError('Switch to Player before assigning a deck.');
+      setImportError(gameMode === 'table'
+        ? localDeckSeatTarget?.reason === 'spectator'
+          ? 'Switch to Player before assigning a deck.'
+          : 'Waiting for your assigned lobby seat before assigning a deck.'
+        : 'Choose a player before assigning a deck.');
       return;
     }
     const assigned = activeSetupPlayer?.deckId === deck.id;
@@ -756,8 +773,51 @@ export function LobbyScreen() {
             gap: 12,
           }}>
             <div style={{ fontSize: 11, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.1em', fontWeight: 700 }}>
-              Deck Import — {gameMode === 'solo' ? 'Solo Player' : `Your Setup (Seat ${setupPlayerIndex + 1})`}
+              Deck Selection - {gameMode === 'solo' ? 'Solo Player' : (localDeckSeatTarget?.label ?? `Seat ${setupPlayerIndex + 1}`)}
             </div>
+
+            {gameMode === 'table' && (
+              <div
+                data-testid="table-deck-seat-status"
+                style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}
+              >
+                {[
+                  { label: 'Joined', active: isInTableRoom },
+                  { label: localDeckSeatTarget?.assigned ? `Seat ${localDeckSeatTarget.seatIndex + 1}` : 'Seat Pending', active: Boolean(localDeckSeatTarget?.assigned) },
+                  { label: activeSetupPlayer?.deckId ? 'Deck Loaded' : 'Choose Deck', active: Boolean(activeSetupPlayer?.deckId) },
+                ].map(step => (
+                  <div
+                    key={step.label}
+                    style={{
+                      padding: '6px 8px',
+                      borderRadius: 6,
+                      border: `1px solid ${step.active ? '#0e7490' : '#334155'}`,
+                      background: step.active ? 'rgba(14,116,144,0.16)' : '#111827',
+                      color: step.active ? '#a5f3fc' : '#64748b',
+                      fontSize: 10,
+                      fontWeight: 800,
+                      textAlign: 'center',
+                      textTransform: 'uppercase',
+                    }}
+                  >
+                    {step.label}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {gameMode === 'table' && !tableDeckControlsEnabled && !isLocalSpectator && (
+              <div style={{
+                fontSize: 10,
+                color: '#bfdbfe',
+                background: 'rgba(30,58,138,0.16)',
+                border: '1px solid #1e3a8a',
+                borderRadius: 5,
+                padding: '6px 8px',
+              }}>
+                {localDeckSeatTarget?.label ?? 'Connecting to room...'} Deck selection unlocks as soon as your seat is synced.
+              </div>
+            )}
 
             {isLocalSpectator && (
               <div style={{
@@ -824,12 +884,12 @@ export function LobbyScreen() {
                             aria-pressed={assigned}
                             title={assigned ? 'Click to stop using this deck for your lobby seat' : 'Use this deck for your lobby seat'}
                             onClick={() => toggleDeckForPlayer(deck)}
-                            disabled={isLocalSpectator}
+                            disabled={isLocalSpectator || !tableDeckControlsEnabled}
                             style={{
                               fontSize: 9, padding: '3px 8px',
                               background: assigned ? '#1d4ed8' : '#1e293b',
-                              color: isLocalSpectator ? '#334155' : assigned ? '#fff' : '#94a3b8',
-                              border: 'none', borderRadius: 3, cursor: isLocalSpectator ? 'not-allowed' : 'pointer',
+                              color: (isLocalSpectator || !tableDeckControlsEnabled) ? '#334155' : assigned ? '#fff' : '#94a3b8',
+                              border: 'none', borderRadius: 3, cursor: (isLocalSpectator || !tableDeckControlsEnabled) ? 'not-allowed' : 'pointer',
                             }}
                           >{assigned ? 'Using' : 'Use'}</button>
                         </div>
@@ -879,16 +939,16 @@ export function LobbyScreen() {
                 data-help-example="Works well with plain text, MTGO .dek/.dec, CSV, On-Da-Stack JSON, and Cockatrice .cod exports."
                 data-help-placement="top"
                 onClick={() => deckFileInputRef.current?.click()}
-                disabled={importing}
+                disabled={importing || !tableDeckControlsEnabled}
                 style={{
                   width: '100%',
                   marginBottom: 6,
                   padding: '7px 10px',
                   background: '#1e293b',
-                  color: importing ? '#475569' : '#bfdbfe',
+                  color: (importing || !tableDeckControlsEnabled) ? '#475569' : '#bfdbfe',
                   border: '1px solid #334155',
                   borderRadius: 5,
-                  cursor: importing ? 'wait' : 'pointer',
+                  cursor: importing ? 'wait' : !tableDeckControlsEnabled ? 'not-allowed' : 'pointer',
                   fontSize: 10,
                   fontWeight: 700,
                   textTransform: 'uppercase',
@@ -967,12 +1027,12 @@ export function LobbyScreen() {
                 data-help-example="Commander mode needs loaded decks before starting; Solo mode can start without one."
                 data-help-placement="top"
                 onClick={handleImport}
-                disabled={importing || !deckText.trim()}
+                disabled={importing || !deckText.trim() || !tableDeckControlsEnabled}
                 style={{
                   width: '100%', marginTop: 8, padding: '8px 0',
-                  background: importing ? '#374151' : '#1d4ed8',
-                  color: importing ? '#6b7280' : '#fff',
-                  border: 'none', borderRadius: 5, cursor: importing ? 'wait' : 'pointer',
+                  background: (importing || !tableDeckControlsEnabled) ? '#374151' : '#1d4ed8',
+                  color: (importing || !tableDeckControlsEnabled) ? '#6b7280' : '#fff',
+                  border: 'none', borderRadius: 5, cursor: importing ? 'wait' : !tableDeckControlsEnabled ? 'not-allowed' : 'pointer',
                   fontSize: 11, fontWeight: 700,
                 }}
               >
@@ -1046,14 +1106,14 @@ export function LobbyScreen() {
                     data-help-body="Stores the validated deck in one of your saved slots and assigns it to the current player or lobby seat."
                     data-help-placement="top"
                     onClick={saveDeckAndAssign}
-                    disabled={isLocalSpectator}
+                    disabled={isLocalSpectator || !tableDeckControlsEnabled}
                     style={{
                       flex: 1, padding: '6px 0',
-                      background: isLocalSpectator ? '#182127' : '#14532d',
-                      color: isLocalSpectator ? '#475569' : '#86efac',
+                      background: (isLocalSpectator || !tableDeckControlsEnabled) ? '#182127' : '#14532d',
+                      color: (isLocalSpectator || !tableDeckControlsEnabled) ? '#475569' : '#86efac',
                       border: 'none',
                       borderRadius: 4,
-                      cursor: isLocalSpectator ? 'not-allowed' : 'pointer',
+                      cursor: (isLocalSpectator || !tableDeckControlsEnabled) ? 'not-allowed' : 'pointer',
                       fontSize: 10,
                       fontWeight: 700,
                     }}

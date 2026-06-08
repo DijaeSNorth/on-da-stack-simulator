@@ -16,6 +16,14 @@ export interface TableDeckStatus {
   ready: boolean;
 }
 
+export interface LocalDeckSeatTarget {
+  assigned: boolean;
+  playerId: string;
+  seatIndex: number;
+  label: string;
+  reason?: 'not_connected' | 'spectator' | 'seat_pending' | 'player_pending';
+}
+
 export function getSeatedLobbyPeers(
   peers: Record<string, RoomPresence>,
   playerCount: number,
@@ -31,6 +39,65 @@ export function resolveSeatPlayerId(
   seats: LobbySeat[],
 ): string {
   return gamePlayers[seatIndex]?.id ?? seats[seatIndex]?.id ?? '';
+}
+
+export function resolveLocalDeckSeatTarget({
+  peerId,
+  peers,
+  gamePlayers,
+  seats,
+}: {
+  peerId: string | null | undefined;
+  peers: Record<string, RoomPresence>;
+  gamePlayers: Pick<Player, 'id'>[];
+  seats: LobbySeat[];
+}): LocalDeckSeatTarget {
+  const self = peerId ? peers[peerId] : undefined;
+  if (!self) {
+    return {
+      assigned: false,
+      playerId: '',
+      seatIndex: -1,
+      label: 'Connecting to room...',
+      reason: 'not_connected',
+    };
+  }
+  if (self.isSpectator) {
+    return {
+      assigned: false,
+      playerId: '',
+      seatIndex: -1,
+      label: 'Spectating',
+      reason: 'spectator',
+    };
+  }
+  if (self.seatIndex < 0 || !Number.isInteger(self.seatIndex)) {
+    return {
+      assigned: false,
+      playerId: '',
+      seatIndex: -1,
+      label: 'Assigning seat...',
+      reason: 'seat_pending',
+    };
+  }
+
+  const playerId = resolveSeatPlayerId(self.seatIndex, gamePlayers, seats);
+  if (!playerId) {
+    return {
+      assigned: false,
+      playerId: '',
+      seatIndex: self.seatIndex,
+      label: `Seat ${self.seatIndex + 1} assigned - syncing player data...`,
+      reason: 'player_pending',
+    };
+  }
+
+  return {
+    assigned: true,
+    playerId,
+    seatIndex: self.seatIndex,
+    label: `Seat ${self.seatIndex + 1} assigned`,
+  };
 }
 
 export function getTableDeckStatus({

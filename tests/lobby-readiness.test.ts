@@ -4,7 +4,12 @@
  * Run with: npx tsx tests/lobby-readiness.test.ts
  */
 
-import { canStartCommanderTable, getTableDeckStatus, resolveSeatPlayerId } from '../client/src/engine/lobbyReadiness';
+import {
+  canStartCommanderTable,
+  getTableDeckStatus,
+  resolveLocalDeckSeatTarget,
+  resolveSeatPlayerId,
+} from '../client/src/engine/lobbyReadiness';
 import { createDefaultGameConfig, createPlayer } from '../client/src/engine/gameEngine';
 import type { Deck } from '../client/src/types/game';
 import type { RoomPresence } from '../client/src/engine/multiplayerSync';
@@ -63,6 +68,40 @@ assert(
   resolveSeatPlayerId(1, [hostPlayer, guestPlayer], staleLocalSeats) === 'game-guest-player',
   'expected seat resolution to prefer the authoritative game player id',
 );
+
+const guestDeckTarget = resolveLocalDeckSeatTarget({
+  peerId: 'guest',
+  peers,
+  gamePlayers: [hostPlayer, guestPlayer],
+  seats: staleLocalSeats,
+});
+assert(guestDeckTarget.assigned, 'expected seated joiner deck target to be assigned');
+assert(guestDeckTarget.seatIndex === 1, 'expected seated joiner deck target to use seat 2');
+assert(guestDeckTarget.playerId === 'game-guest-player', 'expected seated joiner deck target to use the authoritative seat player id');
+
+const hostDeckTarget = resolveLocalDeckSeatTarget({
+  peerId: 'host',
+  peers,
+  gamePlayers: [hostPlayer, guestPlayer],
+  seats: staleLocalSeats,
+});
+assert(hostDeckTarget.playerId === 'game-host-player', 'expected host deck target to stay on seat 1');
+
+const spectatorDeckTarget = resolveLocalDeckSeatTarget({
+  peerId: 'spectator',
+  peers,
+  gamePlayers: [hostPlayer, guestPlayer],
+  seats: staleLocalSeats,
+});
+assert(!spectatorDeckTarget.assigned && spectatorDeckTarget.reason === 'spectator', 'expected spectators to have no deck assignment target');
+
+const pendingDeckTarget = resolveLocalDeckSeatTarget({
+  peerId: 'pending',
+  peers: { pending: { ...presence('pending', 'Pending', -1), isSpectator: false } },
+  gamePlayers: [hostPlayer, guestPlayer],
+  seats: staleLocalSeats,
+});
+assert(!pendingDeckTarget.assigned && pendingDeckTarget.reason === 'seat_pending', 'expected pending seat assignment to block deck targeting');
 
 const ready = canStartCommanderTable({
   isHost: true,
