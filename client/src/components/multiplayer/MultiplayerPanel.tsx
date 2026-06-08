@@ -491,12 +491,12 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
               data-testid="input-room-code"
               type="text"
               value={joinCode}
-              onChange={e => setJoinCode(e.target.value.toUpperCase().slice(0, 6))}
+              onChange={e => setJoinCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 16))}
               placeholder="ABC123"
-              maxLength={6}
+              maxLength={16}
               style={{
                 ...inputStyle,
-                fontFamily: 'monospace', fontSize: 20, letterSpacing: 6,
+                fontFamily: 'monospace', fontSize: 18, letterSpacing: 2,
                 textTransform: 'uppercase',
               }}
             />

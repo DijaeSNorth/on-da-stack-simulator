@@ -92,7 +92,9 @@ Best-practice notes:
 - Do not put Firebase database secrets, service account keys, or auth tokens in `VITE_*` variables. Browser env values are public.
 - Keep Firebase disabled unless you have Realtime Database rules scoped for the `onDaStackRooms` path.
 - Do not use broad public read/write rules for production. Pair the relay with Firebase Auth/App Check before using it outside trusted playtesting.
+- Firebase fallback room codes are longer than PeerJS room codes to reduce room guessing risk.
 - Treat the Firebase relay as temporary room transport only. It mirrors current room state, peer presence, and latest player messages; it is not a permanent replay or deck store.
+- Uploaded profile images are not mirrored through Firebase; use card-art avatars if you need avatar continuity on fallback transport.
 - Rooms include expiry metadata and game-state size checks so stale or huge relay writes are avoided.
 
 ---

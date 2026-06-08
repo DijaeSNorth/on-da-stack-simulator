@@ -101,6 +101,9 @@ const DATA_CHANNEL_HIGH_WATER_BYTES = 256 * 1024;
 const FIREBASE_POLL_MS = 1800;
 const FIREBASE_ROOM_TTL_MS = 6 * 60 * 60 * 1000;
 const FIREBASE_MAX_GAME_STATE_BYTES = 900 * 1024;
+const FIREBASE_ROOM_CODE_LENGTH = 12;
+const MAX_RELAY_NAME_LENGTH = 40;
+const MAX_RELAY_INITIAL_LENGTH = 3;
 
 // ─── Internal state ───────────────────────────────────────────────────────────
 
@@ -315,6 +318,53 @@ function assertFirebaseGameSize(game: GameState | null): void {
   }
 }
 
+function clampText(value: unknown, fallback: string, maxLength: number): string {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return (text || fallback).slice(0, maxLength);
+}
+
+function normalizeRelayColor(value: unknown): string {
+  return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value) ? value : '#3b82f6';
+}
+
+export function compactPresenceForRelay(presence: RoomPresence): RoomPresence {
+  return {
+    peerId: clampText(presence.peerId, crypto.randomUUID(), 80),
+    name: clampText(presence.name, 'Player', MAX_RELAY_NAME_LENGTH),
+    color: normalizeRelayColor(presence.color),
+    avatarInitial: presence.avatarInitial
+      ? clampText(presence.avatarInitial, '', MAX_RELAY_INITIAL_LENGTH)
+      : undefined,
+    avatarStyle: ['solid', 'gradient', 'outline'].includes(presence.avatarStyle ?? '')
+      ? presence.avatarStyle
+      : undefined,
+    avatarImage: presence.avatarImage?.source === 'card' && presence.avatarImage.url.length < 500
+      ? presence.avatarImage
+      : undefined,
+    seatIndex: Number.isInteger(presence.seatIndex) ? Math.max(-1, Math.min(5, presence.seatIndex)) : -1,
+    isSpectator: Boolean(presence.isSpectator),
+    isHostPeer: Boolean(presence.isHostPeer),
+    online: Boolean(presence.online),
+    lastSeen: Number.isFinite(presence.lastSeen) ? presence.lastSeen : Date.now(),
+    connectionQuality: presence.connectionQuality && Number.isFinite(presence.connectionQuality.rttMs)
+      ? {
+        rttMs: Math.max(0, Math.min(10_000, Math.round(presence.connectionQuality.rttMs))),
+        score: Math.max(0, Math.min(1000, Math.round(presence.connectionQuality.score))),
+        samples: Math.max(0, Math.min(20, Math.round(presence.connectionQuality.samples))),
+        updatedAt: Number.isFinite(presence.connectionQuality.updatedAt)
+          ? presence.connectionQuality.updatedAt
+          : Date.now(),
+      }
+      : undefined,
+  };
+}
+
+function compactPeersForRelay(peers: Record<string, RoomPresence>): Record<string, RoomPresence> {
+  return Object.fromEntries(
+    Object.entries(peers).map(([peerId, presence]) => [peerId, compactPresenceForRelay(presence)]),
+  );
+}
+
 async function firebaseRequest<T>(path: string, method: 'GET' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown): Promise<T> {
   const response = await fetch(firebaseUrl(path), {
     method,
@@ -358,7 +408,7 @@ async function writeFirebaseRoomSnapshot(): Promise<void> {
   await firebaseRequest(firebaseRoomPath(), 'PATCH', {
     hostId: _peers.get(_peerId ?? '')?.isHostPeer ? _peerId : undefined,
     game: _latestGame,
-    peers: Object.fromEntries(_peers),
+    peers: compactPeersForRelay(Object.fromEntries(_peers)),
     updatedAt: Date.now(),
     expiresAt: Date.now() + FIREBASE_ROOM_TTL_MS,
   });
@@ -366,7 +416,7 @@ async function writeFirebaseRoomSnapshot(): Promise<void> {
 
 async function writeFirebasePeerPresence(presence: RoomPresence): Promise<void> {
   if (_transportMode !== 'firebase' || !_roomCode) return;
-  await firebaseRequest(`${firebaseRoomPath()}/peers/${presence.peerId}`, 'PUT', presence);
+  await firebaseRequest(`${firebaseRoomPath()}/peers/${presence.peerId}`, 'PUT', compactPresenceForRelay(presence));
 }
 
 async function writeFirebaseMessage(message: SyncMessage): Promise<void> {
@@ -379,8 +429,9 @@ async function writeFirebaseMessage(message: SyncMessage): Promise<void> {
 }
 
 function applyFirebasePeers(peers: Record<string, RoomPresence>): void {
-  replacePeers(peers);
-  _onPresenceUpdate?.(peers);
+  const compactPeers = compactPeersForRelay(peers);
+  replacePeers(compactPeers);
+  _onPresenceUpdate?.(compactPeers);
 }
 
 function applyFirebaseGameFromPeer(peerId: string, game: GameState): boolean {
@@ -389,6 +440,33 @@ function applyFirebaseGameFromPeer(peerId: string, game: GameState): boolean {
   _latestGame = nextGame;
   _onGameUpdate?.(nextGame);
   return true;
+}
+
+async function migrateFirebaseHostBeforeLeave(): Promise<void> {
+  if (_transportMode !== 'firebase' || !_roomCode || !_peerId || !_isHost) return;
+  const candidates = Object.fromEntries(
+    [..._peers.entries()].filter(([peerId, presence]) =>
+      peerId !== _peerId && presence.online && !presence.isSpectator && presence.seatIndex >= 0
+    ),
+  );
+  const candidate = chooseMigrationHost(candidates);
+  const peers = Object.fromEntries(
+    [..._peers.entries()].map(([peerId, presence]) => [
+      peerId,
+      compactPresenceForRelay({
+        ...presence,
+        isHostPeer: peerId === candidate?.peerId,
+        online: peerId === _peerId ? false : presence.online,
+        lastSeen: Date.now(),
+      }),
+    ]),
+  );
+  await firebaseRequest(firebaseRoomPath(), 'PATCH', {
+    hostId: candidate?.peerId ?? '',
+    peers,
+    updatedAt: Date.now(),
+    expiresAt: Date.now() + FIREBASE_ROOM_TTL_MS,
+  });
 }
 
 async function pollFirebaseRoom(): Promise<void> {
@@ -405,6 +483,11 @@ async function pollFirebaseRoom(): Promise<void> {
     }
 
     applyFirebasePeers(room.peers ?? {});
+
+    if (!_isHost && room.hostId === _peerId) {
+      _isHost = true;
+      setStatus('host');
+    }
 
     if (_isHost) {
       let changed = false;
@@ -446,7 +529,7 @@ async function createFirebaseRoom(
   initialGame: GameState,
   hostPresence: Omit<RoomPresence, 'online' | 'lastSeen'>,
 ): Promise<string> {
-  const code = generateRoomCode();
+  const code = generateFirebaseRoomCode();
   _transportMode = 'firebase';
   _isHost = true;
   _roomCode = code;
@@ -468,7 +551,7 @@ async function createFirebaseRoom(
     updatedAt: Date.now(),
     expiresAt: Date.now() + FIREBASE_ROOM_TTL_MS,
     game: initialGame,
-    peers: Object.fromEntries(_peers),
+    peers: compactPeersForRelay(Object.fromEntries(_peers)),
     messages: {},
   } satisfies FirebaseRoomRelay);
   setStatus('host');
@@ -525,6 +608,17 @@ function broadcastPresence() {
 
 function generateRoomCode(): string {
   return Math.random().toString(36).slice(2, 8).toUpperCase();
+}
+
+export function generateFirebaseRoomCode(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = 'F';
+  const bytes = new Uint8Array(FIREBASE_ROOM_CODE_LENGTH - 1);
+  crypto.getRandomValues(bytes);
+  for (const value of bytes) {
+    code += chars[value % chars.length];
+  }
+  return code;
 }
 
 function hostPeerId(code: string): string {
@@ -1362,6 +1456,9 @@ export function leaveRoom(notifyHost = true): void {
   if (_migrationTimer) { clearTimeout(_migrationTimer); _migrationTimer = null; }
   if (_transportMode === 'firebase' && _roomCode && _peerId) {
     const peerPath = `${firebaseRoomPath()}/peers/${_peerId}`;
+    if (_isHost) {
+      void migrateFirebaseHostBeforeLeave();
+    }
     if (notifyHost && !_isHost) {
       void writeFirebaseMessage({ type: 'LEAVE_ROOM', payload: { peerId: _peerId } });
     }

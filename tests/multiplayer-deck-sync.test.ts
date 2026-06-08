@@ -5,7 +5,7 @@
  */
 
 import { createCardState, createDefaultGameConfig, createEmptyGameState, createPlayer } from '../client/src/engine/gameEngine';
-import { mergeRemoteSeatDeckState, resolveIncomingPeerGameState, type RoomPresence } from '../client/src/engine/multiplayerSync';
+import { compactPresenceForRelay, generateFirebaseRoomCode, mergeRemoteSeatDeckState, resolveIncomingPeerGameState, type RoomPresence } from '../client/src/engine/multiplayerSync';
 import type { CardDefinition, CardState, GameState } from '../client/src/types/game';
 
 function assert(condition: boolean, message: string): void {
@@ -127,5 +127,26 @@ const playingHostGame = { ...makeGame(4, 1_000), status: 'playing' as const };
 const playingRemoteGame = { ...makeGame(4, 2_000), status: 'playing' as const };
 const acceptedPlayingSnapshot = resolveIncomingPeerGameState(playingHostGame, playingRemoteGame, presence('peer-seat-2', 1));
 assert(acceptedPlayingSnapshot === playingRemoteGame, 'expected active gameplay to keep accepting newer snapshots for player actions');
+
+for (let i = 0; i < 100; i += 1) {
+  const code = generateFirebaseRoomCode();
+  assert(code.length === 12, 'expected Firebase fallback room codes to be longer than PeerJS room codes');
+  assert(/^F[A-Z2-9]{11}$/.test(code), `expected Firebase fallback room code to use the relay-safe alphabet: ${code}`);
+}
+
+const compactPresence = compactPresenceForRelay({
+  ...presence('peer-with-avatar', 99),
+  name: 'A very long player name that should be clamped before Firebase relay writes',
+  color: 'not-a-color',
+  avatarInitial: 'LONG',
+  avatarImage: { source: 'upload', url: 'data:image/png;base64,abc', byteSize: 10, label: 'Upload' },
+  connectionQuality: { rttMs: 25000, score: 9999, samples: 999, updatedAt: Date.now() },
+});
+assert(compactPresence.name.length <= 40, 'expected Firebase relay presence names to be length-limited');
+assert(compactPresence.color === '#3b82f6', 'expected Firebase relay presence to normalize invalid colors');
+assert(compactPresence.avatarInitial === 'LON', 'expected Firebase relay presence initials to be clamped');
+assert(compactPresence.avatarImage === undefined, 'expected Firebase relay presence to omit uploaded avatar data');
+assert(compactPresence.seatIndex === 5, 'expected Firebase relay presence seats to be clamped to supported seats');
+assert(compactPresence.connectionQuality?.score === 1000, 'expected Firebase relay presence quality score to be bounded');
 
 console.log('PASS multiplayer deck sync merges only the sending player seat for 2-4 players');
