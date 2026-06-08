@@ -466,6 +466,11 @@ test('screen and lobbyOpen stay synchronized', () => {
 
   useGameStore.getState().setLobbyOpen(false);
   assert(useGameStore.getState().ui.screen === 'game', 'expected screen game after closing lobby');
+
+  useGameStore.getState().setLobbyOpen(true);
+  useGameStore.getState().enterGameScreen();
+  assert(useGameStore.getState().ui.screen === 'game', 'expected enterGameScreen to force game screen');
+  assert(useGameStore.getState().ui.lobbyOpen === false, 'expected enterGameScreen to close lobby');
 });
 
 test('panel sizes clamp and reset for resizable touch layout', () => {

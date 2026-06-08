@@ -29,7 +29,7 @@ import {
   broadcastState, updatePresence, kickPeer, sendStartGameAck, sendStartGameCommit,
   sendStartGamePrepare, getRoomCode, getPeerId, getPlayerId, getSessionId, getIsHost,
   getSyncStatus, isConfigured,
-  submitDeckToHost, setLocalPlayerReady, sendGameActionRequest,
+  submitDeckToHost, setLocalPlayerReady, sendGameActionRequest, requestGameStateResync,
   type RoomDeckSummary, type RoomPresence, type StartGameAck, type StartGameCommit,
   type StartGamePrepare, type SyncStatus,
 } from '../engine/multiplayerSync';
@@ -279,6 +279,7 @@ export interface GameStore {
   setMultiplayerPeers: (peers: Record<string, RoomPresence>) => void;
   updateMultiplayerPresence: (fields: Partial<RoomPresence>) => void;
   setMultiplayerReady: (ready: boolean) => void;
+  requestGameStateResync: (reason?: string) => boolean;
 
   initGame: (config: GameConfig, players: {
     id: string;
@@ -394,6 +395,7 @@ export interface GameStore {
   setJudgeMode: (on: boolean) => void;
   toggleBattlefieldView: () => void;
   toggleCombatMode: () => void;
+  enterGameScreen: () => void;
   setLobbyOpen: (open: boolean) => void;
   setDeckBuilderOpen: (open: boolean) => void;
   addAssistantMessage: (msg: Omit<AssistantMessage, 'id' | 'timestamp' | 'turn' | 'phase'>) => void;
@@ -840,7 +842,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     initMultiplayer(
       // onGameUpdate — remote peer pushed a new GameState
       (game: GameState) => {
-        const { multiplayer, localPlayerId: currentLocalPlayerId, ui } = get();
+        const { multiplayer, localPlayerId: currentLocalPlayerId } = get();
         const status = multiplayer.status;
         const remoteHostStateIsAuthoritative = status === 'connecting' || status === 'joined' || status === 'migrating';
         if (remoteHostStateIsAuthoritative || game.lastUpdatedAt > get().game.lastUpdatedAt) {
@@ -867,10 +869,8 @@ export const useGameStore = create<GameStore>()((set, get) => ({
                 lobby: { ...s.multiplayer.lobby, status: 'playing', updatedAt: Date.now() },
               }
               : s.multiplayer,
-            ui: syncedGame.status === 'playing'
-              ? { ...ui, screen: 'game', lobbyOpen: false }
-              : ui,
           }));
+          if (syncedGame.status === 'playing') get().enterGameScreen();
           applyingRemoteMultiplayerGame = false;
           if (syncedGame.status === 'playing') {
             const applied = useGameStore.getState();
@@ -944,8 +944,8 @@ export const useGameStore = create<GameStore>()((set, get) => ({
               : s.multiplayer.lobby,
             startHandshake: null,
           },
-          ui: { ...s.ui, screen: 'game', lobbyOpen: false },
         }));
+        get().enterGameScreen();
         applyingRemoteMultiplayerGame = false;
         const applied = useGameStore.getState();
         console.debug('[multiplayer] joiner state after apply', {
@@ -1158,6 +1158,8 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       };
     });
   },
+
+  requestGameStateResync: (reason = 'lobby-fallback-button') => requestGameStateResync(reason),
 
   initGame: (config, players) => {
     const g = createEmptyGameState(config);
@@ -2646,6 +2648,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   setJudgeMode: (on) => set(s => ({ ui: { ...s.ui, judgeMode: on } })),
   toggleBattlefieldView: () => set(s => ({ ui: { ...s.ui, battlefieldView: s.ui.battlefieldView === 'normal' ? 'overview' : 'normal' } })),
   toggleCombatMode: () => set(s => ({ ui: { ...s.ui, combatMode: !s.ui.combatMode } })),
+  enterGameScreen: () => set(s => ({ ui: { ...s.ui, screen: 'game', lobbyOpen: false } })),
   setLobbyOpen: (open) => set(s => ({ ui: { ...s.ui, screen: open ? 'lobby' : 'game', lobbyOpen: open } })),
   setDeckBuilderOpen: (open) => set(s => ({ ui: { ...s.ui, deckBuilderOpen: open } })),
   addAssistantMessage: (msg) => set(s => {

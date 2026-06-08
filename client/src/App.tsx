@@ -44,7 +44,7 @@ export default function App() {
   const game = useGameStore(s => s.game);
   const localPlayerId = useGameStore(s => s.localPlayerId);
   const initMultiplayerListeners = useGameStore(s => s.initMultiplayerListeners);
-  const setLobbyOpen = useGameStore(s => s.setLobbyOpen);
+  const enterGameScreen = useGameStore(s => s.enterGameScreen);
   const rightPanelOpen = useGameStore(s => s.ui.rightPanelOpen);
   const setPanelSize = useGameStore(s => s.setPanelSize);
   const resetPanelSizes = useGameStore(s => s.resetPanelSizes);
@@ -71,9 +71,9 @@ export default function App() {
         gameId: game.id,
         currentScreen: ui.screen,
       });
-      setLobbyOpen(false);
+      enterGameScreen();
     }
-  }, [game.id, game.status, setLobbyOpen, ui.screen]);
+  }, [enterGameScreen, game.id, game.status, ui.screen]);
 
   if (ui.screen === 'lobby') {
     return (

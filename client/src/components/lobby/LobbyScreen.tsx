@@ -189,6 +189,16 @@ export function LobbyScreen() {
   const importInvalidReason = importPreparation && !importPreparation.valid
     ? importPreparation.errors.join(' ')
     : '';
+  const showEnterGameFallback = gameMode === 'table'
+    && isInTableRoom
+    && !isTableHost
+    && store.game.status === 'playing'
+    && store.ui.screen === 'lobby';
+  const showResyncGameFallback = gameMode === 'table'
+    && isInTableRoom
+    && !isTableHost
+    && store.multiplayer.lobby?.status === 'playing'
+    && store.game.status !== 'playing';
 
   useEffect(() => {
     if (gameMode !== 'table' || !isTableHost || tableStart.waitMs <= 0) return;
@@ -1270,6 +1280,58 @@ export function LobbyScreen() {
                   ? `Checking Connections (${tableSyncWaitSeconds}s)`
                 : `Start Game (${tableStart.occupiedCount}/${playerCount} Seats)`}
         </button>
+
+        {(showEnterGameFallback || showResyncGameFallback) && (
+          <div style={{
+            display: 'grid',
+            gap: 8,
+          }}>
+            {showEnterGameFallback && (
+              <button
+                type="button"
+                data-testid="btn-enter-started-game"
+                onClick={() => store.enterGameScreen()}
+                style={{
+                  width: '100%',
+                  padding: '12px 0',
+                  border: '1px solid #22d3ee',
+                  borderRadius: 8,
+                  background: '#0f2a33',
+                  color: '#cffafe',
+                  cursor: 'pointer',
+                  fontSize: 13,
+                  fontWeight: 800,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                }}
+              >
+                Enter Game
+              </button>
+            )}
+            {showResyncGameFallback && (
+              <button
+                type="button"
+                data-testid="btn-resync-started-game"
+                onClick={() => store.requestGameStateResync('lobby-playing-fallback-button')}
+                style={{
+                  width: '100%',
+                  padding: '12px 0',
+                  border: '1px solid #f59e0b',
+                  borderRadius: 8,
+                  background: '#332511',
+                  color: '#fde68a',
+                  cursor: 'pointer',
+                  fontSize: 13,
+                  fontWeight: 800,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                }}
+              >
+                Re-sync Game
+              </button>
+            )}
+          </div>
+        )}
 
         <div style={{ textAlign: 'center', fontSize: 10, color: '#1e293b' }}>
           Card data powered by Scryfall · Official rules apply by default
