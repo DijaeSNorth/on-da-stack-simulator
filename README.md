@@ -76,6 +76,27 @@ Card data is fetched from the [Scryfall API](https://scryfall.com/docs/api) — 
 
 ---
 
+## Optional Firebase Fallback
+
+Multiplayer uses PeerJS/WebRTC by default. A Firebase Realtime Database relay can be enabled only as a fallback for networks where direct peer connections or the PeerJS room lookup fail.
+
+Set both environment variables before building:
+
+```bash
+VITE_ENABLE_FIREBASE_FALLBACK=true
+VITE_FIREBASE_RTDB_URL=https://your-project-id-default-rtdb.firebaseio.com
+```
+
+Best-practice notes:
+
+- Do not put Firebase database secrets, service account keys, or auth tokens in `VITE_*` variables. Browser env values are public.
+- Keep Firebase disabled unless you have Realtime Database rules scoped for the `onDaStackRooms` path.
+- Do not use broad public read/write rules for production. Pair the relay with Firebase Auth/App Check before using it outside trusted playtesting.
+- Treat the Firebase relay as temporary room transport only. It mirrors current room state, peer presence, and latest player messages; it is not a permanent replay or deck store.
+- Rooms include expiry metadata and game-state size checks so stale or huge relay writes are avoided.
+
+---
+
 ## Local Development
 
 ```bash

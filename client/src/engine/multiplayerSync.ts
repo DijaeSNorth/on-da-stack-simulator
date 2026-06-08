@@ -98,6 +98,9 @@ const HEARTBEAT_MS = 20000;
 const HOST_MIGRATION_DELAY_MS = 1800;
 const DATA_CHANNEL_LOW_WATER_BYTES = 64 * 1024;
 const DATA_CHANNEL_HIGH_WATER_BYTES = 256 * 1024;
+const FIREBASE_POLL_MS = 1800;
+const FIREBASE_ROOM_TTL_MS = 6 * 60 * 60 * 1000;
+const FIREBASE_MAX_GAME_STATE_BYTES = 900 * 1024;
 
 // ─── Internal state ───────────────────────────────────────────────────────────
 
@@ -106,8 +109,10 @@ let _roomCode: string | null = null;
 let _peerId: string | null = null;
 let _isHost = false;
 let _status: SyncStatus = 'disconnected';
+let _transportMode: 'peerjs' | 'firebase' = 'peerjs';
 let _heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let _migrationTimer: ReturnType<typeof setTimeout> | null = null;
+let _firebasePollTimer: ReturnType<typeof setInterval> | null = null;
 
 // Host-side: map of peerId → DataConnection for each joiner
 const _connections: Map<string, DataConnection> = new Map();
@@ -118,6 +123,7 @@ let _latestGame: GameState | null = null;
 const _pendingStateMessages: Map<string, SyncMessage> = new Map();
 const _bufferDrainHandlers: Map<string, () => void> = new Map();
 const _connectionHealthHandlers: Map<string, () => void> = new Map();
+const _firebaseSeenMessages: Map<string, number> = new Map();
 
 // Presence table — host owns the authoritative copy; joiners mirror it
 const _peers: Map<string, RoomPresence> = new Map();
@@ -136,6 +142,16 @@ type SyncMessage =
   | { type: 'KICKED'; payload: { reason: string } }
   | { type: 'PING'; payload: { sentAt: number } }
   | { type: 'PONG'; payload: { sentAt: number } };
+
+interface FirebaseRoomRelay {
+  hostId: string;
+  createdAt: number;
+  updatedAt: number;
+  expiresAt: number;
+  game: GameState | null;
+  peers: Record<string, RoomPresence>;
+  messages?: Record<string, { updatedAt: number; message: SyncMessage }>;
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -264,6 +280,238 @@ function cleanupAllConnections(): void {
   _pendingStateMessages.clear();
   _bufferDrainHandlers.clear();
   _connectionHealthHandlers.clear();
+}
+
+function getEnvValue(name: string): string | undefined {
+  return (import.meta as unknown as { env?: Record<string, string | undefined> }).env?.[name];
+}
+
+function getFirebaseDatabaseUrl(): string | null {
+  const raw = getEnvValue('VITE_FIREBASE_RTDB_URL') || getEnvValue('VITE_FIREBASE_DATABASE_URL');
+  if (!raw) return null;
+  return raw.replace(/\/+$/, '');
+}
+
+function firebaseFallbackExplicitlyEnabled(): boolean {
+  return getEnvValue('VITE_ENABLE_FIREBASE_FALLBACK') === 'true';
+}
+
+function firebaseUrl(path: string): string {
+  const base = getFirebaseDatabaseUrl();
+  if (!base) throw new Error('Firebase fallback is not configured. Set VITE_FIREBASE_RTDB_URL.');
+  const normalizedPath = path.replace(/^\/+/, '').replace(/\/+$/, '');
+  return `${base}/${normalizedPath}.json`;
+}
+
+function estimatedJsonBytes(value: unknown): number {
+  return new Blob([JSON.stringify(value)]).size;
+}
+
+function assertFirebaseGameSize(game: GameState | null): void {
+  if (!game) return;
+  const bytes = estimatedJsonBytes(game);
+  if (bytes > FIREBASE_MAX_GAME_STATE_BYTES) {
+    throw new Error('Firebase fallback game state is too large for relay sync.');
+  }
+}
+
+async function firebaseRequest<T>(path: string, method: 'GET' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown): Promise<T> {
+  const response = await fetch(firebaseUrl(path), {
+    method,
+    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new Error(`Firebase fallback ${method} failed (${response.status})`);
+  }
+  if (method === 'DELETE') return null as T;
+  return await response.json() as T;
+}
+
+function firebaseRoomPath(code = _roomCode): string {
+  if (!code) throw new Error('No room code is active.');
+  return `onDaStackRooms/${code.toUpperCase()}`;
+}
+
+export function isFirebaseFallbackConfigured(): boolean {
+  return firebaseFallbackExplicitlyEnabled() && Boolean(getFirebaseDatabaseUrl());
+}
+
+function stopFirebasePolling(): void {
+  if (_firebasePollTimer) {
+    clearInterval(_firebasePollTimer);
+    _firebasePollTimer = null;
+  }
+}
+
+function startFirebasePolling(): void {
+  stopFirebasePolling();
+  _firebasePollTimer = setInterval(() => {
+    void pollFirebaseRoom();
+  }, FIREBASE_POLL_MS);
+  void pollFirebaseRoom();
+}
+
+async function writeFirebaseRoomSnapshot(): Promise<void> {
+  if (_transportMode !== 'firebase' || !_roomCode) return;
+  assertFirebaseGameSize(_latestGame);
+  await firebaseRequest(firebaseRoomPath(), 'PATCH', {
+    hostId: _peers.get(_peerId ?? '')?.isHostPeer ? _peerId : undefined,
+    game: _latestGame,
+    peers: Object.fromEntries(_peers),
+    updatedAt: Date.now(),
+    expiresAt: Date.now() + FIREBASE_ROOM_TTL_MS,
+  });
+}
+
+async function writeFirebasePeerPresence(presence: RoomPresence): Promise<void> {
+  if (_transportMode !== 'firebase' || !_roomCode) return;
+  await firebaseRequest(`${firebaseRoomPath()}/peers/${presence.peerId}`, 'PUT', presence);
+}
+
+async function writeFirebaseMessage(message: SyncMessage): Promise<void> {
+  if (_transportMode !== 'firebase' || !_roomCode || !_peerId) return;
+  if (message.type === 'GAME_STATE') assertFirebaseGameSize(message.payload);
+  await firebaseRequest(`${firebaseRoomPath()}/messages/${_peerId}`, 'PUT', {
+    updatedAt: Date.now(),
+    message,
+  });
+}
+
+function applyFirebasePeers(peers: Record<string, RoomPresence>): void {
+  replacePeers(peers);
+  _onPresenceUpdate?.(peers);
+}
+
+function applyFirebaseGameFromPeer(peerId: string, game: GameState): boolean {
+  const nextGame = resolveIncomingPeerGameState(_latestGame, game, _peers.get(peerId));
+  if (!nextGame) return false;
+  _latestGame = nextGame;
+  _onGameUpdate?.(nextGame);
+  return true;
+}
+
+async function pollFirebaseRoom(): Promise<void> {
+  if (_transportMode !== 'firebase' || !_roomCode) return;
+  try {
+    const room = await firebaseRequest<FirebaseRoomRelay | null>(firebaseRoomPath(), 'GET');
+    if (!room) {
+      if (!_isHost) setStatus('error');
+      return;
+    }
+    if (room.expiresAt && room.expiresAt < Date.now()) {
+      setStatus('error');
+      return;
+    }
+
+    applyFirebasePeers(room.peers ?? {});
+
+    if (_isHost) {
+      let changed = false;
+      for (const [peerId, entry] of Object.entries(room.messages ?? {})) {
+        if (peerId === _peerId || !entry?.message) continue;
+        const seenAt = _firebaseSeenMessages.get(peerId) ?? 0;
+        if ((entry.updatedAt ?? 0) <= seenAt) continue;
+        _firebaseSeenMessages.set(peerId, entry.updatedAt ?? Date.now());
+        if (entry.message.type === 'GAME_STATE') {
+          changed = applyFirebaseGameFromPeer(peerId, entry.message.payload) || changed;
+        }
+        if (entry.message.type === 'LEAVE_ROOM') {
+          const p = _peers.get(peerId);
+          if (p) {
+            _peers.set(peerId, { ...p, online: false, lastSeen: Date.now() });
+            changed = true;
+          }
+        }
+      }
+      if (changed) await writeFirebaseRoomSnapshot();
+      return;
+    }
+
+    const self = _peerId ? room.peers?.[_peerId] : undefined;
+    if (self && (self as RoomPresence & { kicked?: boolean }).kicked) {
+      leaveRoom(false);
+      return;
+    }
+    if (room.game) {
+      _latestGame = room.game;
+      _onGameUpdate?.(room.game);
+    }
+  } catch {
+    if (!_isHost) setStatus('error');
+  }
+}
+
+async function createFirebaseRoom(
+  initialGame: GameState,
+  hostPresence: Omit<RoomPresence, 'online' | 'lastSeen'>,
+): Promise<string> {
+  const code = generateRoomCode();
+  _transportMode = 'firebase';
+  _isHost = true;
+  _roomCode = code;
+  _peerId = hostPresence.peerId;
+  _latestGame = initialGame;
+  _peers.clear();
+  _firebaseSeenMessages.clear();
+  const presence: RoomPresence = {
+    ...hostPresence,
+    isHostPeer: true,
+    online: true,
+    lastSeen: Date.now(),
+  };
+  _peers.set(_peerId, presence);
+  assertFirebaseGameSize(initialGame);
+  await firebaseRequest(firebaseRoomPath(code), 'PUT', {
+    hostId: _peerId,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    expiresAt: Date.now() + FIREBASE_ROOM_TTL_MS,
+    game: initialGame,
+    peers: Object.fromEntries(_peers),
+    messages: {},
+  } satisfies FirebaseRoomRelay);
+  setStatus('host');
+  startFirebasePolling();
+  return code;
+}
+
+async function joinFirebaseRoom(
+  code: string,
+  presence: Omit<RoomPresence, 'online' | 'lastSeen'>,
+): Promise<{ game: GameState | null; hostId: string; isSpectator: boolean; seatIndex: number }> {
+  const roomCode = code.toUpperCase().trim();
+  const room = await firebaseRequest<FirebaseRoomRelay | null>(firebaseRoomPath(roomCode), 'GET');
+  if (!room) throw new Error(`Room ${roomCode} not found in Firebase fallback.`);
+  if (room.expiresAt && room.expiresAt < Date.now()) throw new Error(`Room ${roomCode} expired in Firebase fallback.`);
+
+  _transportMode = 'firebase';
+  _isHost = false;
+  _roomCode = roomCode;
+  _peerId = presence.peerId;
+  _latestGame = room.game;
+  _firebaseSeenMessages.clear();
+  replacePeers(room.peers ?? {});
+
+  const assignment = chooseAutomaticSeat(room.peers ?? {}, room.game?.config.playerCount ?? 0, presence as RoomPresence);
+  const finalPresence: RoomPresence = {
+    ...presence,
+    isHostPeer: false,
+    isSpectator: assignment.isSpectator,
+    seatIndex: assignment.seatIndex,
+    online: true,
+    lastSeen: Date.now(),
+  };
+  _peers.set(_peerId, finalPresence);
+  await writeFirebasePeerPresence(finalPresence);
+  setStatus('joined');
+  startFirebasePolling();
+  return {
+    game: room.game,
+    hostId: room.hostId,
+    isSpectator: assignment.isSpectator,
+    seatIndex: assignment.seatIndex,
+  };
 }
 
 function broadcastPresence() {
@@ -728,6 +976,7 @@ export async function createRoom(
   hostPresence: Omit<RoomPresence, 'online' | 'lastSeen'>,
 ): Promise<string> {
   setStatus('connecting');
+  _transportMode = 'peerjs';
   _isHost = true;
   _latestGame = _initialGame;
   cleanupAllConnections();
@@ -763,6 +1012,11 @@ export async function createRoom(
       if ((err as any).type === 'unavailable-id') {
         peer.destroy();
         createRoom(_initialGame, hostPresence).then(resolve).catch(reject);
+        return;
+      }
+      if (isFirebaseFallbackConfigured()) {
+        peer.destroy();
+        createFirebaseRoom(_initialGame, hostPresence).then(resolve).catch(reject);
         return;
       }
       setStatus('error');
@@ -846,6 +1100,7 @@ export async function joinRoom(
   presence: Omit<RoomPresence, 'online' | 'lastSeen'>,
 ): Promise<{ game: GameState | null; hostId: string; isSpectator: boolean; seatIndex: number }> {
   setStatus('connecting');
+  _transportMode = 'peerjs';
   _isHost = false;
   _roomCode = code.toUpperCase().trim();
   _peerId = presence.peerId;
@@ -858,8 +1113,12 @@ export async function joinRoom(
 
     const timeout = setTimeout(() => {
       peer.destroy();
-      setStatus('error');
-      reject(new Error(`Could not reach room ${_roomCode}. Check the code and try again.`));
+      if (isFirebaseFallbackConfigured()) {
+        joinFirebaseRoom(_roomCode!, presence).then(resolve).catch(reject);
+      } else {
+        setStatus('error');
+        reject(new Error(`Could not reach room ${_roomCode}. Check the code and try again.`));
+      }
     }, CONNECT_TIMEOUT_MS);
 
     peer.on('open', () => {
@@ -968,8 +1227,13 @@ export async function joinRoom(
       clearTimeout(timeout);
       const type = (err as any).type;
       if (type === 'peer-unavailable') {
-        setStatus('error');
-        reject(new Error(`Room ${_roomCode} not found. Check the code and try again.`));
+        if (isFirebaseFallbackConfigured()) {
+          peer.destroy();
+          joinFirebaseRoom(_roomCode!, presence).then(resolve).catch(reject);
+        } else {
+          setStatus('error');
+          reject(new Error(`Room ${_roomCode} not found. Check the code and try again.`));
+        }
       } else {
         setStatus('error');
         reject(err);
@@ -983,6 +1247,14 @@ export async function joinRoom(
 export function broadcastState(game: GameState): void {
   _latestGame = game;
   const msg: SyncMessage = { type: 'GAME_STATE', payload: game };
+  if (_transportMode === 'firebase') {
+    if (_isHost) {
+      void writeFirebaseRoomSnapshot();
+    } else {
+      void writeFirebaseMessage(msg);
+    }
+    return;
+  }
   if (!_isHost) {
     if (_hostConn?.open) sendMessage(_hostConn, msg, { coalesceState: true });
     return;
@@ -999,9 +1271,20 @@ export function updatePresence(fields: Partial<RoomPresence>): void {
     // Host updates its own presence locally
     const existing = _peers.get(_peerId!) ?? {} as RoomPresence;
     _peers.set(_peerId!, { ...existing, ...fields, lastSeen: Date.now(), online: true });
+    if (_transportMode === 'firebase') {
+      void writeFirebaseRoomSnapshot();
+      return;
+    }
     broadcastPresence();
   } else {
     // Joiner sends updated presence to host
+    if (_transportMode === 'firebase') {
+      const existing = _peers.get(_peerId!) ?? {} as RoomPresence;
+      const next = { ...existing, ...fields, lastSeen: Date.now(), online: true } as RoomPresence;
+      _peers.set(_peerId!, next);
+      void writeFirebasePeerPresence(next);
+      return;
+    }
     if (_hostConn?.open) {
       const existing = _peers.get(_peerId!) ?? {} as RoomPresence;
       sendMessage(_hostConn, {
@@ -1017,6 +1300,16 @@ export function updatePresence(fields: Partial<RoomPresence>): void {
 export function kickPeer(peerId: string, reason = 'Removed by host.'): boolean {
   if (!_isHost || !_peerId || peerId === _peerId) return false;
   const hadPresence = _peers.delete(peerId);
+  if (_transportMode === 'firebase') {
+    void firebaseRequest(`${firebaseRoomPath()}/peers/${peerId}`, 'PATCH', {
+      online: false,
+      kicked: true,
+      kickReason: reason,
+      lastSeen: Date.now(),
+    });
+    void writeFirebaseRoomSnapshot();
+    return hadPresence;
+  }
   const conn = _connections.get(peerId);
   if (conn?.open) {
     sendMessage(conn, { type: 'KICKED', payload: { reason } });
@@ -1029,6 +1322,7 @@ export function kickPeer(peerId: string, reason = 'Removed by host.'): boolean {
 }
 
 export function requestHostMigrationBeforeLeave(): boolean {
+  if (_transportMode === 'firebase') return false;
   if (!_isHost || !_roomCode || !_peerId) return false;
   const candidates = Object.fromEntries(
     [..._peers.entries()].filter(([peerId, presence]) =>
@@ -1064,7 +1358,15 @@ export function requestHostMigrationBeforeLeave(): boolean {
 
 export function leaveRoom(notifyHost = true): void {
   _stopHeartbeat();
+  stopFirebasePolling();
   if (_migrationTimer) { clearTimeout(_migrationTimer); _migrationTimer = null; }
+  if (_transportMode === 'firebase' && _roomCode && _peerId) {
+    const peerPath = `${firebaseRoomPath()}/peers/${_peerId}`;
+    if (notifyHost && !_isHost) {
+      void writeFirebaseMessage({ type: 'LEAVE_ROOM', payload: { peerId: _peerId } });
+    }
+    void firebaseRequest(peerPath, 'PATCH', { online: false, lastSeen: Date.now() });
+  }
   if (notifyHost && !_isHost && _peerId && _hostConn?.open) {
     sendMessage(_hostConn, { type: 'LEAVE_ROOM', payload: { peerId: _peerId } });
   }
@@ -1077,6 +1379,8 @@ export function leaveRoom(notifyHost = true): void {
   _roomCode = null;
   _peerId = null;
   _isHost = false;
+  _transportMode = 'peerjs';
+  _firebaseSeenMessages.clear();
   _onPresenceUpdate?.({});
   setStatus('disconnected');
 }
