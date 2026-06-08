@@ -60,16 +60,17 @@ export function getTableDeckStatus({
     const assignedDeck = seat?.deckId
       ? savedDecks.find(deck => deck.id === seat.deckId)
       : undefined;
+    const hasSyncedDeck = Boolean(peer.deck?.id);
     const hasAssignedSavedDeck = Boolean(assignedDeck);
-    const deckId = loadedPlayer?.deckId ?? seat?.deckId;
-    const deckName = loadedDeck?.name ?? assignedDeck?.name ?? (hasLoadedDeck ? 'Loaded deck' : undefined);
+    const deckId = loadedPlayer?.deckId ?? peer.deck?.id ?? seat?.deckId;
+    const deckName = loadedDeck?.name ?? peer.deck?.name ?? assignedDeck?.name ?? (hasLoadedDeck ? 'Loaded deck' : undefined);
     return {
       peer,
       seat,
       player: loadedPlayer,
       deckId,
       deckName,
-      ready: hasLoadedDeck || hasAssignedSavedDeck,
+      ready: hasLoadedDeck || hasSyncedDeck || hasAssignedSavedDeck,
     };
   });
 }

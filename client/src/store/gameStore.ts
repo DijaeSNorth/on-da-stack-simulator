@@ -28,7 +28,7 @@ import {
   initMultiplayer, createRoom, joinRoom, leaveRoom,
   broadcastState, updatePresence, kickPeer, getRoomCode, getPeerId, getIsHost,
   getSyncStatus, isConfigured,
-  type RoomPresence, type SyncStatus,
+  type RoomDeckSummary, type RoomPresence, type SyncStatus,
 } from '../engine/multiplayerSync';
 
 // ─── UI State ─────────────────────────────────────────────────────────────────
@@ -611,6 +611,31 @@ function sameHandMembers(current: string[], proposed: string[]): boolean {
   return proposed.every(id => currentSet.has(id)) && new Set(proposed).size === proposed.length;
 }
 
+function createRoomDeckSummary(deck: Deck): RoomDeckSummary {
+  return {
+    id: deck.id,
+    name: deck.name || 'Loaded deck',
+    cardCount: deck.cards.reduce((sum, card) => sum + card.count, 0) + deck.commanders.length,
+    commanders: deck.commanders.slice(0, 2),
+  };
+}
+
+function findLoadedDeckSummary(playerId: string, game: GameState, decks: Deck[]): RoomDeckSummary | undefined {
+  const player = game.players.find(item => item.id === playerId);
+  if (!player?.deckId || (player.library.length === 0 && player.commandZone.length === 0)) return undefined;
+  const deck = decks.find(item => item.id === player.deckId);
+  if (deck) return createRoomDeckSummary(deck);
+  return {
+    id: player.deckId,
+    name: 'Loaded deck',
+    cardCount: player.library.length + player.commandZone.length,
+    commanders: player.commandZone
+      .map(instanceId => game.cards[instanceId]?.definition.name)
+      .filter((name): name is string => Boolean(name))
+      .slice(0, 2),
+  };
+}
+
 export function syncGamePlayerMetadataFromPresence(game: GameState, peers: Record<string, RoomPresence>): GameState {
   const seatedPeers = Object.values(peers)
     .filter(peer => peer.online && !peer.isSpectator && peer.seatIndex >= 0 && peer.seatIndex < game.players.length)
@@ -703,9 +728,10 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   createMultiplayerRoom: async (hostName, hostColor, seatIndex, avatar, asSpectator = false) => {
-    const { game } = get();
+    const { game, decks } = get();
     const peerId = crypto.randomUUID();
     const assignedSeatIndex = asSpectator ? -1 : Math.max(0, seatIndex);
+    const playerId = game.players[assignedSeatIndex]?.id ?? '';
     const code = await createRoom(game, {
       peerId,
       name: hostName,
@@ -715,6 +741,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       avatarImage: avatar?.image,
       seatIndex: assignedSeatIndex,
       isSpectator: asSpectator,
+      deck: asSpectator ? undefined : findLoadedDeckSummary(playerId, game, decks),
     });
     set(s => ({
       localPlayerId: asSpectator ? '' : (game.players[assignedSeatIndex]?.id ?? game.players[0]?.id ?? ''),
@@ -734,6 +761,8 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   joinMultiplayerRoom: async (code, peerName, peerColor, seatIndex, avatar, asSpectator = false) => {
     const peerId = crypto.randomUUID();
     const requestedSeatIndex = asSpectator ? -1 : Math.max(0, seatIndex);
+    const current = get();
+    const requestedPlayerId = current.game.players[requestedSeatIndex]?.id ?? '';
     const { game: remoteGame, isSpectator, seatIndex: assignedSeatIndex } = await joinRoom(code, {
       peerId,
       name: peerName,
@@ -743,6 +772,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       avatarImage: avatar?.image,
       seatIndex: requestedSeatIndex,
       isSpectator: asSpectator,
+      deck: asSpectator ? undefined : findLoadedDeckSummary(requestedPlayerId, current.game, current.decks),
     });
     // P2P: joinRoom returns null game — joiner keeps existing local state
     // until host broadcasts the authoritative state on next game action.
@@ -785,16 +815,27 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     set(s => ({ multiplayer: { ...s.multiplayer, peers } })),
 
   updateMultiplayerPresence: (fields) => {
-    updatePresence(fields);
+    const current = get();
+    const peerId = current.multiplayer.peerId;
+    const existing = peerId ? current.multiplayer.peers[peerId] : undefined;
+    const nextSeatIndex = fields.isSpectator ? -1 : (fields.seatIndex ?? existing?.seatIndex ?? -1);
+    const nextLocalPlayerId = fields.isSpectator
+      ? ''
+      : (current.game.players[nextSeatIndex]?.id ?? current.localPlayerId);
+    const nextFields: Partial<RoomPresence> = {
+      ...fields,
+      deck: fields.isSpectator
+        ? undefined
+        : fields.deck ?? findLoadedDeckSummary(nextLocalPlayerId, current.game, current.decks),
+    };
+    updatePresence(nextFields);
     set(s => {
-      const peerId = s.multiplayer.peerId;
-      const existing = peerId ? s.multiplayer.peers[peerId] : undefined;
       if (!peerId || !existing) return s;
       const nextSelf: RoomPresence = {
         ...existing,
-        ...fields,
-        isSpectator: fields.isSpectator ?? existing.isSpectator,
-        seatIndex: fields.isSpectator ? -1 : (fields.seatIndex ?? existing.seatIndex),
+        ...nextFields,
+        isSpectator: nextFields.isSpectator ?? existing.isSpectator,
+        seatIndex: nextFields.isSpectator ? -1 : (nextFields.seatIndex ?? existing.seatIndex),
         online: true,
         lastSeen: Date.now(),
       };
@@ -883,6 +924,14 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const newState = await loadDeckIntoPlayer(get().game, playerId, normalizeCommanderDeck(deck));
     const flags = getLoadedBannedCardFlags(newState, playerId);
     set({ game: newState, ui: withAssistantMessages(get().ui, newState, flags) });
+    const state = get();
+    if (
+      state.multiplayer.peerId &&
+      playerId === state.localPlayerId &&
+      ['host', 'joined', 'migrating'].includes(state.multiplayer.status)
+    ) {
+      state.updateMultiplayerPresence({ deck: createRoomDeckSummary(normalizeCommanderDeck(deck)) });
+    }
   },
 
   clearLoadedDeck: (playerId) => {
@@ -932,6 +981,14 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         lastUpdatedAt: Date.now(),
       },
     });
+    const state = get();
+    if (
+      state.multiplayer.peerId &&
+      playerId === state.localPlayerId &&
+      ['host', 'joined', 'migrating'].includes(state.multiplayer.status)
+    ) {
+      state.updateMultiplayerPresence({ deck: undefined });
+    }
   },
 
   addPracticeDummy: () => {

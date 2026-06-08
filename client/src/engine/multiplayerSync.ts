@@ -47,6 +47,14 @@ export interface RoomPresence {
   online: boolean;
   lastSeen: number;
   connectionQuality?: ConnectionQuality;
+  deck?: RoomDeckSummary;
+}
+
+export interface RoomDeckSummary {
+  id: string;
+  name: string;
+  cardCount: number;
+  commanders: string[];
 }
 
 export interface ConnectionQuality {
@@ -104,6 +112,8 @@ const FIREBASE_MAX_GAME_STATE_BYTES = 900 * 1024;
 const FIREBASE_ROOM_CODE_LENGTH = 12;
 const MAX_RELAY_NAME_LENGTH = 40;
 const MAX_RELAY_INITIAL_LENGTH = 3;
+const MAX_RELAY_DECK_NAME_LENGTH = 80;
+const MAX_RELAY_COMMANDER_NAME_LENGTH = 80;
 
 // ─── Internal state ───────────────────────────────────────────────────────────
 
@@ -327,6 +337,18 @@ function normalizeRelayColor(value: unknown): string {
   return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value) ? value : '#3b82f6';
 }
 
+function compactDeckSummaryForRelay(deck: RoomDeckSummary | undefined): RoomDeckSummary | undefined {
+  if (!deck?.id) return undefined;
+  return {
+    id: clampText(deck.id, '', 120),
+    name: clampText(deck.name, 'Loaded deck', MAX_RELAY_DECK_NAME_LENGTH),
+    cardCount: Number.isFinite(deck.cardCount) ? Math.max(0, Math.min(500, Math.round(deck.cardCount))) : 0,
+    commanders: Array.isArray(deck.commanders)
+      ? deck.commanders.slice(0, 2).map(name => clampText(name, '', MAX_RELAY_COMMANDER_NAME_LENGTH)).filter(Boolean)
+      : [],
+  };
+}
+
 export function compactPresenceForRelay(presence: RoomPresence): RoomPresence {
   return {
     peerId: clampText(presence.peerId, crypto.randomUUID(), 80),
@@ -356,6 +378,7 @@ export function compactPresenceForRelay(presence: RoomPresence): RoomPresence {
           : Date.now(),
       }
       : undefined,
+    deck: compactDeckSummaryForRelay(presence.deck),
   };
 }
 
@@ -439,6 +462,7 @@ function applyFirebaseGameFromPeer(peerId: string, game: GameState): boolean {
   if (!nextGame) return false;
   _latestGame = nextGame;
   _onGameUpdate?.(nextGame);
+  reconcilePeerDeckSummaryFromGame(peerId, nextGame);
   return true;
 }
 
@@ -716,6 +740,38 @@ function playerHasLoadedDeck(player?: Player): boolean {
   return Boolean(player?.deckId && ((player.library?.length ?? 0) > 0 || (player.commandZone?.length ?? 0) > 0));
 }
 
+function summarizePlayerDeckFromGame(game: GameState, player: Player, existing?: RoomDeckSummary): RoomDeckSummary | undefined {
+  if (!playerHasLoadedDeck(player) || !player.deckId) return undefined;
+  return {
+    id: player.deckId,
+    name: existing?.id === player.deckId ? existing.name : 'Loaded deck',
+    cardCount: player.library.length + player.commandZone.length,
+    commanders: player.commandZone
+      .map(instanceId => game.cards[instanceId]?.definition.name)
+      .filter((name): name is string => Boolean(name))
+      .slice(0, 2),
+  };
+}
+
+function reconcilePeerDeckSummaryFromGame(peerId: string, game: GameState): boolean {
+  const presence = _peers.get(peerId);
+  if (!presence || presence.isSpectator || presence.seatIndex < 0) return false;
+  const player = game.players[presence.seatIndex];
+  if (!player) return false;
+  const deck = summarizePlayerDeckFromGame(game, player, presence.deck);
+  if (
+    presence.deck?.id === deck?.id &&
+    presence.deck?.name === deck?.name &&
+    presence.deck?.cardCount === deck?.cardCount &&
+    (presence.deck?.commanders ?? []).join('|') === (deck?.commanders ?? []).join('|')
+  ) {
+    return false;
+  }
+  _peers.set(peerId, { ...presence, deck, lastSeen: Date.now() });
+  _onPresenceUpdate?.(Object.fromEntries(_peers));
+  return true;
+}
+
 function clearHostSeatDeckState(hostGame: GameState, presence: RoomPresence): GameState | null {
   if (hostGame.status !== 'lobby') return null;
   const hostPlayer = hostGame.players[presence.seatIndex];
@@ -843,6 +899,8 @@ function applyIncomingGameFromPeer(conn: DataConnection, game: GameState): void 
   if (!nextGame) return;
   _latestGame = nextGame;
   _onGameUpdate?.(nextGame);
+  const presenceChanged = reconcilePeerDeckSummaryFromGame(conn.peer, nextGame);
+  if (presenceChanged) broadcastPresence();
   broadcastState(nextGame);
 }
 

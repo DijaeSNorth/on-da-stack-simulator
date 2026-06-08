@@ -167,6 +167,12 @@ const compactPresence = compactPresenceForRelay({
   avatarInitial: 'LONG',
   avatarImage: { source: 'upload', url: 'data:image/png;base64,abc', byteSize: 10, label: 'Upload' },
   connectionQuality: { rttMs: 25000, score: 9999, samples: 999, updatedAt: Date.now() },
+  deck: {
+    id: 'deck-with-long-data',
+    name: 'A very long deck name that should survive but be bounded before relay transport writes happen at the room edge',
+    cardCount: 9999,
+    commanders: ['Commander One', 'Commander Two', 'Commander Three'],
+  },
 });
 assert(compactPresence.name.length <= 40, 'expected Firebase relay presence names to be length-limited');
 assert(compactPresence.color === '#3b82f6', 'expected Firebase relay presence to normalize invalid colors');
@@ -174,5 +180,8 @@ assert(compactPresence.avatarInitial === 'LON', 'expected Firebase relay presenc
 assert(compactPresence.avatarImage === undefined, 'expected Firebase relay presence to omit uploaded avatar data');
 assert(compactPresence.seatIndex === 5, 'expected Firebase relay presence seats to be clamped to supported seats');
 assert(compactPresence.connectionQuality?.score === 1000, 'expected Firebase relay presence quality score to be bounded');
+assert(compactPresence.deck?.name.length === 80, 'expected Firebase relay deck names to be bounded');
+assert(compactPresence.deck?.cardCount === 500, 'expected Firebase relay deck card counts to be bounded');
+assert(compactPresence.deck?.commanders.length === 2, 'expected Firebase relay deck commander names to be capped');
 
 console.log('PASS multiplayer deck sync merges only the sending player seat for 2-4 players');
