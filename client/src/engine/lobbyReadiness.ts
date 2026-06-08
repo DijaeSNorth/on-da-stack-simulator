@@ -88,6 +88,9 @@ export function canStartCommanderTable({
   savedDecks,
   minimumPlayers = 2,
   requireLoadedGameDecks = false,
+  stabilizationMs = 0,
+  now = Date.now(),
+  lastGameUpdateAt = 0,
 }: {
   isHost: boolean;
   peers: Record<string, RoomPresence>;
@@ -97,15 +100,35 @@ export function canStartCommanderTable({
   savedDecks: Deck[];
   minimumPlayers?: number;
   requireLoadedGameDecks?: boolean;
-}): { canStart: boolean; occupiedCount: number; missingDeckPlayers: string[] } {
+  stabilizationMs?: number;
+  now?: number;
+  lastGameUpdateAt?: number;
+}): {
+  canStart: boolean;
+  occupiedCount: number;
+  missingDeckPlayers: string[];
+  waitMs: number;
+  waitingForSync: boolean;
+} {
   const statuses = getTableDeckStatus({ peers, playerCount, seats, gamePlayers, savedDecks, requireLoadedGameDecks });
   const missingDeckPlayers = statuses
     .filter(status => !status.ready)
     .map(status => status.peer.name);
   const occupiedCount = statuses.length;
+  const latestPeerSeenAt = statuses.reduce(
+    (latest, status) => Math.max(latest, status.peer.lastSeen || 0),
+    0,
+  );
+  const latestSyncAt = Math.max(latestPeerSeenAt, lastGameUpdateAt || 0);
+  const waitMs = latestSyncAt > 0
+    ? Math.max(0, Math.ceil(stabilizationMs - (now - latestSyncAt)))
+    : 0;
+  const waitingForSync = waitMs > 0 && occupiedCount >= minimumPlayers && missingDeckPlayers.length === 0;
   return {
-    canStart: isHost && occupiedCount >= minimumPlayers && missingDeckPlayers.length === 0,
+    canStart: isHost && occupiedCount >= minimumPlayers && missingDeckPlayers.length === 0 && !waitingForSync,
     occupiedCount,
     missingDeckPlayers,
+    waitMs,
+    waitingForSync,
   };
 }

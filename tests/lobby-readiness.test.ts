@@ -86,6 +86,42 @@ const readyWithActualDeckSync = canStartCommanderTable({
 });
 assert(readyWithActualDeckSync.canStart, 'expected host to start when actual synced card state exists for every seated player');
 
+const syncWindowNow = 10_000;
+const recentlyChangedPeers: Record<string, RoomPresence> = {
+  host: { ...presence('host', 'Host', 0), lastSeen: syncWindowNow - 400 },
+  guest: { ...presence('guest', 'Guest', 1), lastSeen: syncWindowNow - 300 },
+};
+const waitingForSyncWindow = canStartCommanderTable({
+  isHost: true,
+  peers: recentlyChangedPeers,
+  playerCount: 2,
+  seats: staleLocalSeats,
+  gamePlayers: [hostPlayer, guestPlayer],
+  savedDecks: [],
+  requireLoadedGameDecks: true,
+  stabilizationMs: 2_000,
+  now: syncWindowNow,
+  lastGameUpdateAt: syncWindowNow - 250,
+});
+assert(!waitingForSyncWindow.canStart, 'expected host start to wait during the final sync stabilization window');
+assert(waitingForSyncWindow.waitingForSync, 'expected readiness to expose the connection/deck sync wait state');
+assert(waitingForSyncWindow.waitMs === 1750, `expected 1750ms wait, got ${waitingForSyncWindow.waitMs}`);
+
+const afterSyncWindow = canStartCommanderTable({
+  isHost: true,
+  peers: recentlyChangedPeers,
+  playerCount: 2,
+  seats: staleLocalSeats,
+  gamePlayers: [hostPlayer, guestPlayer],
+  savedDecks: [],
+  requireLoadedGameDecks: true,
+  stabilizationMs: 2_000,
+  now: syncWindowNow + 2_000,
+  lastGameUpdateAt: syncWindowNow - 250,
+});
+assert(afterSyncWindow.canStart, 'expected host start after the final sync stabilization window expires');
+assert(afterSyncWindow.waitMs === 0, 'expected no remaining wait after sync window expires');
+
 const namedDeckStatuses = getTableDeckStatus({
   peers,
   playerCount: 2,

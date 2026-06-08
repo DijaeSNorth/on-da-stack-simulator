@@ -32,6 +32,7 @@ type GameMode = 'solo' | 'table';
 type PlayerCount = 1 | 2 | 3 | 4 | 5 | 6;
 
 const DEFAULT_COLORS = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899'];
+const TABLE_START_STABILIZATION_MS = 2200;
 
 function shouldShowDeckImportPanel(mode: GameMode): boolean {
   return mode === 'table';
@@ -67,6 +68,7 @@ export function LobbyScreen() {
   const [houseRules, setHouseRules] = useState<Set<string>>(new Set());
   const [favoriteDeckIds, setFavoriteDeckIds] = useState<string[]>(() => loadFavoriteDeckIds());
   const [exitOpen, setExitOpen] = useState(false);
+  const [readinessNow, setReadinessNow] = useState(() => Date.now());
   const deckFileInputRef = useRef<HTMLInputElement | null>(null);
 
   function applyActiveProfileToSeat0() {
@@ -151,14 +153,24 @@ export function LobbyScreen() {
       savedDecks,
       minimumPlayers: minimumTablePlayers,
       requireLoadedGameDecks: isTableHost,
+      stabilizationMs: isTableHost ? TABLE_START_STABILIZATION_MS : 0,
+      now: readinessNow,
+      lastGameUpdateAt: store.game.lastUpdatedAt,
     })
-    : { canStart: true, occupiedCount: playerCount, missingDeckPlayers: [] as string[] };
+    : { canStart: true, occupiedCount: playerCount, missingDeckPlayers: [] as string[], waitMs: 0, waitingForSync: false };
   const missingDeckPlayers = tableStart.missingDeckPlayers;
   const tableDecksReady = gameMode !== 'table' || (
     tableStart.occupiedCount >= minimumTablePlayers &&
     missingDeckPlayers.length === 0
   );
   const canStartTable = gameMode !== 'table' || tableStart.canStart;
+  const tableSyncWaitSeconds = Math.max(1, Math.ceil(tableStart.waitMs / 1000));
+
+  useEffect(() => {
+    if (gameMode !== 'table' || !isTableHost || tableStart.waitMs <= 0) return;
+    const timer = window.setInterval(() => setReadinessNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [gameMode, isTableHost, tableStart.waitMs]);
 
   function updateMode(mode: GameMode) {
     setGameMode(mode);
@@ -1079,8 +1091,14 @@ export function LobbyScreen() {
         <button
           data-testid="btn-start-game"
           data-help-title={gameMode === 'solo' ? 'Start Solo Lab' : 'Start Commander Game'}
-          data-help-body={gameMode === 'solo' ? 'Starts the practice table. Solo mode can begin without a loaded deck so you can build and test freely.' : 'Starts the Commander table when at least two players are present and every joined player has a loaded deck.'}
-          data-help-example={gameMode === 'table' && !tableDecksReady ? `Missing decks: ${missingDeckPlayers.join(', ')}` : undefined}
+          data-help-body={gameMode === 'solo' ? 'Starts the practice table. Solo mode can begin without a loaded deck so you can build and test freely.' : 'Starts the Commander table after players, decks, and connection updates have stayed stable for a short sync check.'}
+          data-help-example={gameMode === 'table'
+            ? tableStart.waitingForSync
+              ? `Final sync check: about ${tableSyncWaitSeconds}s remaining.`
+              : !tableDecksReady
+                ? `Missing decks: ${missingDeckPlayers.join(', ')}`
+                : undefined
+            : undefined}
           data-help-placement="top"
           onClick={() => startGame()}
           disabled={!canStartTable}
@@ -1106,6 +1124,8 @@ export function LobbyScreen() {
                 ? `Waiting for Players (${tableStart.occupiedCount}/${minimumTablePlayers} Minimum)`
                 : !tableDecksReady
                   ? `Waiting for Decks (${missingDeckPlayers.join(', ')})`
+                : tableStart.waitingForSync
+                  ? `Checking Connections (${tableSyncWaitSeconds}s)`
                 : `Start Game (${tableStart.occupiedCount}/${playerCount} Seats)`}
         </button>
 
