@@ -6,7 +6,7 @@
 
 import { createCardState, createDefaultGameConfig, createEmptyGameState, createPlayer } from '../client/src/engine/gameEngine';
 import { mergeRemoteSeatDeckState, type RoomPresence } from '../client/src/engine/multiplayerSync';
-import type { CardDefinition, GameState } from '../client/src/types/game';
+import type { CardDefinition, CardState, GameState } from '../client/src/types/game';
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -43,13 +43,13 @@ function makeDef(id: string, name: string): CardDefinition {
   };
 }
 
-function makeGame(updatedAt: number): GameState {
-  const config = createDefaultGameConfig(2);
+function makeGame(playerCount: 2 | 3 | 4, updatedAt: number): GameState {
+  const config = createDefaultGameConfig(playerCount);
   const game = createEmptyGameState(config);
-  const players = [
-    createPlayer('p1', 'Host', 0, '#3b82f6', config),
-    createPlayer('p2', 'Guest', 1, '#ef4444', config),
-  ];
+  const colors = ['#3b82f6', '#ef4444', '#f59e0b', '#22c55e'];
+  const players = Array.from({ length: playerCount }, (_, index) =>
+    createPlayer(`p${index + 1}`, index === 0 ? 'Host' : `Guest ${index}`, index, colors[index], config)
+  );
   return {
     ...game,
     players,
@@ -59,55 +59,63 @@ function makeGame(updatedAt: number): GameState {
   };
 }
 
-const hostCard = createCardState(makeDef('host-def', 'Host Rock'), 'p1', 'library');
-const staleGuestCard = createCardState(makeDef('old-guest-def', 'Old Guest Rock'), 'p2', 'library');
-const remoteGuestCard = createCardState(makeDef('guest-def', 'Guest Rock'), 'remote-p2', 'library');
+function loadSeatDeck(game: GameState, seatIndex: number, deckId: string, card: CardState): GameState {
+  return {
+    ...game,
+    cards: { ...game.cards, [card.instanceId]: card },
+    definitions: { ...game.definitions, [card.definitionId]: card.definition },
+    players: game.players.map((player, index) => index === seatIndex ? {
+      ...player,
+      deckId,
+      library: [card.instanceId],
+    } : player),
+  };
+}
 
-const hostGame: GameState = {
-  ...makeGame(10_000),
-  cards: {
-    [hostCard.instanceId]: hostCard,
-    [staleGuestCard.instanceId]: staleGuestCard,
-  },
-  definitions: {
-    [hostCard.definitionId]: hostCard.definition,
-    [staleGuestCard.definitionId]: staleGuestCard.definition,
-  },
-  players: makeGame(10_000).players.map(player => {
-    if (player.id === 'p1') {
-      return { ...player, deckId: 'host-deck', library: [hostCard.instanceId] };
+for (const playerCount of [2, 3, 4] as const) {
+  const hostDeckCards = Array.from({ length: playerCount }, (_, index) =>
+    createCardState(makeDef(`old-seat-${playerCount}-${index}`, `Old Seat ${index + 1} Rock`), `p${index + 1}`, 'library')
+  );
+  const remoteDeckCards = Array.from({ length: playerCount }, (_, index) =>
+    createCardState(makeDef(`remote-seat-${playerCount}-${index}`, `Remote Seat ${index + 1} Rock`), `remote-p${index + 1}`, 'library')
+  );
+
+  let hostGame = makeGame(playerCount, 10_000);
+  for (let seatIndex = 0; seatIndex < playerCount; seatIndex += 1) {
+    hostGame = loadSeatDeck(hostGame, seatIndex, `old-deck-seat-${seatIndex + 1}`, hostDeckCards[seatIndex]);
+  }
+
+  for (let targetSeat = 1; targetSeat < playerCount; targetSeat += 1) {
+    const remoteGame = {
+      ...makeGame(playerCount, 1_000),
+      players: makeGame(playerCount, 1_000).players.map((player, index) => index === targetSeat ? {
+        ...player,
+        id: `remote-p${targetSeat + 1}`,
+        deckId: `new-deck-seat-${targetSeat + 1}`,
+        library: [remoteDeckCards[targetSeat].instanceId],
+      } : player),
+      cards: { [remoteDeckCards[targetSeat].instanceId]: remoteDeckCards[targetSeat] },
+      definitions: { [remoteDeckCards[targetSeat].definitionId]: remoteDeckCards[targetSeat].definition },
+    };
+
+    const merged = mergeRemoteSeatDeckState(hostGame, remoteGame, presence(`peer-seat-${targetSeat + 1}`, targetSeat));
+    assert(merged !== null, `expected ${playerCount}p seat ${targetSeat + 1} deck to merge even when snapshot is older`);
+    assert(merged!.players[targetSeat].id === `p${targetSeat + 1}`, `expected ${playerCount}p seat ${targetSeat + 1} player id to stay authoritative`);
+    assert(merged!.players[targetSeat].deckId === `new-deck-seat-${targetSeat + 1}`, `expected ${playerCount}p seat ${targetSeat + 1} deck id to update`);
+    assert(merged!.players[targetSeat].library[0] === remoteDeckCards[targetSeat].instanceId, `expected ${playerCount}p seat ${targetSeat + 1} library to update`);
+    assert(merged!.cards[remoteDeckCards[targetSeat].instanceId].ownerId === `p${targetSeat + 1}`, `expected ${playerCount}p seat ${targetSeat + 1} cards to remap to host player id`);
+    assert(!merged!.cards[hostDeckCards[targetSeat].instanceId], `expected ${playerCount}p seat ${targetSeat + 1} stale deck cards to be replaced`);
+
+    for (let otherSeat = 0; otherSeat < playerCount; otherSeat += 1) {
+      if (otherSeat === targetSeat) continue;
+      assert(merged!.players[otherSeat].deckId === `old-deck-seat-${otherSeat + 1}`, `expected ${playerCount}p seat ${otherSeat + 1} deck to remain unchanged`);
+      assert(merged!.players[otherSeat].library[0] === hostDeckCards[otherSeat].instanceId, `expected ${playerCount}p seat ${otherSeat + 1} library to remain unchanged`);
+      assert(merged!.cards[hostDeckCards[otherSeat].instanceId].ownerId === `p${otherSeat + 1}`, `expected ${playerCount}p seat ${otherSeat + 1} cards to remain in state`);
     }
-    return { ...player, deckId: 'old-guest-deck', library: [staleGuestCard.instanceId] };
-  }),
-};
+  }
+}
 
-const remoteGame: GameState = {
-  ...makeGame(1_000),
-  cards: { [remoteGuestCard.instanceId]: remoteGuestCard },
-  definitions: { [remoteGuestCard.definitionId]: remoteGuestCard.definition },
-  players: [
-    { ...makeGame(1_000).players[0] },
-    {
-      ...makeGame(1_000).players[1],
-      id: 'remote-p2',
-      deckId: 'guest-deck',
-      library: [remoteGuestCard.instanceId],
-    },
-  ],
-};
-
-const merged = mergeRemoteSeatDeckState(hostGame, remoteGame, presence('guest-peer', 1));
-assert(merged !== null, 'expected a loaded joiner deck to merge even when its snapshot is older');
-assert(merged!.players[0].deckId === 'host-deck', 'expected host deck to stay untouched');
-assert(merged!.players[0].library[0] === hostCard.instanceId, 'expected host library to stay untouched');
-assert(merged!.players[1].id === 'p2', 'expected authoritative host seat player id to be preserved');
-assert(merged!.players[1].deckId === 'guest-deck', 'expected guest deck id to update only guest seat');
-assert(merged!.players[1].library[0] === remoteGuestCard.instanceId, 'expected guest library to use the remote loaded deck');
-assert(!merged!.cards[staleGuestCard.instanceId], 'expected stale guest deck cards to be replaced');
-assert(merged!.cards[remoteGuestCard.instanceId].ownerId === 'p2', 'expected remote guest cards to be remapped to the host seat player');
-assert(merged!.cards[hostCard.instanceId].ownerId === 'p1', 'expected host cards to remain in state');
-
-const spectatorMerge = mergeRemoteSeatDeckState(hostGame, remoteGame, presence('spectator-peer', -1, true));
+const spectatorMerge = mergeRemoteSeatDeckState(makeGame(4, 10_000), makeGame(4, 1_000), presence('spectator-peer', -1, true));
 assert(spectatorMerge === null, 'expected spectator game snapshots not to merge deck state');
 
-console.log('PASS multiplayer deck sync merges only the sending player seat');
+console.log('PASS multiplayer deck sync merges only the sending player seat for 2-4 players');

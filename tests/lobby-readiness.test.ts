@@ -111,4 +111,43 @@ const assignedSavedDeck = canStartCommanderTable({
 });
 assert(assignedSavedDeck.canStart, 'expected assigned saved decks to count as ready before game start');
 
+for (const count of [2, 3, 4] as const) {
+  const tableConfig = createDefaultGameConfig(count);
+  const tablePlayers = Array.from({ length: count }, (_, index) => ({
+    ...createPlayer(`game-player-${index + 1}`, `Player ${index + 1}`, index, index === 0 ? '#3b82f6' : '#ef4444', tableConfig),
+    deckId: `deck-${index + 1}`,
+    library: [`card-${index + 1}`],
+  }));
+  const tablePeers = Object.fromEntries(
+    tablePlayers.map((player, index) => [
+      `peer-${index + 1}`,
+      presence(`peer-${index + 1}`, player.name, index),
+    ]),
+  );
+  const tableReady = canStartCommanderTable({
+    isHost: true,
+    peers: tablePeers,
+    playerCount: count,
+    seats: tablePlayers.map(player => ({ id: player.id, name: player.name })),
+    gamePlayers: tablePlayers,
+    savedDecks: [],
+  });
+  assert(tableReady.canStart, `expected ${count}-player lobby to start when every seated player has a loaded deck`);
+
+  const missingSeatIndex = count - 1;
+  const tableMissing = canStartCommanderTable({
+    isHost: true,
+    peers: tablePeers,
+    playerCount: count,
+    seats: tablePlayers.map(player => ({ id: player.id, name: player.name })),
+    gamePlayers: tablePlayers.map((player, index) => index === missingSeatIndex
+      ? { ...player, deckId: undefined, library: [] }
+      : player
+    ),
+    savedDecks: [],
+  });
+  assert(!tableMissing.canStart, `expected ${count}-player lobby to block start when one seated player has no loaded deck`);
+  assert(tableMissing.missingDeckPlayers.includes(`Player ${count}`), `expected ${count}-player lobby to name the missing deck player`);
+}
+
 console.log('PASS lobby readiness resolves seated players and ignores spectators');
