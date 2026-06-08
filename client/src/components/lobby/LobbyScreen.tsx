@@ -186,6 +186,9 @@ export function LobbyScreen() {
   const tableSyncWaitSeconds = Math.max(1, Math.ceil(tableStart.waitMs / 1000));
   const importPreparation = importResult ? prepareCommanderDeckForUse(importResult.deck) : null;
   const importMultiplayerValid = Boolean(importPreparation?.valid);
+  const importInvalidReason = importPreparation && !importPreparation.valid
+    ? importPreparation.errors.join(' ')
+    : '';
 
   useEffect(() => {
     if (gameMode !== 'table' || !isTableHost || tableStart.waitMs <= 0) return;
@@ -1177,6 +1180,19 @@ export function LobbyScreen() {
                     }}
                   >Dismiss</button>
                 </div>
+                {gameMode === 'table' && importInvalidReason && (
+                  <div
+                    data-testid="save-use-disabled-reason"
+                    style={{
+                      marginTop: 6,
+                      fontSize: 10,
+                      color: '#fca5a5',
+                      lineHeight: 1.35,
+                    }}
+                  >
+                    Save & Use is blocked because this deck is not multiplayer-valid: {importInvalidReason}
+                  </div>
+                )}
               </div>
             )}
           </div>
