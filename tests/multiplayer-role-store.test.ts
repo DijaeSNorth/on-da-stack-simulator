@@ -4,7 +4,7 @@
  * Run with: npx tsx tests/multiplayer-role-store.test.ts
  */
 
-import { resolveLocalPlayerIdFromPresence, syncGamePlayerMetadataFromPresence, useGameStore } from '../client/src/store/gameStore';
+import { ensureGameHasSeatsForPresence, resolveLocalPlayerIdFromPresence, syncGamePlayerMetadataFromPresence, useGameStore } from '../client/src/store/gameStore';
 import { createCardState, createDefaultGameConfig, createEmptyGameState, createPlayer } from '../client/src/engine/gameEngine';
 import type { CardDefinition, GameState } from '../client/src/types/game';
 import type { RoomPresence } from '../client/src/engine/multiplayerSync';
@@ -103,6 +103,20 @@ assert(
     spectator: makePresence('spectator', -1, true),
   }, 'spectator', 'stale-local-id') === '',
   'spectator remote snapshots must not keep a stale local player id',
+);
+
+const emptyJoinerGame = createEmptyGameState(createDefaultGameConfig(2));
+const joinerPeers = {
+  host: makePresence('host', 0),
+  'peer-local': makePresence('peer-local', 1),
+};
+const materializedJoinerGame = ensureGameHasSeatsForPresence(emptyJoinerGame, joinerPeers);
+assert(materializedJoinerGame.players.length === 2, 'joiner presence must create local table seats before the host snapshot arrives');
+assert(materializedJoinerGame.players[0].name === 'host', 'host should stay in seat 1 when materializing joiner seats');
+assert(materializedJoinerGame.players[1].name === 'peer-local', 'joiner should stay in seat 2 when materializing joiner seats');
+assert(
+  resolveLocalPlayerIdFromPresence(materializedJoinerGame, joinerPeers, 'peer-local') === materializedJoinerGame.players[1].id,
+  'joiner deck loading must target the assigned seat 2 player before host has loaded a deck',
 );
 
 const testDef: CardDefinition = {

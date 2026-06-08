@@ -682,6 +682,67 @@ export function resolveLocalPlayerIdFromPresence(
   return game.players[self.seatIndex]?.id ?? fallback;
 }
 
+function normalizePresencePlayerCount(game: GameState, peers: Record<string, RoomPresence>): 2 | 3 | 4 | 5 | 6 {
+  const highestOccupiedSeat = Math.max(
+    -1,
+    ...Object.values(peers)
+      .filter(peer => peer.online && !peer.isSpectator && peer.seatIndex >= 0)
+      .map(peer => peer.seatIndex),
+  );
+  const count = Math.max(2, game.config.playerCount || 0, highestOccupiedSeat + 1);
+  return Math.min(6, Math.max(2, count)) as 2 | 3 | 4 | 5 | 6;
+}
+
+export function ensureGameHasSeatsForPresence(game: GameState, peers: Record<string, RoomPresence>): GameState {
+  const hasSeatedPeer = Object.values(peers).some(peer => peer.online && !peer.isSpectator && peer.seatIndex >= 0);
+  if (!hasSeatedPeer) return game;
+
+  const playerCount = normalizePresencePlayerCount(game, peers);
+  if (game.players.length >= playerCount) return syncGamePlayerMetadataFromPresence(game, peers);
+
+  const config = { ...game.config, playerCount };
+  const peerBySeat = new Map(
+    Object.values(peers)
+      .filter(peer => peer.online && !peer.isSpectator && peer.seatIndex >= 0 && peer.seatIndex < playerCount)
+      .map(peer => [peer.seatIndex, peer]),
+  );
+  const players = Array.from({ length: playerCount }, (_, index) => {
+    const existing = game.players[index];
+    const peer = peerBySeat.get(index);
+    const base = existing ?? createPlayer(
+      `seat-${index + 1}-${crypto.randomUUID()}`,
+      peer?.name ?? `Open Seat ${index + 1}`,
+      index,
+      peer?.color ?? PLAYER_COLORS[index] ?? '#3b82f6',
+      config,
+      {
+        initial: peer?.avatarInitial,
+        style: peer?.avatarStyle,
+        image: peer?.avatarImage,
+      },
+    );
+    return {
+      ...base,
+      name: peer?.name ?? base.name,
+      color: peer?.color ?? base.color,
+      avatarInitial: peer?.avatarInitial ?? base.avatarInitial,
+      avatarStyle: peer?.avatarStyle ?? base.avatarStyle,
+      avatarImage: peer?.avatarImage ?? base.avatarImage,
+      seatIndex: index,
+      isActive: index === 0,
+      hasPriority: index === 0,
+    };
+  });
+
+  return {
+    ...game,
+    config,
+    players,
+    activePlayerId: game.activePlayerId || players[0]?.id || '',
+    priorityPlayerId: game.priorityPlayerId || players[0]?.id || '',
+  };
+}
+
 export const useGameStore = create<GameStore>()((set, get) => ({
   game: createEmptyGameState(createDefaultGameConfig(4)),
   ui: DEFAULT_UI,
@@ -699,7 +760,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         const status = multiplayer.status;
         const remoteHostStateIsAuthoritative = status === 'connecting' || status === 'joined' || status === 'migrating';
         if (remoteHostStateIsAuthoritative || game.lastUpdatedAt > get().game.lastUpdatedAt) {
-          const syncedGame = syncGamePlayerMetadataFromPresence(game, multiplayer.peers);
+          const syncedGame = ensureGameHasSeatsForPresence(game, multiplayer.peers);
           const localPlayerId = resolveLocalPlayerIdFromPresence(
             syncedGame,
             multiplayer.peers,
@@ -718,7 +779,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       // onPresenceUpdate — someone joined/left
       (peers: Record<string, RoomPresence>) => {
         set(s => {
-          const game = syncGamePlayerMetadataFromPresence(s.game, peers);
+          const game = ensureGameHasSeatsForPresence(s.game, peers);
           const self = s.multiplayer.peerId ? peers[s.multiplayer.peerId] : undefined;
           const localPlayerId = resolveLocalPlayerIdFromPresence(game, peers, s.multiplayer.peerId, s.localPlayerId);
           return {
@@ -799,7 +860,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     // P2P: joinRoom returns null game — joiner keeps existing local state
     // until host broadcasts the authoritative state on next game action.
     const currentGame = get().game;
-    const resolvedGame = syncGamePlayerMetadataFromPresence(remoteGame ?? currentGame, joinedPeers);
+    const resolvedGame = ensureGameHasSeatsForPresence(remoteGame ?? currentGame, joinedPeers);
     const self = joinedPeers[joinedPeerId];
     const localSeatIndex = self && !self.isSpectator ? self.seatIndex : assignedSeatIndex;
     // Spectators get no local player id — they observe only
