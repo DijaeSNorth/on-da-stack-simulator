@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type MouseEvent } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import type { Player } from '../../types/game';
 import { TutorialTooltip } from '../tutorial/TutorialTooltip';
@@ -6,6 +6,7 @@ import { TOOLTIPS } from '../../store/tutorialStore';
 import { getPhaseLabel } from '../../engine/phaseMeta';
 import { PlayerAvatar } from '../profile/PlayerAvatar';
 import type { CardState } from '../../types/game';
+import { CardImage } from '../cards/CardImage';
 
 function CommanderLifeIcon({ commander }: { commander?: CardState }) {
   const name = commander?.definition.name ?? 'Commander';
@@ -91,6 +92,101 @@ function LifeCounter({ player, commander, onChange }: { player: Player; commande
   );
 }
 
+function ZoneSummaryButton({
+  zoneLabel,
+  zoneName,
+  icon,
+  count,
+  topCard,
+  accent,
+  testId,
+  helpTitle,
+  helpBody,
+  onClick,
+}: {
+  zoneLabel: string;
+  zoneName: string;
+  icon: string;
+  count: number;
+  topCard?: CardState;
+  accent: string;
+  testId: string;
+  helpTitle: string;
+  helpBody: string;
+  onClick: (event: MouseEvent<HTMLButtonElement>) => void;
+}) {
+  const topName = topCard?.definition.name ?? 'Empty';
+  return (
+    <TutorialTooltip content={zoneName === 'Graveyard' ? TOOLTIPS.zone_graveyard : TOOLTIPS.zone_exile} placement="top" delay={500}>
+      <button
+        data-testid={testId}
+        data-help-title={helpTitle}
+        data-help-body={helpBody}
+        title={`${zoneName}: ${topName}`}
+        onClick={onClick}
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '28px minmax(0, 1fr)',
+          alignItems: 'center',
+          gap: 6,
+          width: '100%',
+          minHeight: 38,
+          padding: '4px 6px',
+          background: `${accent}18`,
+          color: '#cbd5e1',
+          border: `1px solid ${accent}66`,
+          borderRadius: 5,
+          cursor: 'pointer',
+          textAlign: 'left',
+          touchAction: 'manipulation',
+        }}
+      >
+        <span style={{
+          width: 28,
+          height: 28,
+          borderRadius: 4,
+          overflow: 'hidden',
+          background: '#0f172a',
+          border: `1px solid ${accent}66`,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          fontSize: 14,
+          flexShrink: 0,
+        }}>
+          {topCard ? <CardImage card={topCard} size="tiny" /> : icon}
+        </span>
+        <span style={{ minWidth: 0 }}>
+          <span style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+            color: accent,
+            fontSize: 9,
+            fontWeight: 900,
+            textTransform: 'uppercase',
+            letterSpacing: '0.04em',
+          }}>
+            {zoneLabel} <span style={{ color: '#94a3b8' }}>({count})</span>
+          </span>
+          <span style={{
+            display: 'block',
+            marginTop: 1,
+            color: topCard ? '#e2e8f0' : '#64748b',
+            fontSize: 10,
+            fontWeight: 700,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}>
+            {topName}
+          </span>
+        </span>
+      </button>
+    </TutorialTooltip>
+  );
+}
+
 export function LeftPanel() {
   const store = useGameStore();
   const { game, ui, localPlayerId } = store;
@@ -149,6 +245,12 @@ export function LeftPanel() {
           const bfCount = player.battlefield.length;
           const commanderCard = player.commanders.map(id => game.cards[id]).find(Boolean);
           const cmdDmgEntries = Object.entries(player.commanderDamage).filter(([, v]) => v > 0);
+          const topGraveyardCard = player.graveyard.length > 0
+            ? game.cards[player.graveyard[player.graveyard.length - 1]]
+            : undefined;
+          const topExileCard = player.exile.length > 0
+            ? game.cards[player.exile[player.exile.length - 1]]
+            : undefined;
 
           return (
             <div
@@ -309,32 +411,32 @@ export function LeftPanel() {
                     >Reveal Top</button>
                   </>
                 )}
-                <TutorialTooltip content={TOOLTIPS.zone_graveyard} placement="top" delay={500}>
-                  <button
-                    data-testid={`btn-open-graveyard-${player.id}`}
-                    data-help-title="View Graveyard"
-                    data-help-body="Opens this player's graveyard so you can inspect cards, move them, or review what has resolved this game."
-                    onClick={(e) => { e.stopPropagation(); store.openZoneDrawer('graveyard', player.id); }}
-                    style={{
-                      fontSize: 9, padding: '2px 6px',
-                      background: '#1c1917', color: '#78716c',
-                      border: '1px solid #292524', borderRadius: 3, cursor: 'pointer',
-                    }}
-                  >GY ({player.graveyard.length})</button>
-                </TutorialTooltip>
-                <TutorialTooltip content={TOOLTIPS.zone_exile} placement="top" delay={500}>
-                  <button
-                    data-testid={`btn-open-exile-${player.id}`}
-                    data-help-title="View Exile"
-                    data-help-body="Opens this player's exile zone for cards exiled by spells, abilities, replacement effects, or cleanup."
-                    onClick={(e) => { e.stopPropagation(); store.openZoneDrawer('exile', player.id); }}
-                    style={{
-                      fontSize: 9, padding: '2px 6px',
-                      background: '#1c1917', color: '#78716c',
-                      border: '1px solid #292524', borderRadius: 3, cursor: 'pointer',
-                    }}
-                  >Ex ({player.exile.length})</button>
-                </TutorialTooltip>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 5, marginTop: 6 }}>
+                <ZoneSummaryButton
+                  zoneLabel="GY"
+                  zoneName="Graveyard"
+                  icon="G"
+                  count={player.graveyard.length}
+                  topCard={topGraveyardCard}
+                  accent="#b45309"
+                  testId={`btn-open-graveyard-${player.id}`}
+                  helpTitle="View Graveyard"
+                  helpBody="Opens this player's graveyard so you can inspect cards, move them, or review what has resolved this game."
+                  onClick={(e) => { e.stopPropagation(); store.openZoneDrawer('graveyard', player.id); }}
+                />
+                <ZoneSummaryButton
+                  zoneLabel="Exile"
+                  zoneName="Exile"
+                  icon="E"
+                  count={player.exile.length}
+                  topCard={topExileCard}
+                  accent="#7c3aed"
+                  testId={`btn-open-exile-${player.id}`}
+                  helpTitle="View Exile"
+                  helpBody="Opens this player's exile zone for cards exiled by spells, abilities, replacement effects, or cleanup."
+                  onClick={(e) => { e.stopPropagation(); store.openZoneDrawer('exile', player.id); }}
+                />
               </div>
               {isDeckOwner && revealTop && (
                 <div
