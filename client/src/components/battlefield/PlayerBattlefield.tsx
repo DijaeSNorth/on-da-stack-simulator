@@ -79,8 +79,10 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
 
   const { singles: tokenSingles, clouds: tokenClouds } = groupTokenClouds(tokens);
 
-  const cardSize = compact ? 'compact' : cards.length > 20 ? 'compact' : 'normal';
-  const gap = compact ? 2 : 4;
+  const cardSize = compact || cards.length > 14 ? 'compact' : 'normal';
+  const gap = compact || cards.length > 24 ? 2 : 4;
+  const zoneGap = compact ? 5 : cards.length > 18 ? 6 : 8;
+  const hasWideBoard = cards.length > (compact ? 8 : 14);
 
   // ── Drag-combat visual state ───────────────────────────────────────────────
   // During an attack drag, own creatures that are valid attackers should glow
@@ -332,7 +334,10 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
         gap: compact ? 4 : 6,
         padding: compact ? '4px 6px' : '6px 10px',
         width: '100%',
+        height: '100%',
         minHeight: compact ? 80 : 120,
+        minWidth: 0,
+        overflow: 'hidden',
         position: 'relative', boxSizing: 'border-box',
       }}
     >
@@ -342,6 +347,7 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
         borderBottom: `1px solid ${player.color}44`,
         paddingBottom: compact ? 2 : 4,
         marginBottom: compact ? 2 : 4,
+        flexShrink: 0,
       }}>
         <PlayerAvatar
           name={player.name}
@@ -400,25 +406,41 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
         )}
       </div>
 
+      <div
+        data-testid={`battlefield-scroll-${player.id}`}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          overscrollBehavior: 'contain',
+          touchAction: 'pan-y',
+          scrollbarGutter: 'stable',
+          paddingRight: hasWideBoard ? 4 : 0,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: zoneGap,
+        }}
+      >
       {/* Lands */}
       {lands.length > 0 && (
-        <div>
+        <div style={{ flexShrink: 0 }}>
           {!compact && <div style={labelStyle}>Lands ({lands.length})</div>}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap }}>{lands.map(renderCard)}</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap, alignItems: 'flex-start' }}>{lands.map(renderCard)}</div>
         </div>
       )}
 
       {/* Non-land permanents */}
       {nonLands.length > 0 && (
-        <div>
+        <div style={{ flexShrink: 0 }}>
           {!compact && <div style={labelStyle}>Permanents ({nonLands.length})</div>}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap }}>{nonLands.map(renderCard)}</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap, alignItems: 'flex-start' }}>{nonLands.map(renderCard)}</div>
         </div>
       )}
 
       {/* Tokens */}
       {(tokenSingles.length > 0 || tokenClouds.length > 0) && (
-        <div>
+        <div style={{ flexShrink: 0 }}>
           {!compact && <div style={labelStyle}>Tokens ({tokens.length})</div>}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap, alignItems: 'flex-end' }}>
             {tokenClouds.map(renderTokenCloud)}
@@ -447,6 +469,7 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
           )}
         </div>
       )}
+      </div>
     </div>
   );
 }

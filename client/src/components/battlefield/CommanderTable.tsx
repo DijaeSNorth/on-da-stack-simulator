@@ -458,7 +458,7 @@ function CommanderTableInner() {
   const localPlayerId = store.localPlayerId;
 
   const sectionStyle = (side: 'top' | 'bottom' | 'left' | 'right'): React.CSSProperties => {
-    const base: React.CSSProperties = { display: 'flex', gap: 2, flex: 1, overflow: 'hidden' };
+    const base: React.CSSProperties = { display: 'flex', gap: 2, flex: 1, overflow: 'hidden', minHeight: 0, minWidth: 0 };
     return (side === 'top' || side === 'bottom')
       ? { ...base, flexDirection: 'row' }
       : { ...base, flexDirection: 'column', maxWidth: '18%', minWidth: 120 };
@@ -490,8 +490,12 @@ function CommanderTableInner() {
           borderRadius: 8,
           overflow: 'hidden',
           position: 'relative',
+          display: 'flex',
+          flexDirection: 'column',
           minWidth: 0,
+          maxWidth: '100%',
           minHeight: compact ? 80 : 120,
+          maxHeight: '100%',
           transition: 'border-color 0.15s, box-shadow 0.15s',
           boxShadow: isDropTarget
             ? `0 0 20px 4px #22c55e44, inset 0 0 20px 2px #22c55e22`
