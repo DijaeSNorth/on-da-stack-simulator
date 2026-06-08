@@ -132,6 +132,11 @@ export function LobbyScreen() {
   const occupiedSeats = new Set(seatedPeers.map(peer => peer.seatIndex));
   const isTableHost = gameMode === 'table' && store.multiplayer.status === 'host';
   const isInTableRoom = gameMode === 'table' && ['host', 'joined', 'migrating'].includes(store.multiplayer.status);
+  const startHandshake = store.multiplayer.startHandshake;
+  const startHandshakeActive = Boolean(startHandshake && ['preparing', 'waiting', 'committing'].includes(startHandshake.status));
+  const startAckedCount = startHandshake
+    ? Math.min(startHandshake.requiredPeerIds.length, startHandshake.ackedPeerIds.filter(peerId => peerId !== store.multiplayer.peerId).length)
+    : 0;
   const minimumTablePlayers = 2;
   const tableDeckStatus = gameMode === 'table'
     ? getTableDeckStatus({
@@ -163,7 +168,7 @@ export function LobbyScreen() {
     tableStart.occupiedCount >= minimumTablePlayers &&
     missingDeckPlayers.length === 0
   );
-  const canStartTable = gameMode !== 'table' || tableStart.canStart;
+  const canStartTable = gameMode !== 'table' || (tableStart.canStart && !startHandshakeActive);
   const tableSyncWaitSeconds = Math.max(1, Math.ceil(tableStart.waitMs / 1000));
 
   useEffect(() => {
@@ -372,11 +377,12 @@ export function LobbyScreen() {
           .sort((a, b) => a - b)
           .map((index): PlayerSetup | null => {
             const seat = players[index];
+            const latestGame = useGameStore.getState().game;
             if (!seat) return null;
             return {
               ...seat,
-              id: resolveSeatPlayerId(index, store.game.players, players),
-              deckId: store.game.players[index]?.deckId ?? seat.deckId,
+              id: resolveSeatPlayerId(index, latestGame.players, players),
+              deckId: latestGame.players[index]?.deckId ?? seat.deckId,
             };
           })
           .filter((player): player is PlayerSetup => player !== null && Boolean(player.id))
@@ -392,7 +398,11 @@ export function LobbyScreen() {
           }
         }
       }
-      store.startGame();
+      if (gameMode === 'table') {
+        useGameStore.getState().beginMultiplayerGameStart();
+      } else {
+        store.startGame();
+      }
       if (gameMode === 'solo') {
         store.setDeckBuilderOpen(true);
         if (store.ui.rightPanelOpen) store.toggleRightPanel();
@@ -1093,7 +1103,9 @@ export function LobbyScreen() {
           data-help-title={gameMode === 'solo' ? 'Start Solo Lab' : 'Start Commander Game'}
           data-help-body={gameMode === 'solo' ? 'Starts the practice table. Solo mode can begin without a loaded deck so you can build and test freely.' : 'Starts the Commander table after players, decks, and connection updates have stayed stable for a short sync check.'}
           data-help-example={gameMode === 'table'
-            ? tableStart.waitingForSync
+            ? startHandshakeActive
+              ? 'Start sync: waiting for each connected player to confirm their seat and deck snapshot.'
+              : tableStart.waitingForSync
               ? `Final sync check: about ${tableSyncWaitSeconds}s remaining.`
               : !tableDecksReady
                 ? `Missing decks: ${missingDeckPlayers.join(', ')}`
@@ -1120,6 +1132,10 @@ export function LobbyScreen() {
               ? 'Create Room to Start'
               : !isTableHost
                 ? 'Waiting for Host to Start'
+              : startHandshakeActive
+                ? startHandshake?.status === 'committing'
+                  ? 'Starting Game...'
+                  : `Syncing Start (${startAckedCount}/${startHandshake?.requiredPeerIds.length ?? 0})`
               : tableStart.occupiedCount < minimumTablePlayers
                 ? `Waiting for Players (${tableStart.occupiedCount}/${minimumTablePlayers} Minimum)`
                 : !tableDecksReady

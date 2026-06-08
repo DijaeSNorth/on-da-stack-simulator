@@ -4,7 +4,7 @@
  * Run with: npx tsx tests/store-flow.test.ts
  */
 
-import { useGameStore } from '../client/src/store/gameStore';
+import { getRequiredStartAckPeerIds, useGameStore } from '../client/src/store/gameStore';
 import {
   createCardState,
   createDefaultGameConfig,
@@ -15,6 +15,7 @@ import {
 import { getEffectiveCardDefinition } from '../client/src/engine/cardFaces';
 import { parseCommand } from '../client/src/engine/nlpParser';
 import type { CardDefinition, GameState, StackObject, TriggerItem } from '../client/src/types/game';
+import type { RoomPresence } from '../client/src/engine/multiplayerSync';
 
 let passed = 0;
 let failed = 0;
@@ -63,6 +64,39 @@ function makeGame(playerCount: 2 | 3 | 4 | 5 | 6 = 2): GameState {
     players,
     activePlayerId: players[0].id,
     priorityPlayerId: players[0].id,
+  };
+}
+
+function makePresence(peerId: string, seatIndex: number, isHostPeer = false): RoomPresence {
+  return {
+    peerId,
+    name: peerId,
+    color: '#3b82f6',
+    seatIndex,
+    isSpectator: false,
+    isHostPeer,
+    online: true,
+    lastSeen: Date.now(),
+  };
+}
+
+function addLibrary(game: GameState, playerId: string, prefix: string, count = 10): GameState {
+  const cards = Array.from({ length: count }, (_, index) => createCardState({
+    ...vanillaCreature,
+    id: `${prefix}-${index}`,
+    name: `${prefix} Card ${index}`,
+  }, playerId, 'library'));
+  return {
+    ...game,
+    cards: {
+      ...game.cards,
+      ...Object.fromEntries(cards.map(card => [card.instanceId, card])),
+    },
+    players: game.players.map(player =>
+      player.id === playerId
+        ? { ...player, deckId: `${prefix}-deck`, library: cards.map(card => card.instanceId), hand: [] }
+        : player
+    ),
   };
 }
 
@@ -158,6 +192,87 @@ test('startGame draws opening hands from loaded libraries', () => {
   const player = useGameStore.getState().game.players.find(p => p.id === 'p1')!;
   assert(player.hand.length === 7, `expected 7 cards in opening hand, got ${player.hand.length}`);
   assert(player.library.length === 3, `expected 3 cards left in library, got ${player.library.length}`);
+});
+
+test('multiplayer start waits for joiner ack before committing', () => {
+  let game = makeGame(2);
+  game = addLibrary(addLibrary(game, 'p1', 'host'), 'p2', 'guest');
+  resetStore({ ...game, status: 'lobby' });
+  useGameStore.setState(state => ({
+    ...state,
+    ui: { ...state.ui, screen: 'lobby', lobbyOpen: true },
+    multiplayer: {
+      ...state.multiplayer,
+      status: 'host',
+      roomCode: 'ROOM1',
+      peerId: 'host-peer',
+      isHost: true,
+      isSpectator: false,
+      configured: true,
+      peers: {
+        'host-peer': makePresence('host-peer', 0, true),
+        'guest-peer': makePresence('guest-peer', 1),
+      },
+      startHandshake: null,
+    },
+  }));
+
+  useGameStore.getState().beginMultiplayerGameStart();
+  let state = useGameStore.getState();
+  assert(state.game.status === 'lobby', 'host should stay in lobby until start handshake commits');
+  assert(state.multiplayer.startHandshake?.missingPeerIds.includes('guest-peer'), 'expected guest ack to be required');
+  assert(
+    getRequiredStartAckPeerIds(state.multiplayer.peers, state.multiplayer.peerId).join(',') === 'guest-peer',
+    'expected only non-host seated peers to ack',
+  );
+
+  useGameStore.getState().handleMultiplayerStartAck({
+    id: state.multiplayer.startHandshake!.id,
+    peerId: 'guest-peer',
+    seatIndex: 1,
+    deckId: 'guest-deck',
+    ready: true,
+    receivedAt: Date.now(),
+  });
+
+  state = useGameStore.getState();
+  assert(state.game.status === 'playing', 'expected acked multiplayer start to enter the game');
+  assert(state.ui.screen === 'game', 'expected acked multiplayer start to close lobby');
+  assert(state.game.players.every(player => player.hand.length === 7), 'expected committed game to draw opening hands for all players');
+});
+
+test('multiplayer start fallback commits if a joiner ack is missing', () => {
+  let game = makeGame(2);
+  game = addLibrary(addLibrary(game, 'p1', 'host-fallback'), 'p2', 'guest-fallback');
+  resetStore({ ...game, status: 'lobby' });
+  useGameStore.setState(state => ({
+    ...state,
+    ui: { ...state.ui, screen: 'lobby', lobbyOpen: true },
+    multiplayer: {
+      ...state.multiplayer,
+      status: 'host',
+      roomCode: 'ROOM2',
+      peerId: 'host-peer',
+      isHost: true,
+      isSpectator: false,
+      configured: true,
+      peers: {
+        'host-peer': makePresence('host-peer', 0, true),
+        'guest-peer': makePresence('guest-peer', 1),
+      },
+      startHandshake: null,
+    },
+  }));
+
+  useGameStore.getState().beginMultiplayerGameStart();
+  const handshake = useGameStore.getState().multiplayer.startHandshake;
+  assert(Boolean(handshake?.pendingGame), 'expected fallback to retain a pending authoritative game snapshot');
+
+  useGameStore.getState().commitMultiplayerGameStart(true);
+  const state = useGameStore.getState();
+  assert(state.game.status === 'playing', 'expected fallback start to enter the game');
+  assert(state.multiplayer.startHandshake === null, 'expected fallback start to clear pending handshake');
+  assert(state.game.players.every(player => player.hand.length === 7), 'expected fallback game to use the same opening hand setup');
 });
 
 test('prepareLoadedTableGame preserves loaded occupied-seat decks', () => {

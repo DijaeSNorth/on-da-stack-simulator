@@ -26,9 +26,11 @@ import { createReplay, saveReplayToStorage } from '../engine/replayEngine';
 import { getActiveProfile } from '../engine/profileStorage';
 import {
   initMultiplayer, createRoom, joinRoom, leaveRoom,
-  broadcastState, updatePresence, kickPeer, getRoomCode, getPeerId, getIsHost,
+  broadcastState, updatePresence, kickPeer, sendStartGameAck, sendStartGameCommit,
+  sendStartGamePrepare, getRoomCode, getPeerId, getIsHost,
   getSyncStatus, isConfigured,
-  type RoomDeckSummary, type RoomPresence, type SyncStatus,
+  type RoomDeckSummary, type RoomPresence, type StartGameAck, type StartGameCommit,
+  type StartGamePrepare, type SyncStatus,
 } from '../engine/multiplayerSync';
 
 // ─── UI State ─────────────────────────────────────────────────────────────────
@@ -93,6 +95,18 @@ export interface MultiplayerState {
   isSpectator: boolean;                 // true when lobby was full on join
   peers: Record<string, RoomPresence>; // all players in room by peerId
   configured: boolean;                  // always true for P2P (no env vars needed)
+  startHandshake: MultiplayerStartHandshake | null;
+}
+
+export interface MultiplayerStartHandshake {
+  id: string;
+  status: 'preparing' | 'waiting' | 'committing';
+  requiredPeerIds: string[];
+  ackedPeerIds: string[];
+  missingPeerIds: string[];
+  startedAt: number;
+  deadlineAt: number;
+  pendingGame?: GameState;
 }
 
 const DEFAULT_MULTIPLAYER: MultiplayerState = {
@@ -103,6 +117,7 @@ const DEFAULT_MULTIPLAYER: MultiplayerState = {
   isSpectator: false,
   peers: {},
   configured: false,
+  startHandshake: null,
 };
 
 const PANEL_SIZES_KEY = 'mtg_sim_panel_sizes';
@@ -112,6 +127,15 @@ const DEFAULT_PANEL_SIZES: UIState['panelSizes'] = {
   deckBuilder: 430,
 };
 const MAX_TOKEN_BATCH = 250;
+const START_GAME_ACK_TIMEOUT_MS = 5000;
+let startGameHandshakeTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearStartGameHandshakeTimer(): void {
+  if (startGameHandshakeTimer) {
+    clearTimeout(startGameHandshakeTimer);
+    startGameHandshakeTimer = null;
+  }
+}
 
 function clampPanelSize(panel: keyof UIState['panelSizes'], value: number): number {
   const limits: Record<keyof UIState['panelSizes'], [number, number]> = {
@@ -144,6 +168,38 @@ function savePanelSizes(sizes: UIState['panelSizes']): void {
   } catch {
     // Storage may be unavailable; resizing should still work for this session.
   }
+}
+
+export function buildStartedGame(game: GameState, now = Date.now()): GameState {
+  let next = game;
+  for (const player of next.players) {
+    if (player.hand.length === 0 && player.library.length > 0) {
+      next = drawCards(next, player.id, next.config.startingHandSize);
+    }
+  }
+  const action = createAction(next, next.activePlayerId, 'GAME_START', 'Game started.');
+  return {
+    ...next,
+    status: 'playing',
+    phase: 'main1',
+    actionLog: [...next.actionLog, action],
+    lastUpdatedAt: now,
+  };
+}
+
+export function getRequiredStartAckPeerIds(
+  peers: Record<string, RoomPresence>,
+  hostPeerId: string | null,
+): string[] {
+  return Object.values(peers)
+    .filter(peer =>
+      peer.online &&
+      !peer.isSpectator &&
+      peer.seatIndex >= 0 &&
+      peer.peerId !== hostPeerId
+    )
+    .map(peer => peer.peerId)
+    .sort();
 }
 
 const DEFAULT_UI: UIState = {
@@ -226,6 +282,10 @@ export interface GameStore {
   addPracticeDummy: () => void;
   removePracticeDummy: (playerId: string) => void;
   startGame: () => void;
+  beginMultiplayerGameStart: () => void;
+  handleMultiplayerStartPrepare: (prepare: StartGamePrepare) => void;
+  handleMultiplayerStartAck: (ack: StartGameAck) => void;
+  commitMultiplayerGameStart: (fallback?: boolean) => void;
   resetGame: () => void;
 
   castCard: (castingPlayerId: string, cardInstanceId: string, targets?: { ids?: string[]; labels?: string[] }) => void;
@@ -796,6 +856,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       // onStatusChange
       (status: SyncStatus) => {
         if (status === 'disconnected') {
+          clearStartGameHandshakeTimer();
           set({ multiplayer: { ...DEFAULT_MULTIPLAYER, configured: isConfigured() }, localPlayerId: '' });
           return;
         }
@@ -805,6 +866,24 @@ export const useGameStore = create<GameStore>()((set, get) => ({
             status,
             isHost: status === 'host' ? true : status === 'joined' || status === 'migrating' ? false : s.multiplayer.isHost,
           },
+        }));
+      },
+      (prepare: StartGamePrepare) => get().handleMultiplayerStartPrepare(prepare),
+      (ack: StartGameAck) => get().handleMultiplayerStartAck(ack),
+      (commit: StartGameCommit) => {
+        clearStartGameHandshakeTimer();
+        const syncedGame = ensureGameHasSeatsForPresence(commit.game, get().multiplayer.peers);
+        const localPlayerId = resolveLocalPlayerIdFromPresence(
+          syncedGame,
+          get().multiplayer.peers,
+          get().multiplayer.peerId,
+          get().localPlayerId,
+        );
+        set(s => ({
+          game: syncedGame,
+          localPlayerId,
+          multiplayer: { ...s.multiplayer, startHandshake: null },
+          ui: { ...s.ui, screen: 'game', lobbyOpen: false },
         }));
       },
     );
@@ -1151,23 +1230,177 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   startGame: () => {
-    let g = get().game;
-    for (const player of g.players) {
-      if (player.hand.length === 0 && player.library.length > 0) {
-        g = drawCards(g, player.id, g.config.startingHandSize);
-      }
-    }
-    const action = createAction(g, g.activePlayerId, 'GAME_START', 'Game started.');
+    const g = buildStartedGame(get().game);
     set({
-      game: { ...g, status: 'playing', phase: 'main1', actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() },
+      game: g,
       ui: { ...get().ui, screen: 'game', lobbyOpen: false },
     });
   },
 
+  beginMultiplayerGameStart: () => {
+    const state = get();
+    if (state.multiplayer.status !== 'host' || !state.multiplayer.peerId) {
+      state.startGame();
+      return;
+    }
+
+    clearStartGameHandshakeTimer();
+    const now = Date.now();
+    const pendingGame = buildStartedGame(state.game, now);
+    const requiredPeerIds = getRequiredStartAckPeerIds(state.multiplayer.peers, state.multiplayer.peerId);
+    const id = crypto.randomUUID();
+    const deadlineAt = now + START_GAME_ACK_TIMEOUT_MS;
+
+    set(s => ({
+      multiplayer: {
+        ...s.multiplayer,
+        startHandshake: {
+          id,
+          status: requiredPeerIds.length > 0 ? 'waiting' : 'committing',
+          requiredPeerIds,
+          ackedPeerIds: state.multiplayer.peerId ? [state.multiplayer.peerId] : [],
+          missingPeerIds: requiredPeerIds,
+          startedAt: now,
+          deadlineAt,
+          pendingGame,
+        },
+      },
+    }));
+
+    const prepare: StartGamePrepare = {
+      id,
+      hostPeerId: state.multiplayer.peerId,
+      game: pendingGame,
+      requiredPeerIds,
+      createdAt: now,
+      deadlineAt,
+    };
+    sendStartGamePrepare(prepare);
+
+    if (requiredPeerIds.length === 0) {
+      get().commitMultiplayerGameStart(false);
+      return;
+    }
+
+    startGameHandshakeTimer = setTimeout(() => {
+      const current = useGameStore.getState();
+      if (current.multiplayer.startHandshake?.id === id) {
+        current.commitMultiplayerGameStart(true);
+      }
+    }, START_GAME_ACK_TIMEOUT_MS);
+  },
+
+  handleMultiplayerStartPrepare: (prepare) => {
+    const state = get();
+    if (state.multiplayer.status !== 'joined' || !state.multiplayer.peerId) return;
+
+    const self = state.multiplayer.peers[state.multiplayer.peerId];
+    const seatIndex = self?.seatIndex ?? -1;
+    const pendingGame = ensureGameHasSeatsForPresence(prepare.game, state.multiplayer.peers);
+    const seatPlayer = seatIndex >= 0 ? pendingGame.players[seatIndex] : undefined;
+    const ready = Boolean(
+      self?.isSpectator ||
+      (seatPlayer?.deckId && (seatPlayer.library.length > 0 || seatPlayer.commandZone.length > 0))
+    );
+    const reason = ready
+      ? undefined
+      : 'Seat or loaded deck was not visible when the start check arrived.';
+
+    set(s => ({
+      multiplayer: {
+        ...s.multiplayer,
+        startHandshake: {
+          id: prepare.id,
+          status: 'preparing',
+          requiredPeerIds: prepare.requiredPeerIds,
+          ackedPeerIds: ready ? [state.multiplayer.peerId!] : [],
+          missingPeerIds: ready
+            ? prepare.requiredPeerIds.filter(peerId => peerId !== state.multiplayer.peerId)
+            : prepare.requiredPeerIds,
+          startedAt: prepare.createdAt,
+          deadlineAt: prepare.deadlineAt,
+          pendingGame,
+        },
+      },
+    }));
+
+    sendStartGameAck({
+      id: prepare.id,
+      peerId: state.multiplayer.peerId,
+      seatIndex,
+      deckId: seatPlayer?.deckId,
+      ready,
+      reason,
+      receivedAt: Date.now(),
+    });
+  },
+
+  handleMultiplayerStartAck: (ack) => {
+    const current = get();
+    const handshake = current.multiplayer.startHandshake;
+    if (!handshake || handshake.id !== ack.id || current.multiplayer.status !== 'host') return;
+
+    const acked = new Set(handshake.ackedPeerIds);
+    if (ack.ready) acked.add(ack.peerId);
+    const missingPeerIds = handshake.requiredPeerIds.filter(peerId => !acked.has(peerId));
+
+    set(s => ({
+      multiplayer: {
+        ...s.multiplayer,
+        startHandshake: s.multiplayer.startHandshake?.id === ack.id
+          ? {
+            ...s.multiplayer.startHandshake,
+            status: missingPeerIds.length === 0 ? 'committing' : 'waiting',
+            ackedPeerIds: [...acked],
+            missingPeerIds,
+          }
+          : s.multiplayer.startHandshake,
+      },
+    }));
+
+    if (missingPeerIds.length === 0) {
+      get().commitMultiplayerGameStart(false);
+    }
+  },
+
+  commitMultiplayerGameStart: (fallback = false) => {
+    const current = get();
+    const handshake = current.multiplayer.startHandshake;
+    if (!handshake?.pendingGame) {
+      current.startGame();
+      return;
+    }
+
+    clearStartGameHandshakeTimer();
+    const committedAt = Date.now();
+    const missingPeerIds = handshake.requiredPeerIds.filter(peerId => !handshake.ackedPeerIds.includes(peerId));
+    const game = {
+      ...handshake.pendingGame,
+      lastUpdatedAt: committedAt,
+    };
+    sendStartGameCommit({
+      id: handshake.id,
+      game,
+      fallback,
+      missingPeerIds,
+      committedAt,
+    });
+    set(s => ({
+      game,
+      multiplayer: {
+        ...s.multiplayer,
+        startHandshake: null,
+      },
+      ui: { ...s.ui, screen: 'game', lobbyOpen: false },
+    }));
+  },
+
   resetGame: () => {
+    clearStartGameHandshakeTimer();
     set({
       game: createEmptyGameState(get().game.config),
       ui: { ...DEFAULT_UI, lobbyOpen: true },
+      multiplayer: { ...get().multiplayer, startHandshake: null },
     });
   },
 

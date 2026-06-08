@@ -72,6 +72,33 @@ interface HostMigrationNotice {
   peers: Record<string, RoomPresence>;
 }
 
+export interface StartGamePrepare {
+  id: string;
+  hostPeerId: string;
+  game: GameState;
+  requiredPeerIds: string[];
+  createdAt: number;
+  deadlineAt: number;
+}
+
+export interface StartGameAck {
+  id: string;
+  peerId: string;
+  seatIndex: number;
+  deckId?: string;
+  ready: boolean;
+  reason?: string;
+  receivedAt: number;
+}
+
+export interface StartGameCommit {
+  id: string;
+  game: GameState;
+  fallback: boolean;
+  missingPeerIds: string[];
+  committedAt: number;
+}
+
 export interface RoomMeta {
   roomCode: string;
   hostId: string;
@@ -154,6 +181,9 @@ const _peers: Map<string, RoomPresence> = new Map();
 let _onGameUpdate: ((game: GameState) => void) | null = null;
 let _onPresenceUpdate: ((players: Record<string, RoomPresence>) => void) | null = null;
 let _onStatusChange: ((status: SyncStatus) => void) | null = null;
+let _onStartPrepare: ((prepare: StartGamePrepare) => void) | null = null;
+let _onStartAck: ((ack: StartGameAck) => void) | null = null;
+let _onStartCommit: ((commit: StartGameCommit) => void) | null = null;
 
 type SyncMessage =
   | { type: 'PRESENCE'; payload: RoomPresence }
@@ -162,6 +192,9 @@ type SyncMessage =
   | { type: 'HOST_MIGRATION'; payload: HostMigrationNotice }
   | { type: 'LEAVE_ROOM'; payload: { peerId: string } }
   | { type: 'KICKED'; payload: { reason: string } }
+  | { type: 'START_GAME_PREPARE'; payload: StartGamePrepare }
+  | { type: 'START_GAME_ACK'; payload: StartGameAck }
+  | { type: 'START_GAME_COMMIT'; payload: StartGameCommit }
   | { type: 'PING'; payload: { sentAt: number } }
   | { type: 'PONG'; payload: { sentAt: number } };
 
@@ -193,6 +226,9 @@ function parseSyncMessage(raw: unknown): SyncMessage | null {
     'HOST_MIGRATION',
     'LEAVE_ROOM',
     'KICKED',
+    'START_GAME_PREPARE',
+    'START_GAME_ACK',
+    'START_GAME_COMMIT',
     'PING',
     'PONG',
   ].includes(msg.type)) return null;
@@ -538,6 +574,9 @@ async function pollFirebaseRoom(): Promise<void> {
         _firebaseSeenMessages.set(peerId, entry.updatedAt ?? Date.now());
         if (entry.message.type === 'GAME_STATE') {
           changed = applyFirebaseGameFromPeer(peerId, entry.message.payload) || changed;
+        }
+        if (entry.message.type === 'START_GAME_ACK') {
+          _onStartAck?.(entry.message.payload);
         }
         if (entry.message.type === 'LEAVE_ROOM') {
           const p = _peers.get(peerId);
@@ -927,10 +966,16 @@ export function initMultiplayer(
   onGameUpdate: (game: GameState) => void,
   onPresenceUpdate: (players: Record<string, RoomPresence>) => void,
   onStatusChange: (status: SyncStatus) => void,
+  onStartPrepare?: (prepare: StartGamePrepare) => void,
+  onStartAck?: (ack: StartGameAck) => void,
+  onStartCommit?: (commit: StartGameCommit) => void,
 ): void {
   _onGameUpdate = onGameUpdate;
   _onPresenceUpdate = onPresenceUpdate;
   _onStatusChange = onStatusChange;
+  _onStartPrepare = onStartPrepare ?? null;
+  _onStartAck = onStartAck ?? null;
+  _onStartCommit = onStartCommit ?? null;
 }
 
 // ─── Accessors ────────────────────────────────────────────────────────────────
@@ -1007,6 +1052,9 @@ function attachHostConnectionHandlers(peer: Peer): void {
       if (msg.type === 'GAME_STATE') {
         const game = msg.payload as GameState;
         applyIncomingGameFromPeer(conn, game);
+      }
+      if (msg.type === 'START_GAME_ACK') {
+        _onStartAck?.(msg.payload as StartGameAck);
       }
       if (msg.type === 'PING') {
         const payload = msg.payload as { sentAt?: number } | undefined;
@@ -1161,6 +1209,16 @@ function handleJoinerMessage(conn: DataConnection, raw: unknown): void {
     if (_latestGame) _onGameUpdate?.(_latestGame);
   }
 
+  if (msg.type === 'START_GAME_PREPARE') {
+    _onStartPrepare?.(msg.payload as StartGamePrepare);
+  }
+
+  if (msg.type === 'START_GAME_COMMIT') {
+    const commit = msg.payload as StartGameCommit;
+    _latestGame = commit.game;
+    _onStartCommit?.(commit);
+  }
+
   if (msg.type === 'HOST_MIGRATION') {
     const notice = msg.payload as HostMigrationNotice;
     _latestGame = notice.game;
@@ -1282,6 +1340,9 @@ export async function createRoom(
         if (msg.type === 'GAME_STATE') {
           const game = msg.payload as GameState;
           applyIncomingGameFromPeer(conn, game);
+        }
+        if (msg.type === 'START_GAME_ACK') {
+          _onStartAck?.(msg.payload as StartGameAck);
         }
         if (msg.type === 'PING') {
           const payload = msg.payload as { sentAt?: number } | undefined;
@@ -1416,6 +1477,16 @@ export async function joinRoom(
           _onGameUpdate?.(_latestGame);
         }
 
+        if (msg.type === 'START_GAME_PREPARE') {
+          _onStartPrepare?.(msg.payload as StartGamePrepare);
+        }
+
+        if (msg.type === 'START_GAME_COMMIT') {
+          const commit = msg.payload as StartGameCommit;
+          _latestGame = commit.game;
+          _onStartCommit?.(commit);
+        }
+
         if (msg.type === 'PONG') {
           const payload = msg.payload as { sentAt?: number } | undefined;
           if (typeof payload?.sentAt === 'number' && _peerId) {
@@ -1467,6 +1538,39 @@ export async function joinRoom(
 }
 
 // ─── Broadcast state (host → all joiners) ─────────────────────────────────────
+
+export function sendStartGamePrepare(prepare: StartGamePrepare): void {
+  if (!_isHost) return;
+  if (_transportMode === 'firebase') {
+    return;
+  }
+  const msg: SyncMessage = { type: 'START_GAME_PREPARE', payload: prepare };
+  for (const conn of _connections.values()) {
+    if (conn.open) sendMessage(conn, msg);
+  }
+}
+
+export function sendStartGameAck(ack: StartGameAck): void {
+  const msg: SyncMessage = { type: 'START_GAME_ACK', payload: ack };
+  if (_transportMode === 'firebase') {
+    void writeFirebaseMessage(msg);
+    return;
+  }
+  if (_hostConn?.open) sendMessage(_hostConn, msg);
+}
+
+export function sendStartGameCommit(commit: StartGameCommit): void {
+  _latestGame = commit.game;
+  const msg: SyncMessage = { type: 'START_GAME_COMMIT', payload: commit };
+  if (_transportMode === 'firebase') {
+    if (_isHost) void writeFirebaseRoomSnapshot();
+    return;
+  }
+  if (!_isHost) return;
+  for (const conn of _connections.values()) {
+    if (conn.open) sendMessage(conn, msg);
+  }
+}
 
 export function broadcastState(game: GameState): void {
   _latestGame = game;
