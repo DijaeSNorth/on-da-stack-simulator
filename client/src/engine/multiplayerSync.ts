@@ -613,7 +613,7 @@ export async function createRoom(
 export async function joinRoom(
   code: string,
   presence: Omit<RoomPresence, 'online' | 'lastSeen'>,
-): Promise<{ game: GameState; hostId: string; isSpectator: boolean; seatIndex: number }> {
+): Promise<{ game: GameState | null; hostId: string; isSpectator: boolean; seatIndex: number }> {
   setStatus('connecting');
   _isHost = false;
   _roomCode = code.toUpperCase().trim();
@@ -623,6 +623,7 @@ export async function joinRoom(
   return new Promise((resolve, reject) => {
     const peer = new Peer(PEER_CONFIG);
     _peer = peer;
+    let receivedGame: GameState | null = null;
 
     const timeout = setTimeout(() => {
       peer.destroy();
@@ -673,6 +674,7 @@ export async function joinRoom(
           // First PRESENCE_BROADCAST resolves the join promise
           // We detect our own spectator status from what the host assigned us
           const myEntry = players[_peerId!];
+          if (!myEntry) return;
           const isSpectator = myEntry?.isSpectator ?? false;
           const assignedSeatIndex = myEntry?.seatIndex ?? presence.seatIndex;
 
@@ -684,7 +686,7 @@ export async function joinRoom(
             setStatus('joined');
             _startHeartbeat();
             resolve({
-              game: null as unknown as GameState, // store keeps existing state
+              game: receivedGame,
               hostId: hostPeerId(_roomCode!),
               isSpectator,
               seatIndex: assignedSeatIndex,
@@ -694,6 +696,7 @@ export async function joinRoom(
 
         if (msg.type === 'GAME_STATE') {
           _latestGame = msg.payload as GameState;
+          receivedGame = _latestGame;
           _onGameUpdate?.(_latestGame);
         }
 

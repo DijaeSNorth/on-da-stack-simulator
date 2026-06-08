@@ -610,6 +610,40 @@ function sameHandMembers(current: string[], proposed: string[]): boolean {
   return proposed.every(id => currentSet.has(id)) && new Set(proposed).size === proposed.length;
 }
 
+export function syncGamePlayerMetadataFromPresence(game: GameState, peers: Record<string, RoomPresence>): GameState {
+  const seatedPeers = Object.values(peers)
+    .filter(peer => peer.online && !peer.isSpectator && peer.seatIndex >= 0 && peer.seatIndex < game.players.length)
+    .sort((a, b) => a.seatIndex - b.seatIndex);
+  if (seatedPeers.length === 0) return game;
+
+  let changed = false;
+  const players = game.players.map(player => player);
+  for (const peer of seatedPeers) {
+    const player = players[peer.seatIndex];
+    if (!player) continue;
+    const nextPlayer = {
+      ...player,
+      name: peer.name,
+      color: peer.color,
+      avatarInitial: peer.avatarInitial ?? player.avatarInitial,
+      avatarStyle: peer.avatarStyle ?? player.avatarStyle,
+      avatarImage: peer.avatarImage ?? player.avatarImage,
+    };
+    if (
+      nextPlayer.name !== player.name ||
+      nextPlayer.color !== player.color ||
+      nextPlayer.avatarInitial !== player.avatarInitial ||
+      nextPlayer.avatarStyle !== player.avatarStyle ||
+      nextPlayer.avatarImage !== player.avatarImage
+    ) {
+      players[peer.seatIndex] = nextPlayer;
+      changed = true;
+    }
+  }
+
+  return changed ? { ...game, players } : game;
+}
+
 export const useGameStore = create<GameStore>()((set, get) => ({
   game: createEmptyGameState(createDefaultGameConfig(4)),
   ui: DEFAULT_UI,
@@ -623,21 +657,24 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     initMultiplayer(
       // onGameUpdate — remote peer pushed a new GameState
       (game: GameState) => {
-        // Only apply remote update if it's newer than ours
-        if (game.lastUpdatedAt > get().game.lastUpdatedAt) {
+        const status = get().multiplayer.status;
+        const remoteHostStateIsAuthoritative = status === 'connecting' || status === 'joined' || status === 'migrating';
+        if (remoteHostStateIsAuthoritative || game.lastUpdatedAt > get().game.lastUpdatedAt) {
           set({ game });
         }
       },
       // onPresenceUpdate — someone joined/left
       (peers: Record<string, RoomPresence>) => {
         set(s => {
+          const game = syncGamePlayerMetadataFromPresence(s.game, peers);
           const self = s.multiplayer.peerId ? peers[s.multiplayer.peerId] : undefined;
           const localPlayerId = self
             ? self.isSpectator
               ? ''
-              : (s.game.players[self.seatIndex]?.id ?? s.localPlayerId)
+              : (game.players[self.seatIndex]?.id ?? s.localPlayerId)
             : s.localPlayerId;
           return {
+            game,
             localPlayerId,
             multiplayer: {
               ...s.multiplayer,

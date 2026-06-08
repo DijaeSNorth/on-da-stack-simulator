@@ -4,7 +4,7 @@
  * Run with: npx tsx tests/multiplayer-role-store.test.ts
  */
 
-import { useGameStore } from '../client/src/store/gameStore';
+import { syncGamePlayerMetadataFromPresence, useGameStore } from '../client/src/store/gameStore';
 import { createDefaultGameConfig, createEmptyGameState, createPlayer } from '../client/src/engine/gameEngine';
 import type { GameState } from '../client/src/types/game';
 import type { RoomPresence } from '../client/src/engine/multiplayerSync';
@@ -73,4 +73,23 @@ assert(!state.multiplayer.peers['peer-local'].isSpectator, 'expected local prese
 assert(state.multiplayer.peers['peer-local'].seatIndex === 1, 'expected player role to claim selected seat');
 assert(state.localPlayerId === 'p2', 'expected player role to resolve the selected game player id');
 
-console.log('PASS multiplayer role switching keeps player and spectator mutually exclusive');
+const baseSyncGame = makeGame();
+const syncedGame = syncGamePlayerMetadataFromPresence({
+  ...baseSyncGame,
+  players: baseSyncGame.players.map((player, index) => index === 1 ? {
+    ...player,
+    deckId: 'deck-guest',
+    library: ['card-1'],
+  } : player),
+}, {
+  host: { ...makePresence('host', 0), name: 'Host Profile', color: '#22c55e' },
+  guest: { ...makePresence('guest', 1), name: 'Guest Profile', color: '#f59e0b', avatarInitial: 'G' },
+});
+assert(syncedGame.players[1].id === 'p2', 'presence sync must preserve the authoritative seat player id');
+assert(syncedGame.players[1].deckId === 'deck-guest', 'presence sync must preserve loaded deck state');
+assert(syncedGame.players[1].library.length === 1, 'presence sync must preserve loaded library');
+assert(syncedGame.players[1].name === 'Guest Profile', 'presence sync should update seat display name');
+assert(syncedGame.players[1].color === '#f59e0b', 'presence sync should update seat color');
+assert(syncedGame.lastUpdatedAt === baseSyncGame.lastUpdatedAt, 'presence sync should not change the game clock');
+
+console.log('PASS multiplayer role switching and presence seat metadata sync');
