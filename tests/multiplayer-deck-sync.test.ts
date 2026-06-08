@@ -106,11 +106,37 @@ for (const playerCount of [2, 3, 4] as const) {
     assert(merged!.cards[remoteDeckCards[targetSeat].instanceId].ownerId === `p${targetSeat + 1}`, `expected ${playerCount}p seat ${targetSeat + 1} cards to remap to host player id`);
     assert(!merged!.cards[hostDeckCards[targetSeat].instanceId], `expected ${playerCount}p seat ${targetSeat + 1} stale deck cards to be replaced`);
 
+    const remoteClearedGame = {
+      ...remoteGame,
+      players: remoteGame.players.map((player, index) => index === targetSeat ? {
+        ...player,
+        deckId: undefined,
+        library: [],
+        hand: [],
+        battlefield: [],
+        graveyard: [],
+        exile: [],
+        commandZone: [],
+        sideboard: [],
+        maybeboard: [],
+        commanders: [],
+      } : player),
+      cards: {},
+    };
+    const cleared = mergeRemoteSeatDeckState(merged!, remoteClearedGame, presence(`peer-seat-${targetSeat + 1}`, targetSeat));
+    assert(cleared !== null, `expected ${playerCount}p seat ${targetSeat + 1} deck clear to merge`);
+    assert(cleared!.players[targetSeat].deckId === undefined, `expected ${playerCount}p seat ${targetSeat + 1} deck id to clear`);
+    assert(cleared!.players[targetSeat].library.length === 0, `expected ${playerCount}p seat ${targetSeat + 1} library to clear`);
+    assert(!cleared!.cards[remoteDeckCards[targetSeat].instanceId], `expected ${playerCount}p seat ${targetSeat + 1} loaded cards to be removed after clear`);
+
     for (let otherSeat = 0; otherSeat < playerCount; otherSeat += 1) {
       if (otherSeat === targetSeat) continue;
       assert(merged!.players[otherSeat].deckId === `old-deck-seat-${otherSeat + 1}`, `expected ${playerCount}p seat ${otherSeat + 1} deck to remain unchanged`);
       assert(merged!.players[otherSeat].library[0] === hostDeckCards[otherSeat].instanceId, `expected ${playerCount}p seat ${otherSeat + 1} library to remain unchanged`);
       assert(merged!.cards[hostDeckCards[otherSeat].instanceId].ownerId === `p${otherSeat + 1}`, `expected ${playerCount}p seat ${otherSeat + 1} cards to remain in state`);
+      assert(cleared!.players[otherSeat].deckId === `old-deck-seat-${otherSeat + 1}`, `expected ${playerCount}p seat ${otherSeat + 1} deck to remain unchanged after clear`);
+      assert(cleared!.players[otherSeat].library[0] === hostDeckCards[otherSeat].instanceId, `expected ${playerCount}p seat ${otherSeat + 1} library to remain unchanged after clear`);
+      assert(cleared!.cards[hostDeckCards[otherSeat].instanceId].ownerId === `p${otherSeat + 1}`, `expected ${playerCount}p seat ${otherSeat + 1} cards to remain after clear`);
     }
   }
 }

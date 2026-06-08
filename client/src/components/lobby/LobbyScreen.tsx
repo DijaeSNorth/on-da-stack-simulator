@@ -116,6 +116,9 @@ export function LobbyScreen() {
   const localPresence = store.multiplayer.peerId ? store.multiplayer.peers[store.multiplayer.peerId] : undefined;
   const localSeatIndex = gameMode === 'table' && localPresence && localPresence.seatIndex >= 0 ? localPresence.seatIndex : 0;
   const setupPlayerIndex = gameMode === 'solo' ? activePlayerTab : localSeatIndex;
+  const localTablePlayerId = gameMode === 'table' && localPresence && !localPresence.isSpectator && localPresence.seatIndex >= 0
+    ? resolveSeatPlayerId(localPresence.seatIndex, store.game.players, players)
+    : '';
   const activeSeat = players[setupPlayerIndex] ?? players[0];
   const activeGamePlayer = gameMode === 'table' ? store.game.players[setupPlayerIndex] : undefined;
   const activeSetupPlayer = activeSeat ? {
@@ -202,7 +205,7 @@ export function LobbyScreen() {
 
   async function assignDeckToPlayer(deck: Deck) {
     const targetPlayerId = gameMode === 'table'
-      ? store.localPlayerId || resolveSeatPlayerId(setupPlayerIndex, store.game.players, players)
+      ? localTablePlayerId || store.localPlayerId || resolveSeatPlayerId(setupPlayerIndex, store.game.players, players)
       : activeSetupPlayer?.id ?? '';
     if (!targetPlayerId || isLocalSpectator) {
       setImportError('Switch to Player before assigning a deck.');
@@ -219,7 +222,7 @@ export function LobbyScreen() {
 
   function toggleDeckForPlayer(deck: Deck) {
     const targetPlayerId = gameMode === 'table'
-      ? store.localPlayerId || resolveSeatPlayerId(setupPlayerIndex, store.game.players, players)
+      ? localTablePlayerId || store.localPlayerId || resolveSeatPlayerId(setupPlayerIndex, store.game.players, players)
       : activeSetupPlayer?.id ?? '';
     if (!targetPlayerId || isLocalSpectator) {
       setImportError('Switch to Player before assigning a deck.');

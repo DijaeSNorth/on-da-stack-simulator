@@ -716,6 +716,55 @@ function playerHasLoadedDeck(player?: Player): boolean {
   return Boolean(player?.deckId && ((player.library?.length ?? 0) > 0 || (player.commandZone?.length ?? 0) > 0));
 }
 
+function clearHostSeatDeckState(hostGame: GameState, presence: RoomPresence): GameState | null {
+  if (hostGame.status !== 'lobby') return null;
+  const hostPlayer = hostGame.players[presence.seatIndex];
+  if (!hostPlayer || !playerHasLoadedDeck(hostPlayer)) return null;
+
+  const ownedCardIds = new Set([
+    ...hostPlayer.library,
+    ...hostPlayer.hand,
+    ...hostPlayer.battlefield,
+    ...hostPlayer.graveyard,
+    ...hostPlayer.exile,
+    ...hostPlayer.sideboard,
+    ...hostPlayer.maybeboard,
+    ...hostPlayer.commandZone,
+    ...hostPlayer.commanders,
+  ]);
+  const cards = Object.fromEntries(
+    Object.entries(hostGame.cards).filter(([id, card]) => (
+      !ownedCardIds.has(id) &&
+      card.ownerId !== hostPlayer.id &&
+      card.controllerId !== hostPlayer.id
+    )),
+  );
+  const players = hostGame.players.map((player, index) => index === presence.seatIndex ? {
+    ...hostPlayer,
+    deckId: undefined,
+    commanders: [],
+    commanderDamage: {},
+    commanderCastCount: {},
+    hand: [],
+    library: [],
+    battlefield: [],
+    graveyard: [],
+    exile: [],
+    sideboard: [],
+    maybeboard: [],
+    commandZone: [],
+  } : player);
+
+  return {
+    ...hostGame,
+    players,
+    cards,
+    stack: hostGame.stack.filter(item => !ownedCardIds.has(item.sourceInstanceId ?? '')),
+    triggerQueue: hostGame.triggerQueue.filter(trigger => !ownedCardIds.has(trigger.sourceInstanceId ?? '')),
+    lastUpdatedAt: Date.now(),
+  };
+}
+
 function remapCardOwner(card: CardState, remotePlayerId: string, hostPlayerId: string): CardState {
   if (remotePlayerId === hostPlayerId) return card;
   return {
@@ -737,7 +786,7 @@ export function mergeRemoteSeatDeckState(
 
   const remotePlayer = remoteGame.players.find(player => player.id === hostPlayer.id)
     ?? remoteGame.players[presence.seatIndex];
-  if (!playerHasLoadedDeck(remotePlayer)) return null;
+  if (!playerHasLoadedDeck(remotePlayer)) return clearHostSeatDeckState(hostGame, presence);
 
   const remotePlayerId = remotePlayer.id;
   const hostPlayerId = hostPlayer.id;
