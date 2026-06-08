@@ -763,7 +763,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const requestedSeatIndex = asSpectator ? -1 : Math.max(0, seatIndex);
     const current = get();
     const requestedPlayerId = current.game.players[requestedSeatIndex]?.id ?? '';
-    const { game: remoteGame, isSpectator, seatIndex: assignedSeatIndex } = await joinRoom(code, {
+    const { game: remoteGame, peerId: joinedPeerId, isSpectator, seatIndex: assignedSeatIndex } = await joinRoom(code, {
       peerId,
       name: peerName,
       color: peerColor,
@@ -789,7 +789,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         ...s.multiplayer,
         status: 'joined',
         roomCode: code.toUpperCase(),
-        peerId,
+        peerId: joinedPeerId,
         isHost: false,
         isSpectator,
         configured: true,

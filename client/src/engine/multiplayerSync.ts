@@ -190,6 +190,13 @@ function parseSyncMessage(raw: unknown): SyncMessage | null {
   return msg as SyncMessage;
 }
 
+export function canonicalizeJoinPresence(
+  peerId: string,
+  presence: Omit<RoomPresence, 'online' | 'lastSeen'>,
+): Omit<RoomPresence, 'online' | 'lastSeen'> {
+  return { ...presence, peerId };
+}
+
 function getDataChannel(conn: DataConnection): RTCDataChannel | undefined {
   return (conn as DataConnection & { dataChannel?: RTCDataChannel }).dataChannel;
 }
@@ -586,7 +593,7 @@ async function createFirebaseRoom(
 async function joinFirebaseRoom(
   code: string,
   presence: Omit<RoomPresence, 'online' | 'lastSeen'>,
-): Promise<{ game: GameState | null; hostId: string; isSpectator: boolean; seatIndex: number }> {
+): Promise<{ game: GameState | null; hostId: string; peerId: string; isSpectator: boolean; seatIndex: number }> {
   const roomCode = code.toUpperCase().trim();
   const room = await firebaseRequest<FirebaseRoomRelay | null>(firebaseRoomPath(roomCode), 'GET');
   if (!room) throw new Error(`Room ${roomCode} not found in Firebase fallback.`);
@@ -616,6 +623,7 @@ async function joinFirebaseRoom(
   return {
     game: room.game,
     hostId: room.hostId,
+    peerId: _peerId,
     isSpectator: assignment.isSpectator,
     seatIndex: assignment.seatIndex,
   };
@@ -1299,7 +1307,7 @@ export async function createRoom(
 export async function joinRoom(
   code: string,
   presence: Omit<RoomPresence, 'online' | 'lastSeen'>,
-): Promise<{ game: GameState | null; hostId: string; isSpectator: boolean; seatIndex: number }> {
+): Promise<{ game: GameState | null; hostId: string; peerId: string; isSpectator: boolean; seatIndex: number }> {
   setStatus('connecting');
   _transportMode = 'peerjs';
   _isHost = false;
@@ -1315,7 +1323,7 @@ export async function joinRoom(
     const timeout = setTimeout(() => {
       peer.destroy();
       if (isFirebaseFallbackConfigured()) {
-        joinFirebaseRoom(_roomCode!, presence).then(resolve).catch(reject);
+        joinFirebaseRoom(_roomCode!, { ...presence, peerId: _peerId ?? presence.peerId }).then(resolve).catch(reject);
       } else {
         setStatus('error');
         reject(new Error(`Could not reach room ${_roomCode}. Check the code and try again.`));
@@ -1323,6 +1331,8 @@ export async function joinRoom(
     }, CONNECT_TIMEOUT_MS);
 
     peer.on('open', () => {
+      _peerId = peer.id;
+      const actualPresence = canonicalizeJoinPresence(peer.id, presence);
       const conn = peer.connect(hostPeerId(_roomCode!), {
         reliable: true,
         serialization: 'json',
@@ -1333,7 +1343,7 @@ export async function joinRoom(
       conn.on('open', () => {
         clearTimeout(timeout);
         // Send our presence to the host
-        sendMessage(conn, { type: 'PRESENCE', payload: { ...presence, online: true, lastSeen: Date.now() } });
+        sendMessage(conn, { type: 'PRESENCE', payload: { ...actualPresence, online: true, lastSeen: Date.now() } });
       });
 
       conn.on('data', (raw: unknown) => {
@@ -1369,7 +1379,7 @@ export async function joinRoom(
           const myEntry = players[_peerId!];
           if (!myEntry) return;
           const isSpectator = myEntry?.isSpectator ?? false;
-          const assignedSeatIndex = myEntry?.seatIndex ?? presence.seatIndex;
+          const assignedSeatIndex = myEntry?.seatIndex ?? actualPresence.seatIndex;
 
           // We don't get a full GameState here yet — the host will
           // broadcastState() on the next game action. Resolve with empty
@@ -1381,6 +1391,7 @@ export async function joinRoom(
             resolve({
               game: receivedGame,
               hostId: hostPeerId(_roomCode!),
+              peerId: _peerId!,
               isSpectator,
               seatIndex: assignedSeatIndex,
             });

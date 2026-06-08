@@ -4,7 +4,7 @@
  * Run with: npx tsx tests/automatic-seat-assignment.test.ts
  */
 
-import { chooseAutomaticSeat, pruneDuplicatePeerPresence, type RoomPresence } from '../client/src/engine/multiplayerSync';
+import { canonicalizeJoinPresence, chooseAutomaticSeat, pruneDuplicatePeerPresence, type RoomPresence } from '../client/src/engine/multiplayerSync';
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -36,6 +36,11 @@ assert(fillsLowestOpen.seatIndex === 1, 'expected automatic assignment to fill t
 const spectator = chooseAutomaticSeat(peers, 4, presence('newSpectator', -1, true));
 assert(spectator.isSpectator, 'expected spectator request to stay spectator');
 assert(spectator.seatIndex === -1, 'expected spectator to have no seat');
+
+const temporaryJoinPresence = presence('temporary-local-id', 0);
+const canonicalJoinPresence = canonicalizeJoinPresence('peerjs-connection-id', temporaryJoinPresence);
+assert(canonicalJoinPresence.peerId === 'peerjs-connection-id', 'expected joiner presence to use the canonical PeerJS connection id');
+assert(canonicalJoinPresence.seatIndex === temporaryJoinPresence.seatIndex, 'expected canonical presence to preserve requested role/seat data');
 
 const fullTable = chooseAutomaticSeat({
   seat0: presence('seat0', 0),
