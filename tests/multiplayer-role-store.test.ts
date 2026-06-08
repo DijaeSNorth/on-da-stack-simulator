@@ -1,0 +1,76 @@
+/**
+ * Multiplayer role store regression checks.
+ *
+ * Run with: npx tsx tests/multiplayer-role-store.test.ts
+ */
+
+import { useGameStore } from '../client/src/store/gameStore';
+import { createDefaultGameConfig, createEmptyGameState, createPlayer } from '../client/src/engine/gameEngine';
+import type { GameState } from '../client/src/types/game';
+import type { RoomPresence } from '../client/src/engine/multiplayerSync';
+
+function assert(condition: boolean, message: string): void {
+  if (!condition) throw new Error(message);
+}
+
+function makePresence(peerId: string, seatIndex: number, isSpectator = false): RoomPresence {
+  return {
+    peerId,
+    name: peerId,
+    color: '#3b82f6',
+    seatIndex,
+    isSpectator,
+    online: true,
+    lastSeen: Date.now(),
+  };
+}
+
+function makeGame(): GameState {
+  const config = createDefaultGameConfig(2);
+  const game = createEmptyGameState(config);
+  const players = [
+    createPlayer('p1', 'Player 1', 0, '#3b82f6', config),
+    createPlayer('p2', 'Player 2', 1, '#ef4444', config),
+  ];
+  return {
+    ...game,
+    players,
+    activePlayerId: 'p1',
+    priorityPlayerId: 'p1',
+  };
+}
+
+useGameStore.setState(state => ({
+  ...state,
+  game: makeGame(),
+  localPlayerId: 'p2',
+  multiplayer: {
+    ...state.multiplayer,
+    status: 'joined',
+    roomCode: 'ABC123',
+    peerId: 'peer-local',
+    isHost: false,
+    isSpectator: false,
+    peers: {
+      host: makePresence('host', 0),
+      'peer-local': makePresence('peer-local', 1),
+    },
+    configured: true,
+  },
+}));
+
+useGameStore.getState().updateMultiplayerPresence({ isSpectator: true, seatIndex: -1 });
+let state = useGameStore.getState();
+assert(state.multiplayer.isSpectator, 'expected local multiplayer flag to switch to spectator');
+assert(state.multiplayer.peers['peer-local'].isSpectator, 'expected local presence to switch to spectator');
+assert(state.multiplayer.peers['peer-local'].seatIndex === -1, 'expected spectator to release their seat');
+assert(state.localPlayerId === '', 'expected spectator to have no local player id');
+
+useGameStore.getState().updateMultiplayerPresence({ isSpectator: false, seatIndex: 1 });
+state = useGameStore.getState();
+assert(!state.multiplayer.isSpectator, 'expected local multiplayer flag to switch back to player');
+assert(!state.multiplayer.peers['peer-local'].isSpectator, 'expected local presence to switch back to player');
+assert(state.multiplayer.peers['peer-local'].seatIndex === 1, 'expected player role to claim selected seat');
+assert(state.localPlayerId === 'p2', 'expected player role to resolve the selected game player id');
+
+console.log('PASS multiplayer role switching keeps player and spectator mutually exclusive');

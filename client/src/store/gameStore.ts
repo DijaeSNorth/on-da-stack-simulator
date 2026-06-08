@@ -189,6 +189,7 @@ export interface GameStore {
     hostColor: string,
     seatIndex: number,
     avatar?: { initial?: string; style?: Player['avatarStyle']; image?: PlayerAvatarImage },
+    asSpectator?: boolean,
   ) => Promise<string>;
   joinMultiplayerRoom: (
     code: string,
@@ -196,10 +197,12 @@ export interface GameStore {
     peerColor: string,
     seatIndex: number,
     avatar?: { initial?: string; style?: Player['avatarStyle']; image?: PlayerAvatarImage },
+    asSpectator?: boolean,
   ) => Promise<void>;
   leaveMultiplayerRoom: () => void;
   setMultiplayerStatus: (status: SyncStatus) => void;
   setMultiplayerPeers: (peers: Record<string, RoomPresence>) => void;
+  updateMultiplayerPresence: (fields: Partial<RoomPresence>) => void;
 
   initGame: (config: GameConfig, players: {
     id: string;
@@ -626,7 +629,22 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       },
       // onPresenceUpdate — someone joined/left
       (peers: Record<string, RoomPresence>) => {
-        set(s => ({ multiplayer: { ...s.multiplayer, peers } }));
+        set(s => {
+          const self = s.multiplayer.peerId ? peers[s.multiplayer.peerId] : undefined;
+          const localPlayerId = self
+            ? self.isSpectator
+              ? ''
+              : (s.game.players[self.seatIndex]?.id ?? s.localPlayerId)
+            : s.localPlayerId;
+          return {
+            localPlayerId,
+            multiplayer: {
+              ...s.multiplayer,
+              peers,
+              isSpectator: self?.isSpectator ?? s.multiplayer.isSpectator,
+            },
+          };
+        });
       },
       // onStatusChange
       (status: SyncStatus) => {
@@ -641,9 +659,10 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     );
   },
 
-  createMultiplayerRoom: async (hostName, hostColor, seatIndex, avatar) => {
+  createMultiplayerRoom: async (hostName, hostColor, seatIndex, avatar, asSpectator = false) => {
     const { game } = get();
     const peerId = crypto.randomUUID();
+    const assignedSeatIndex = asSpectator ? -1 : Math.max(0, seatIndex);
     const code = await createRoom(game, {
       peerId,
       name: hostName,
@@ -651,34 +670,36 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       avatarInitial: avatar?.initial,
       avatarStyle: avatar?.style,
       avatarImage: avatar?.image,
-      seatIndex,
-      isSpectator: false,
+      seatIndex: assignedSeatIndex,
+      isSpectator: asSpectator,
     });
     set(s => ({
-      localPlayerId: game.players[seatIndex]?.id ?? game.players[0]?.id ?? '',
+      localPlayerId: asSpectator ? '' : (game.players[assignedSeatIndex]?.id ?? game.players[0]?.id ?? ''),
       multiplayer: {
         ...s.multiplayer,
         status: 'host',
         roomCode: code,
         peerId,
         isHost: true,
+        isSpectator: asSpectator,
         configured: true,
       },
     }));
     return code;
   },
 
-  joinMultiplayerRoom: async (code, peerName, peerColor, seatIndex, avatar) => {
+  joinMultiplayerRoom: async (code, peerName, peerColor, seatIndex, avatar, asSpectator = false) => {
     const peerId = crypto.randomUUID();
-    const { game: remoteGame, isSpectator } = await joinRoom(code, {
+    const requestedSeatIndex = asSpectator ? -1 : Math.max(0, seatIndex);
+    const { game: remoteGame, isSpectator, seatIndex: assignedSeatIndex } = await joinRoom(code, {
       peerId,
       name: peerName,
       color: peerColor,
       avatarInitial: avatar?.initial,
       avatarStyle: avatar?.style,
       avatarImage: avatar?.image,
-      seatIndex,
-      isSpectator: false, // host decides; we send intent
+      seatIndex: requestedSeatIndex,
+      isSpectator: asSpectator,
     });
     // P2P: joinRoom returns null game — joiner keeps existing local state
     // until host broadcasts the authoritative state on next game action.
@@ -687,7 +708,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     // Spectators get no local player id — they observe only
     const playerId = isSpectator
       ? ''
-      : (resolvedGame.players[seatIndex]?.id ?? resolvedGame.players[0]?.id ?? '');
+      : (resolvedGame.players[assignedSeatIndex]?.id ?? resolvedGame.players[0]?.id ?? '');
     set(s => ({
       game: resolvedGame,
       localPlayerId: playerId,
@@ -715,6 +736,37 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
   setMultiplayerPeers: (peers) =>
     set(s => ({ multiplayer: { ...s.multiplayer, peers } })),
+
+  updateMultiplayerPresence: (fields) => {
+    updatePresence(fields);
+    set(s => {
+      const peerId = s.multiplayer.peerId;
+      const existing = peerId ? s.multiplayer.peers[peerId] : undefined;
+      if (!peerId || !existing) return s;
+      const nextSelf: RoomPresence = {
+        ...existing,
+        ...fields,
+        isSpectator: fields.isSpectator ?? existing.isSpectator,
+        seatIndex: fields.isSpectator ? -1 : (fields.seatIndex ?? existing.seatIndex),
+        online: true,
+        lastSeen: Date.now(),
+      };
+      const localPlayerId = nextSelf.isSpectator
+        ? ''
+        : (s.game.players[nextSelf.seatIndex]?.id ?? s.localPlayerId);
+      return {
+        localPlayerId,
+        multiplayer: {
+          ...s.multiplayer,
+          isSpectator: nextSelf.isSpectator,
+          peers: {
+            ...s.multiplayer.peers,
+            [peerId]: nextSelf,
+          },
+        },
+      };
+    });
+  },
 
   // ── Init ────────────────────────────────────────────────────────
 

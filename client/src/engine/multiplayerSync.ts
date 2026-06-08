@@ -223,6 +223,31 @@ export function getSyncStatus(): SyncStatus  { return _status; }
 /** Always true — P2P needs no env vars or server config */
 export function isConfigured(): boolean { return true; }
 
+export function chooseAutomaticSeat(
+  peers: Record<string, RoomPresence>,
+  seatCount: number,
+  presence: RoomPresence,
+): { isSpectator: boolean; seatIndex: number } {
+  if (presence.isSpectator) return { isSpectator: true, seatIndex: -1 };
+
+  const takenSeats = new Set(
+    Object.values(peers)
+      .filter(p => p.online && !p.isSpectator && p.peerId !== presence.peerId && p.seatIndex >= 0)
+      .map(p => p.seatIndex),
+  );
+  const resolvedSeatCount = seatCount > 0 ? seatCount : Math.max(0, ...takenSeats) + 1;
+  const seatIndex = Array.from({ length: resolvedSeatCount }, (_, index) => index)
+    .find(index => !takenSeats.has(index));
+
+  return typeof seatIndex === 'number'
+    ? { isSpectator: false, seatIndex }
+    : { isSpectator: true, seatIndex: -1 };
+}
+
+function autoAssignSeat(presence: RoomPresence): { isSpectator: boolean; seatIndex: number } {
+  return chooseAutomaticSeat(Object.fromEntries(_peers), _latestGame?.config.playerCount ?? 0, presence);
+}
+
 function attachHostConnectionHandlers(peer: Peer): void {
   peer.on('connection', (conn: DataConnection) => {
     _connections.set(conn.peer, conn);
@@ -236,26 +261,26 @@ function attachHostConnectionHandlers(peer: Peer): void {
       const msg = raw as { type: string; payload?: unknown };
       if (msg.type === 'PRESENCE') {
         const presence = msg.payload as RoomPresence;
-
-        const takenSeats = new Set(
-          [..._peers.values()]
-            .filter(p => p.online && !p.isSpectator && p.peerId !== presence.peerId)
-            .map(p => p.seatIndex),
-        );
-        const isSpectator =
-          presence.isSpectator ||
-          takenSeats.has(presence.seatIndex);
+        const assignment = autoAssignSeat(presence);
 
         _peers.set(presence.peerId, {
           ...presence,
           isHostPeer: false,
-          isSpectator,
-          seatIndex: isSpectator ? -1 : presence.seatIndex,
+          isSpectator: assignment.isSpectator,
+          seatIndex: assignment.seatIndex,
           online: true,
           lastSeen: Date.now(),
         });
 
         broadcastPresence();
+      }
+      if (msg.type === 'GAME_STATE') {
+        const game = msg.payload as GameState;
+        if (!_latestGame || game.lastUpdatedAt > _latestGame.lastUpdatedAt) {
+          _latestGame = game;
+          _onGameUpdate?.(game);
+          broadcastState(game);
+        }
       }
       if (msg.type === 'PING') {
         const payload = msg.payload as { sentAt?: number } | undefined;
@@ -438,7 +463,7 @@ export async function createRoom(
   _peers.set(_peerId, {
     ...hostPresence,
     isHostPeer: true,
-    isSpectator: false,
+    isSpectator: hostPresence.isSpectator,
     online: true,
     lastSeen: Date.now(),
   });
@@ -479,28 +504,26 @@ export async function createRoom(
         const msg = raw as { type: string; payload: unknown };
         if (msg.type === 'PRESENCE') {
           const presence = msg.payload as RoomPresence;
-
-          // Spectator detection: is the requested seat already taken?
-          const takenSeats = new Set(
-            [..._peers.values()]
-              .filter(p => p.online && !p.isSpectator && p.peerId !== presence.peerId)
-              .map(p => p.seatIndex),
-          );
-          const totalSeats = _peers.size; // rough — host knows its own count
-          const isSpectator =
-            presence.isSpectator ||
-            takenSeats.has(presence.seatIndex);
+          const assignment = autoAssignSeat(presence);
 
           _peers.set(presence.peerId, {
             ...presence,
             isHostPeer: false,
-            isSpectator,
-            seatIndex: isSpectator ? -1 : presence.seatIndex,
+            isSpectator: assignment.isSpectator,
+            seatIndex: assignment.seatIndex,
             online: true,
             lastSeen: Date.now(),
           });
 
           broadcastPresence();
+        }
+        if (msg.type === 'GAME_STATE') {
+          const game = msg.payload as GameState;
+          if (!_latestGame || game.lastUpdatedAt > _latestGame.lastUpdatedAt) {
+            _latestGame = game;
+            _onGameUpdate?.(game);
+            broadcastState(game);
+          }
         }
         if (msg.type === 'PING') {
           const payload = msg.payload as { sentAt?: number } | undefined;
@@ -539,7 +562,7 @@ export async function createRoom(
 export async function joinRoom(
   code: string,
   presence: Omit<RoomPresence, 'online' | 'lastSeen'>,
-): Promise<{ game: GameState; hostId: string; isSpectator: boolean }> {
+): Promise<{ game: GameState; hostId: string; isSpectator: boolean; seatIndex: number }> {
   setStatus('connecting');
   _isHost = false;
   _roomCode = code.toUpperCase().trim();
@@ -589,6 +612,7 @@ export async function joinRoom(
           // We detect our own spectator status from what the host assigned us
           const myEntry = players[_peerId!];
           const isSpectator = myEntry?.isSpectator ?? false;
+          const assignedSeatIndex = myEntry?.seatIndex ?? presence.seatIndex;
 
           // We don't get a full GameState here yet — the host will
           // broadcastState() on the next game action. Resolve with empty
@@ -601,6 +625,7 @@ export async function joinRoom(
               game: null as unknown as GameState, // store keeps existing state
               hostId: hostPeerId(_roomCode!),
               isSpectator,
+              seatIndex: assignedSeatIndex,
             });
           }
         }
@@ -657,8 +682,11 @@ export async function joinRoom(
 
 export function broadcastState(game: GameState): void {
   _latestGame = game;
-  if (!_isHost) return;
   const msg = { type: 'GAME_STATE', payload: game };
+  if (!_isHost) {
+    if (_hostConn?.open) _hostConn.send(msg);
+    return;
+  }
   for (const conn of _connections.values()) {
     if (conn.open) {
       conn.send(msg);

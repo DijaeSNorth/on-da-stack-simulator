@@ -12,16 +12,18 @@
 import { useState, useEffect } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import { getActiveProfile } from '../../engine/profileStorage';
+import { getTableDeckStatus } from '../../engine/lobbyReadiness';
 import { PlayerAvatar } from '../profile/PlayerAvatar';
 import type { PlayerAvatarImage } from '../../types/game';
 
 const DEFAULT_COLORS = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899'];
 
 type Mode = 'idle' | 'host' | 'join';
+type LobbyRole = 'player' | 'spectator';
 
 interface MultiplayerPanelProps {
   seatCount?: number;
-  seats?: { id: string; name: string }[];
+  seats?: { id: string; name: string; deckId?: string }[];
   onPrepareRoom?: () => void;
   onExitRoom?: () => void;
 }
@@ -36,7 +38,7 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
   const [avatarInitial, setAvatarInitial] = useState<string | undefined>();
   const [avatarStyle, setAvatarStyle] = useState<'solid' | 'gradient' | 'outline' | undefined>();
   const [avatarImage, setAvatarImage] = useState<PlayerAvatarImage | undefined>();
-  const [seatIndex, setSeatIndex] = useState(0);
+  const [role, setRole] = useState<LobbyRole>('player');
   const [joinCode, setJoinCode] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -45,7 +47,6 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
   const connected = multiplayer.status === 'host' || multiplayer.status === 'joined' || multiplayer.status === 'migrating';
   const isHost = multiplayer.status === 'host';
   const isMigrating = multiplayer.status === 'migrating';
-  const isSpectator = multiplayer.isSpectator;
 
   // Init listeners once
   useEffect(() => {
@@ -72,11 +73,11 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
     setBusy(true);
     try {
       onPrepareRoom?.();
-      await store.createMultiplayerRoom(peerName.trim(), peerColor, seatIndex, {
+      await store.createMultiplayerRoom(peerName.trim(), peerColor, role === 'spectator' ? -1 : 0, {
         initial: avatarInitial,
         style: avatarStyle,
         image: avatarImage,
-      });
+      }, role === 'spectator');
     } catch (e: any) {
       setError(e.message ?? 'Failed to create room');
     } finally {
@@ -90,11 +91,11 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
     if (!joinCode.trim()) { setError('Enter the room code.'); return; }
     setBusy(true);
     try {
-      await store.joinMultiplayerRoom(joinCode.trim(), peerName.trim(), peerColor, seatIndex, {
+      await store.joinMultiplayerRoom(joinCode.trim(), peerName.trim(), peerColor, role === 'spectator' ? -1 : 0, {
         initial: avatarInitial,
         style: avatarStyle,
         image: avatarImage,
-      });
+      }, role === 'spectator');
     } catch (e: any) {
       setError(e.message ?? 'Failed to join room');
     } finally {
@@ -120,12 +121,50 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
   }
 
   const peers = Object.values(multiplayer.peers);
-  const takenSeats = new Set(peers.map(p => p.seatIndex));
+  const localPeer = multiplayer.peerId ? multiplayer.peers[multiplayer.peerId] : undefined;
+  const isSpectator = localPeer?.isSpectator ?? multiplayer.isSpectator;
+  const takenSeats = new Set(
+    peers
+      .filter(p => p.peerId !== multiplayer.peerId && p.online && !p.isSpectator && p.seatIndex >= 0)
+      .map(p => p.seatIndex),
+  );
   const seatCount = configuredSeatCount ?? game.config.playerCount ?? game.players.length ?? 4;
   const seats = configuredSeats ?? Array.from({ length: seatCount }, (_, i) => ({
     id: game.players[i]?.id ?? `seat-${i}`,
     name: game.players[i]?.name ?? `Seat ${i + 1}`,
+    deckId: game.players[i]?.deckId,
   }));
+  const activeSeatIndex = localPeer && localPeer.seatIndex >= 0 ? localPeer.seatIndex : -1;
+  const deckStatusByPeer = new Map(
+    getTableDeckStatus({
+      peers: multiplayer.peers,
+      playerCount: seatCount,
+      seats,
+      gamePlayers: game.players,
+      savedDecks: store.decks,
+    }).map(status => [status.peer.peerId, status]),
+  );
+
+  function firstAvailableSeat(): number {
+    const openIndex = seats.findIndex((_, index) => !takenSeats.has(index));
+    return openIndex >= 0 ? openIndex : -1;
+  }
+
+  function switchToSpectator() {
+    setError('');
+    store.updateMultiplayerPresence({ isSpectator: true, seatIndex: -1 });
+  }
+
+  function switchToPlayer() {
+    setError('');
+    if (!isSpectator && activeSeatIndex >= 0) return;
+    const preferredSeat = firstAvailableSeat();
+    if (preferredSeat < 0) {
+      setError('No player seats are open. Stay as a spectator until someone leaves or changes role.');
+      return;
+    }
+    store.updateMultiplayerPresence({ isSpectator: false, seatIndex: preferredSeat });
+  }
 
   // ─── Connected state ──────────────────────────────────────────────────────
 
@@ -177,6 +216,15 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
             {peers.length === 0 ? (
               <div style={{ color: '#334155', fontSize: 12 }}>Waiting for players to join…</div>
             ) : peers.map(p => (
+              (() => {
+                const deckStatus = deckStatusByPeer.get(p.peerId);
+                const deckLabel = p.isSpectator
+                  ? 'No deck needed'
+                  : deckStatus?.ready
+                    ? deckStatus.deckName ?? 'Deck loaded'
+                    : 'Needs deck';
+                const deckColor = p.isSpectator ? '#64748b' : deckStatus?.ready ? '#86efac' : '#fbbf24';
+                return (
               <div
                 key={p.peerId}
                 data-testid={`peer-presence-${p.peerId}`}
@@ -214,13 +262,92 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
                   {p.peerId === multiplayer.peerId && (
                     <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 4px', borderRadius: 3, background: '#1e3a5f', color: '#60a5fa', marginLeft: 6 }}>YOU</span>
                   )}
+                  <div
+                    title={deckLabel}
+                    style={{
+                      fontSize: 10,
+                      color: deckColor,
+                      marginTop: 3,
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {p.isSpectator ? deckLabel : `Deck: ${deckLabel}`}
+                  </div>
                 </div>
                 {isHost && p.peerId === multiplayer.peerId && (
                   <span style={{ fontSize: 9, fontWeight: 700, padding: '1px 4px', borderRadius: 3, background: '#166534', color: '#4ade80' }}>HOST</span>
                 )}
               </div>
+                );
+              })()
             ))}
           </div>
+        </div>
+
+        {/* Player / spectator role */}
+        <div style={{
+          background: '#0f1720',
+          border: '1px solid #26323a',
+          borderRadius: 8,
+          padding: 12,
+        }}>
+          <div style={{ fontSize: 11, color: '#64748b', fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 8 }}>
+            Your Lobby Role
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginBottom: 8 }}>
+            <button
+              data-testid="btn-role-player"
+              data-help-title="Player Role"
+              data-help-body="Claims one lobby seat. Players need an imported and loaded deck before the host can start Commander mode."
+              data-help-placement="top"
+              onClick={switchToPlayer}
+              style={{
+                padding: '7px 10px',
+                borderRadius: 6,
+                cursor: 'pointer',
+                border: `1px solid ${!isSpectator ? '#22c55e' : '#334155'}`,
+                background: !isSpectator ? '#113a2b' : '#182127',
+                color: !isSpectator ? '#bbf7d0' : '#94a3b8',
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
+              Player
+            </button>
+            <button
+              data-testid="btn-role-spectator"
+              data-help-title="Spectator Role"
+              data-help-body="Watches the lobby or game without occupying a seat. Spectators are not counted for deck readiness or start checks."
+              data-help-placement="top"
+              onClick={switchToSpectator}
+              style={{
+                padding: '7px 10px',
+                borderRadius: 6,
+                cursor: 'pointer',
+                border: `1px solid ${isSpectator ? '#a78bfa' : '#334155'}`,
+                background: isSpectator ? '#312e8122' : '#182127',
+                color: isSpectator ? '#ddd6fe' : '#94a3b8',
+                fontSize: 12,
+                fontWeight: 700,
+              }}
+            >
+              Spectator
+            </button>
+          </div>
+          {!isSpectator ? (
+            <div style={{ fontSize: 11, color: '#64748b', lineHeight: 1.5 }}>
+              {activeSeatIndex >= 0
+                ? `Assigned automatically to Seat ${activeSeatIndex + 1}.`
+                : 'Assigning the first open seat...'} The table fills seats automatically when someone joins or switches back to Player.
+            </div>
+          ) : (
+            <div style={{ fontSize: 11, color: '#64748b', lineHeight: 1.5 }}>
+              Spectators can watch and review the log, but they do not need a deck and cannot also occupy a player seat.
+            </div>
+          )}
+          {error && <div style={{ marginTop: 8 }}><ErrorMsg msg={error} /></div>}
         </div>
 
         {/* Status */}
@@ -281,7 +408,7 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
             <button
               data-testid="btn-mode-join"
               data-help-title="Join Room"
-              data-help-body="Join a friend's room with their code, pick an open seat, and apply your own player profile."
+              data-help-body="Join a friend's room with their code, choose Player or Spectator, and apply your own player profile."
               data-help-placement="bottom"
               onClick={() => setMode('join')}
               style={modeBtnStyle('#0f1a2d', '#1e3a5f', '#60a5fa')}
@@ -304,12 +431,7 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
             onOpenProfile={() => store.setProfileOpen(true)}
             onApplyProfile={applyActiveProfile}
           />
-          <SeatPicker
-            players={seats}
-            selected={seatIndex}
-            onSelect={setSeatIndex}
-            takenSeats={new Set()}
-          />
+          <RolePicker role={role} onChange={setRole} />
           <div style={{ display: 'flex', gap: 8 }}>
             <ActionButton
               testId="btn-create-room"
@@ -352,12 +474,7 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
               }}
             />
           </div>
-          <SeatPicker
-            players={seats}
-            selected={seatIndex}
-            onSelect={setSeatIndex}
-            takenSeats={takenSeats}
-          />
+          <RolePicker role={role} onChange={setRole} />
           <div style={{ display: 'flex', gap: 8 }}>
             <ActionButton
               testId="btn-join-room"
@@ -457,42 +574,39 @@ function NameColorRow({
   );
 }
 
-function SeatPicker({ players, selected, onSelect, takenSeats }: {
-  players: { id: string; name: string }[];
-  selected: number;
-  onSelect: (i: number) => void;
-  takenSeats: Set<number>;
+function RolePicker({ role, onChange }: {
+  role: LobbyRole;
+  onChange: (role: LobbyRole) => void;
 }) {
-  if (players.length === 0) return null;
   return (
     <div>
-      <label style={labelStyle}>Your Seat</label>
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-        {players.map((p, i) => {
-          const taken = takenSeats.has(i);
-          return (
-            <button
-              key={p.id}
-              data-testid={`seat-btn-${i}`}
-              data-help-title={taken ? 'Seat Taken' : 'Choose Seat'}
-              data-help-body={taken ? 'Another player already claimed this seat.' : 'Select the seat you want to occupy when the game starts.'}
-              data-help-placement="top"
-              disabled={taken}
-              onClick={() => !taken && onSelect(i)}
-              style={{
-                padding: '4px 10px', fontSize: 11, fontWeight: 600,
-                borderRadius: 6, cursor: taken ? 'not-allowed' : 'pointer',
-                border: '1px solid',
-                borderColor: selected === i ? '#7c3aed' : taken ? '#1e293b' : '#334155',
-                background: selected === i ? '#4c1d9522' : 'transparent',
-                color: selected === i ? '#a78bfa' : taken ? '#334155' : '#64748b',
-                opacity: taken ? 0.5 : 1,
-              }}
-            >
-              {i + 1} — {p.name}
-            </button>
-          );
-        })}
+      <label style={labelStyle}>Your Role</label>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+        <button
+          type="button"
+          data-testid="role-picker-player"
+          data-help-title="Join As Player"
+          data-help-body="Occupies the first open seat automatically. Players must load a deck before the host can start Commander mode."
+          data-help-placement="top"
+          onClick={() => onChange('player')}
+          style={roleButtonStyle(role === 'player', '#22c55e', '#113a2b', '#bbf7d0')}
+        >
+          Player
+        </button>
+        <button
+          type="button"
+          data-testid="role-picker-spectator"
+          data-help-title="Join As Spectator"
+          data-help-body="Watches without occupying a seat. Spectators can switch to Player later if a seat is open."
+          data-help-placement="top"
+          onClick={() => onChange('spectator')}
+          style={roleButtonStyle(role === 'spectator', '#a78bfa', '#312e8122', '#ddd6fe')}
+        >
+          Spectator
+        </button>
+      </div>
+      <div style={{ fontSize: 10, color: '#64748b', marginTop: 5, lineHeight: 1.4 }}>
+        Seats fill automatically in table order.
       </div>
     </div>
   );
@@ -505,7 +619,7 @@ function ActionButton({ testId, onClick, busy, label, accent }: {
     <button
       data-testid={testId}
       data-help-title={label}
-      data-help-body={label === 'Create Room' ? 'Creates the room with your selected profile and seat, then prepares the table for joined players.' : 'Connects to the room code using your selected profile and seat.'}
+      data-help-body={label === 'Create Room' ? 'Creates the room with your selected profile and role, then prepares the table for joined players.' : 'Connects to the room code using your selected profile and role.'}
       data-help-placement="top"
       onClick={onClick}
       disabled={busy}
@@ -560,5 +674,18 @@ function modeBtnStyle(bg: string, border: string, color: string): React.CSSPrope
     flex: 1, padding: '14px 20px', borderRadius: 8, cursor: 'pointer',
     border: `1px solid ${border}`, background: bg, color,
     fontSize: 13, fontWeight: 700, transition: 'all 0.15s',
+  };
+}
+
+function roleButtonStyle(active: boolean, accent: string, activeBg: string, activeColor: string): React.CSSProperties {
+  return {
+    padding: '7px 10px',
+    borderRadius: 6,
+    cursor: 'pointer',
+    border: `1px solid ${active ? accent : '#334155'}`,
+    background: active ? activeBg : '#182127',
+    color: active ? activeColor : '#94a3b8',
+    fontSize: 12,
+    fontWeight: 700,
   };
 }

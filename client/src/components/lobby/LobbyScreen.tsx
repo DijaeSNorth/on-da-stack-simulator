@@ -15,6 +15,7 @@ import { getActiveProfile } from '../../engine/profileStorage';
 import { BrandMark } from '../branding/BrandMark';
 import { PlayerAvatar } from '../profile/PlayerAvatar';
 import { ExitGameModal } from '../exit/ExitGameModal';
+import { canStartCommanderTable, getSeatedLobbyPeers, getTableDeckStatus, resolveSeatPlayerId } from '../../engine/lobbyReadiness';
 import type { Deck, PlayerAvatarImage } from '../../types/game';
 
 interface PlayerSetup {
@@ -93,39 +94,46 @@ export function LobbyScreen() {
   const localPresence = store.multiplayer.peerId ? store.multiplayer.peers[store.multiplayer.peerId] : undefined;
   const localSeatIndex = gameMode === 'table' && localPresence && localPresence.seatIndex >= 0 ? localPresence.seatIndex : 0;
   const setupPlayerIndex = gameMode === 'solo' ? activePlayerTab : localSeatIndex;
-  const activeSetupPlayer = players[setupPlayerIndex] ?? players[0];
-  const seatedPeers = Object.values(store.multiplayer.peers)
-    .filter(peer => peer.online && !peer.isSpectator && peer.seatIndex >= 0 && peer.seatIndex < playerCount);
+  const activeSeat = players[setupPlayerIndex] ?? players[0];
+  const activeGamePlayer = gameMode === 'table' ? store.game.players[setupPlayerIndex] : undefined;
+  const activeSetupPlayer = activeSeat ? {
+    ...activeSeat,
+    id: activeGamePlayer?.id ?? activeSeat.id,
+    deckId: activeGamePlayer?.deckId ?? activeSeat.deckId,
+  } : undefined;
+  const isLocalSpectator = gameMode === 'table' && (localPresence?.isSpectator ?? store.multiplayer.isSpectator);
+  const seatedPeers = getSeatedLobbyPeers(store.multiplayer.peers, playerCount);
   const occupiedSeats = new Set(seatedPeers.map(peer => peer.seatIndex));
   const isTableHost = gameMode === 'table' && store.multiplayer.status === 'host';
+  const isInTableRoom = gameMode === 'table' && ['host', 'joined', 'migrating'].includes(store.multiplayer.status);
   const minimumTablePlayers = 2;
-  const tableDeckStatus = seatedPeers
-    .map(peer => {
-      const seat = players[peer.seatIndex];
-      const loadedPlayer = seat ? store.game.players.find(player => player.id === seat.id) : undefined;
-      const hasLoadedDeck = Boolean(
-        loadedPlayer?.deckId &&
-        (loadedPlayer.library.length > 0 || loadedPlayer.commandZone.length > 0)
-      );
-      const hasAssignedSavedDeck = Boolean(seat?.deckId && savedDecks.some(deck => deck.id === seat.deckId));
-      return {
-        peer,
-        seat,
-        ready: hasLoadedDeck || hasAssignedSavedDeck,
-      };
-    });
-  const missingDeckPlayers = tableDeckStatus
-    .filter(status => !status.ready)
-    .map(status => status.peer.name);
+  const tableDeckStatus = gameMode === 'table'
+    ? getTableDeckStatus({
+      peers: store.multiplayer.peers,
+      playerCount,
+      seats: players,
+      gamePlayers: store.game.players,
+      savedDecks,
+    })
+    : [];
+  const deckStatusBySeat = new Map(tableDeckStatus.map(status => [status.peer.seatIndex, status]));
+  const tableStart = gameMode === 'table'
+    ? canStartCommanderTable({
+      isHost: isTableHost,
+      peers: store.multiplayer.peers,
+      playerCount,
+      seats: players,
+      gamePlayers: store.game.players,
+      savedDecks,
+      minimumPlayers: minimumTablePlayers,
+    })
+    : { canStart: true, occupiedCount: playerCount, missingDeckPlayers: [] as string[] };
+  const missingDeckPlayers = tableStart.missingDeckPlayers;
   const tableDecksReady = gameMode !== 'table' || (
-    occupiedSeats.size >= minimumTablePlayers &&
+    tableStart.occupiedCount >= minimumTablePlayers &&
     missingDeckPlayers.length === 0
   );
-  const canStartTable = gameMode !== 'table' || (
-    isTableHost &&
-    occupiedSeats.size >= minimumTablePlayers &&
-    tableDecksReady
-  );
+  const canStartTable = gameMode !== 'table' || tableStart.canStart;
 
   function updateMode(mode: GameMode) {
     setGameMode(mode);
@@ -171,8 +179,15 @@ export function LobbyScreen() {
   }
 
   async function assignDeckToPlayer(deck: Deck) {
+    const targetPlayerId = gameMode === 'table'
+      ? store.localPlayerId || resolveSeatPlayerId(setupPlayerIndex, store.game.players, players)
+      : activeSetupPlayer?.id ?? '';
+    if (!targetPlayerId || isLocalSpectator) {
+      setImportError('Switch to Player before assigning a deck.');
+      return;
+    }
     updatePlayer(setupPlayerIndex, { deckId: deck.id });
-    await store.loadDeck(activeSetupPlayer.id, deck);
+    await store.loadDeck(targetPlayerId, deck);
     setImportResult(null);
     setImportError('');
     setDeckText('');
@@ -201,7 +216,7 @@ export function LobbyScreen() {
     return {
       playerCount: configPlayerCount,
       format: 'commander' as const,
-      startingLife,
+      startingLife: gameMode === 'table' ? 40 : startingLife,
       useCommanderDamage: true,
       useInfect: true,
       startingHandSize: 7,
@@ -229,8 +244,9 @@ export function LobbyScreen() {
       .sort(([a], [b]) => a - b)
       .map(([seatIndex, peer]) => {
         const seat = players[seatIndex] ?? players[0];
+        const playerId = resolveSeatPlayerId(seatIndex, store.game.players, players);
         return {
-          id: seat.id,
+          id: playerId || seat.id,
           name: peer.name,
           color: peer.color,
           avatarInitial: peer.avatarInitial ?? seat.avatarInitial,
@@ -267,7 +283,18 @@ export function LobbyScreen() {
     // Load saved decks for players who have them
     (async () => {
       const setupPlayers = gameMode === 'table'
-        ? [...occupiedSeats].sort((a, b) => a - b).map(index => players[index]).filter(Boolean)
+        ? [...occupiedSeats]
+          .sort((a, b) => a - b)
+          .map((index): PlayerSetup | null => {
+            const seat = players[index];
+            if (!seat) return null;
+            return {
+              ...seat,
+              id: resolveSeatPlayerId(index, store.game.players, players),
+              deckId: store.game.players[index]?.deckId ?? seat.deckId,
+            };
+          })
+          .filter((player): player is PlayerSetup => player !== null && Boolean(player.id))
         : players;
       for (const setupPlayer of setupPlayers) {
         const override = deckOverrides[setupPlayer.id];
@@ -408,25 +435,42 @@ export function LobbyScreen() {
             )}
 
             {/* Starting life */}
-            <div style={{ marginBottom: 14 }}>
-              <label style={{ fontSize: 11, color: '#94a3b8', display: 'block', marginBottom: 6 }}>
-                {gameMode === 'solo' ? 'Test Life' : 'Starting Life'}: {startingLife}
-              </label>
-              <div style={{ display: 'flex', gap: 6 }}>
-                {[20, 30, 40].map(n => (
-                  <button
-                    key={n}
-                    onClick={() => setStartingLife(n)}
-                    style={{
-                      flex: 1, padding: '5px 0',
-                      background: startingLife === n ? '#1d4ed8' : '#1e293b',
-                      color: startingLife === n ? '#fff' : '#94a3b8',
-                      border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11,
-                    }}
-                  >{n}</button>
-                ))}
+            {gameMode === 'solo' ? (
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ fontSize: 11, color: '#94a3b8', display: 'block', marginBottom: 6 }}>
+                  Test Life: {startingLife}
+                </label>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  {[20, 30, 40].map(n => (
+                    <button
+                      key={n}
+                      onClick={() => setStartingLife(n)}
+                      style={{
+                        flex: 1, padding: '5px 0',
+                        background: startingLife === n ? '#1d4ed8' : '#1e293b',
+                        color: startingLife === n ? '#fff' : '#94a3b8',
+                        border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 11,
+                      }}
+                    >{n}</button>
+                  ))}
+                </div>
               </div>
-            </div>
+            ) : (
+              <div style={{
+                marginBottom: 14,
+                padding: '7px 9px',
+                borderRadius: 6,
+                background: 'rgba(34,197,94,0.08)',
+                border: '1px solid rgba(34,197,94,0.2)',
+              }}>
+                <div style={{ fontSize: 11, color: '#bbf7d0', fontWeight: 700 }}>
+                  Commander Life: 40
+                </div>
+                <div style={{ fontSize: 10, color: '#64748b', marginTop: 2 }}>
+                  Life can be adjusted once the game starts.
+                </div>
+              </div>
+            )}
 
             {/* Player setup tabs */}
             <div style={{ marginBottom: 12 }}>
@@ -498,6 +542,7 @@ export function LobbyScreen() {
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                   {players.slice(0, playerCount).map((seat, index) => {
                     const peer = seatedPeers.find(p => p.seatIndex === index);
+                    const deckStatus = deckStatusBySeat.get(index);
                     const occupied = Boolean(peer);
                     return (
                       <div
@@ -528,6 +573,35 @@ export function LobbyScreen() {
                           <div style={{ fontSize: 9, color: '#475569' }}>
                             {occupied ? (peer!.peerId === store.multiplayer.peerId ? 'You' : 'Joined') : 'Open seat'}
                           </div>
+                          {occupied && (
+                            <div style={{
+                              marginTop: 3,
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: 5,
+                              minWidth: 0,
+                            }}>
+                              <span style={{
+                                width: 6,
+                                height: 6,
+                                borderRadius: '50%',
+                                background: deckStatus?.ready ? '#22c55e' : '#f59e0b',
+                                flexShrink: 0,
+                              }} />
+                              <span
+                                title={deckStatus?.deckName ?? 'No deck loaded'}
+                                style={{
+                                  fontSize: 9,
+                                  color: deckStatus?.ready ? '#86efac' : '#fbbf24',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                {deckStatus?.ready ? deckStatus.deckName ?? 'Deck loaded' : 'Needs deck'}
+                              </span>
+                            </div>
+                          )}
                         </div>
                       </div>
                     );
@@ -590,6 +664,19 @@ export function LobbyScreen() {
               Deck Import — {gameMode === 'solo' ? 'Solo Player' : `Your Setup (Seat ${setupPlayerIndex + 1})`}
             </div>
 
+            {isLocalSpectator && (
+              <div style={{
+                fontSize: 10,
+                color: '#c4b5fd',
+                background: 'rgba(76,29,149,0.18)',
+                border: '1px solid #4c1d95',
+                borderRadius: 5,
+                padding: '6px 8px',
+              }}>
+                You are spectating. Switch to Player in the multiplayer panel before assigning a deck.
+              </div>
+            )}
+
             {/* Saved decks */}
             <div>
               <div style={{ fontSize: 10, color: '#64748b', marginBottom: 6 }}>
@@ -639,11 +726,12 @@ export function LobbyScreen() {
                           >Fav</button>
                           <button
                             onClick={() => assignDeckToPlayer(deck)}
+                            disabled={isLocalSpectator}
                             style={{
                               fontSize: 9, padding: '3px 8px',
                               background: assigned ? '#1d4ed8' : '#1e293b',
-                              color: assigned ? '#fff' : '#94a3b8',
-                              border: 'none', borderRadius: 3, cursor: 'pointer',
+                              color: isLocalSpectator ? '#334155' : assigned ? '#fff' : '#94a3b8',
+                              border: 'none', borderRadius: 3, cursor: isLocalSpectator ? 'not-allowed' : 'pointer',
                             }}
                           >{assigned ? 'Assigned' : 'Use'}</button>
                         </div>
@@ -862,10 +950,16 @@ export function LobbyScreen() {
                     data-help-body="Stores the validated deck in one of your saved slots and assigns it to the current player or lobby seat."
                     data-help-placement="top"
                     onClick={saveDeckAndAssign}
+                    disabled={isLocalSpectator}
                     style={{
                       flex: 1, padding: '6px 0',
-                      background: '#14532d', color: '#86efac',
-                      border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 10, fontWeight: 700,
+                      background: isLocalSpectator ? '#182127' : '#14532d',
+                      color: isLocalSpectator ? '#475569' : '#86efac',
+                      border: 'none',
+                      borderRadius: 4,
+                      cursor: isLocalSpectator ? 'not-allowed' : 'pointer',
+                      fontSize: 10,
+                      fontWeight: 700,
                     }}
                   >Save & Use</button>
                   <button
@@ -899,6 +993,7 @@ export function LobbyScreen() {
             seats={players.slice(0, playerCount).map((player, index) => ({
               id: player.id,
               name: `Seat ${index + 1}`,
+              deckId: store.game.players[index]?.deckId ?? player.deckId,
             }))}
             onPrepareRoom={prepareTableRoomState}
             onExitRoom={() => setExitOpen(true)}
@@ -929,13 +1024,15 @@ export function LobbyScreen() {
         >
           {gameMode === 'solo'
             ? 'Start Deck Lab'
-            : !isTableHost
+            : !isInTableRoom
               ? 'Create Room to Start'
-              : occupiedSeats.size < minimumTablePlayers
-                ? `Waiting for Players (${occupiedSeats.size}/${minimumTablePlayers} Minimum)`
+              : !isTableHost
+                ? 'Waiting for Host to Start'
+              : tableStart.occupiedCount < minimumTablePlayers
+                ? `Waiting for Players (${tableStart.occupiedCount}/${minimumTablePlayers} Minimum)`
                 : !tableDecksReady
                   ? `Waiting for Decks (${missingDeckPlayers.join(', ')})`
-                : `Start Game (${occupiedSeats.size}/${playerCount} Seats)`}
+                : `Start Game (${tableStart.occupiedCount}/${playerCount} Seats)`}
         </button>
 
         <div style={{ textAlign: 'center', fontSize: 10, color: '#1e293b' }}>
