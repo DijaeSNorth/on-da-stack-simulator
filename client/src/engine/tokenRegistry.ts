@@ -653,6 +653,56 @@ function normalize(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9 ',\-]/g, '').trim();
 }
 
+function tokenAliases(token: TokenDef): string[] {
+  const aliases = [
+    token.name,
+    token.name.replace(/\([^)]*\)/g, ''),
+    token.subTypes.join(' '),
+    token.subTypes.at(-1) ?? '',
+  ];
+  return aliases
+    .map(normalize)
+    .filter(Boolean);
+}
+
+/**
+ * Look up the token itself by name, independent of what card produced it.
+ * This powers commands like "create token Treasure" and keeps common tokens
+ * usable even when Scryfall is unavailable.
+ */
+export function getTokenDefinitionByName(tokenName: string): TokenDef | null {
+  const key = normalize(tokenName)
+    .replace(/^(?:token|a token|an token|named|called|of)\s+/, '')
+    .replace(/\s+tokens?$/, '')
+    .trim();
+  if (!key) return null;
+
+  const directTokens = [
+    TREASURE, CLUE, FOOD, BLOOD, GOLD, MAP,
+    SOLDIER_W, ZOMBIE_B, ZOMBIE_B_DECAYED, GOBLIN_R, ELF_G,
+    ELDRAZI_SCION, ELDRAZI_SPAWN, SPIRIT_W, SPIRIT_WB, BIRD_W,
+    ANGEL_W, DRAGON_R, WOLF_G, BEAR_G, SAPROLING_G, SNAKE_G,
+    INSECT_G, SQUIRREL_G, CAT_W, HUMAN_W, KNIGHT_W, KNIGHT_WB,
+    THOPTER_WU, COPY_ARTIFACT, WURM_G, ZOMBIE_ARMY, PIRATE_B,
+    DINOSAUR_G, COPY_BLUE_CREATURE, ILLUSION_U, MERFOLK_U,
+    SHARK_U, FAERIE_U, INCUBATOR, RHINO_W, WARRIOR_R,
+  ];
+
+  for (const token of directTokens) {
+    const aliases = tokenAliases(token);
+    if (aliases.includes(key)) return token;
+  }
+
+  for (const entry of Object.values(TOKEN_REGISTRY)) {
+    for (const token of entry.tokens) {
+      const aliases = tokenAliases(token);
+      if (aliases.includes(key)) return token;
+    }
+  }
+
+  return null;
+}
+
 /**
  * Look up token entry for a card by name.
  * Checks exact match first, then alias map.

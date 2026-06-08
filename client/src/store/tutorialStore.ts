@@ -245,8 +245,8 @@ export const TOOLTIPS: Record<string, TooltipContent> = {
   },
   command_tokens: {
     title: 'Create Tokens',
-    body: 'Create tokens by description or by activating a card ability. Count, color, type — all natural language.',
-    example: '"create 3 goblin tokens" · "activate krenko" · "make treasure token"',
+    body: 'Create tokens by name, description, or by activating a card ability. Known tokens can use Scryfall data; custom tokens still work by description.',
+    example: '"create token Treasure" · "generate token Zombie" · "create 3 1/1 white Soldier tokens"',
     step: 'token_shortcuts',
   },
   command_zones: {

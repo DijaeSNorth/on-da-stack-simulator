@@ -47,7 +47,7 @@ export function CommandInput() {
     { label: 'Cast', example: 'cast Sol Ring' },
     { label: 'Scry', example: 'scry 3' },
     { label: 'Draw', example: 'draw 2' },
-    { label: 'Tokens', example: 'create 3 goblin tokens' },
+    { label: 'Tokens', example: 'create token Treasure' },
     { label: 'Life', example: 'player 2 takes 5' },
     { label: 'Counter', example: '+1/+1 counter on Ghave' },
     { label: 'Reanimate', example: 'reanimate Griselbrand' },

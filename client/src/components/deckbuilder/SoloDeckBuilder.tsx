@@ -177,10 +177,14 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
     setStatus(`Loaded "${draft.name}" for testing.`);
   }
 
-  async function handleImport() {
-    if (!exchangeText.trim()) return;
+  async function importDeckText(deckText: string, fallbackName = draft.name || 'Solo Lab Import', customLogicText = logicText) {
+    const text = deckText.trim();
+    if (!text) {
+      setStatus('Paste or upload a decklist before importing.');
+      return;
+    }
     setStatus('Importing deck...');
-    const result = await importDecklist(exchangeText, draft.name || 'Solo Lab Import', 'solo-builder', playerId, logicText, {
+    const result = await importDecklist(text, fallbackName, 'solo-builder', playerId, customLogicText, {
       captureFetchedCardData: true,
     });
     setDraft(result.deck);
@@ -191,7 +195,13 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
     } else {
       store.saveDeckToStorage(result.deck);
     }
+    if (liveSyncEnabled) await syncDeckForTesting(result.deck);
     setStatus(result.errors.length ? result.errors.join(' ') : `Imported ${result.cardCount} cards. ${result.warnings[0] ?? ''}`);
+    return result;
+  }
+
+  async function handleImport() {
+    await importDeckText(exchangeText, draft.name || 'Solo Lab Import', logicText);
   }
 
   function handleExportFile(deckToExport = draft) {
@@ -219,7 +229,8 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
   async function handleImportFile(file: File | undefined) {
     if (!file) return;
     const text = await file.text();
-    const parsed = parseDeckFilePayload(text, file.name.replace(/\.[^.]+$/, '') || 'Imported Deck File');
+    const fallbackName = file.name.replace(/\.[^.]+$/, '') || 'Imported Deck File';
+    const parsed = parseDeckFilePayload(text, fallbackName);
     if (parsed.error) {
       setStatus(parsed.error);
       return;
@@ -233,9 +244,14 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
       setStatus(`Loaded "${parsed.deck.name}" from file. ${parsed.warnings[0] ?? ''}`.trim());
       return;
     }
-    setExchangeText(parsed.deckText ?? text);
+    const nextDeckText = parsed.deckText ?? text;
+    const nextLogicText = parsed.logicText ?? logicText;
+    setExchangeText(nextDeckText);
     if (parsed.logicText !== undefined) setLogicText(parsed.logicText);
-    setStatus(`Loaded "${file.name}" into the importer. ${parsed.warnings[0] ?? ''}`.trim());
+    const result = await importDeckText(nextDeckText, fallbackName, nextLogicText);
+    if (result && parsed.warnings.length > 0 && result.errors.length === 0) {
+      setStatus(`Imported "${file.name}". ${parsed.warnings[0]} ${result.warnings[0] ?? ''}`.trim());
+    }
   }
 
   function handleSelectSavedDeck(deck: Deck) {
@@ -383,15 +399,40 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
         <div style={{ display: 'flex', flexDirection: 'column', gap: 5, overflowY: 'auto', maxHeight: compact ? 260 : 390 }}>
           {cardRows.length === 0 ? (
             <div style={{ fontSize: 11, color: '#475569', padding: 12 }}>Add cards or import a decklist to start building.</div>
-          ) : cardRows.map(row => {
+          ) : cardRows.map((row, index) => {
             const summary = summarizeCardLogic(draft, row.name);
             const active = selectedCard === row.name;
+            const previousRow = cardRows[index - 1];
+            const showTypeHeader = !previousRow || previousRow.primaryType !== row.primaryType;
+            const visibleTypeCount = showTypeHeader
+              ? cardRows.filter(typeRow => typeRow.primaryType === row.primaryType).reduce((sum, typeRow) => sum + typeRow.count, 0)
+              : 0;
             return (
-              <button
+              <div key={`${row.section}-${row.name}`} style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                {showTypeHeader && (
+                  <div
+                    data-testid={`solo-type-group-${row.primaryType.toLowerCase()}`}
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      padding: '6px 8px 2px',
+                      color: '#94a3b8',
+                      fontSize: 9,
+                      fontWeight: 900,
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.08em',
+                    }}
+                  >
+                    <span>{row.primaryType}</span>
+                    <span>{visibleTypeCount}</span>
+                  </div>
+                )}
+                <button
                 key={`${row.section}-${row.name}`}
                 data-testid={`solo-card-row-${row.name}`}
                 data-help-title="Deck Card Row"
-                data-help-body="Select a card to edit notes, triggers, replacements, or custom oracle text. Use plus and minus to adjust the count."
+                data-help-body="Select a card to edit notes, triggers, replacements, or custom oracle text. Rows are grouped by card type using Scryfall or custom card data."
                 data-help-example={`${row.count} in ${SECTION_LABELS[row.section]}`}
                 onClick={() => setSelectedCard(row.name)}
                 style={{
@@ -412,7 +453,7 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
                 <span style={{ minWidth: 0 }}>
                   <span style={{ display: 'block', fontSize: 11, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.name}</span>
                   <span style={{ fontSize: 9, color: '#475569' }}>
-                    {SECTION_LABELS[row.section]}
+                    {row.typeLine ?? row.primaryType} - {SECTION_LABELS[row.section]}
                     {summary.note ? ' · note' : ''}
                     {summary.triggers ? ` · ${summary.triggers} trigger` : ''}
                     {summary.replacements ? ` · ${summary.replacements} replacement` : ''}
@@ -423,7 +464,8 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
                   <span onClick={event => { event.stopPropagation(); replaceDraft(adjustDeckEntry(draft, row.section, row.name, 1), { refreshText: true, sync: true }); }} style={miniButtonStyle}>+</span>
                   <span onClick={event => { event.stopPropagation(); replaceDraft(adjustDeckEntry(draft, row.section, row.name, -1), { refreshText: true, sync: true }); }} style={miniButtonStyle}>-</span>
                 </span>
-              </button>
+                </button>
+              </div>
             );
           })}
         </div>
@@ -459,12 +501,14 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
           <button data-testid="solo-save-as-deck" data-help-title="Duplicate Slot" data-help-body="Creates a separate saved copy of this build. If all three slots are full, export the deck file before replacing anything." data-help-placement="top" onClick={handleSaveAs} title="Duplicate this build into a new stored slot." style={buttonStyle('#312e81', '#c4b5fd')}>Duplicate Slot</button>
           <button data-testid="solo-load-deck" data-help-title="Load To Practice" data-help-body="Loads the current draft into the solo battlefield so you can test sequencing, triggers, combat, and custom card logic." data-help-placement="top" onClick={handleLoad} style={buttonStyle('#14532d', '#86efac')}>{loadLabel}</button>
           <button data-help-title="Download Deck File" data-help-body="Exports a portable deck backup with card list and custom logic. Use this when saved slots are full or to move decks between browsers." data-help-placement="top" onClick={() => handleExportFile()} title="Download a portable deck backup file." style={buttonStyle('#3f2a08', '#fbbf24')}>Download File</button>
-          <button data-help-title="Open Deck File" data-help-body="Imports a downloaded deck file or text decklist back into the builder." data-help-placement="top" onClick={() => fileInputRef.current?.click()} title="Load a downloaded deck file or text decklist." style={buttonStyle('#0f172a', '#93c5fd')}>Open File</button>
           <input
             ref={fileInputRef}
             type="file"
             accept=".txt,.dek,.dec,.csv,.json,.cod,.dck,text/plain,text/csv,application/json,application/xml,text/xml"
-            onChange={event => void handleImportFile(event.target.files?.[0])}
+            onChange={event => {
+              void handleImportFile(event.target.files?.[0]);
+              event.currentTarget.value = '';
+            }}
             style={{ display: 'none' }}
           />
         </div>
@@ -551,8 +595,14 @@ export function SoloDeckBuilder({ playerId, onLoadDeck, loadLabel = 'Load to Bat
         )}
 
         <div style={headerStyle}>
-          <span>Deck Text</span>
-          <button data-help-title="Apply Deck Text" data-help-body="Parses the deck text box and updates the current draft. Import warnings stay visible so user mistakes are easy to correct." data-help-placement="top" onClick={handleImport} style={buttonStyle('#1d4ed8', '#dbeafe')}>Apply Text</button>
+          <span>Import / Export Deck</span>
+          <span style={{ display: 'flex', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <button data-help-title="Import Deck File" data-help-body="Uploads common deck files such as txt, csv, dek, dck, xml, json, or On-Da-Stack deck backups and imports them into this solo build." data-help-placement="top" onClick={() => fileInputRef.current?.click()} style={buttonStyle('#0f172a', '#93c5fd')}>Upload File</button>
+            <button data-help-title="Import Pasted Deck" data-help-body="Parses the deck text box, fetches Scryfall card data, updates type counts, and loads the result into solo testing when live sync is enabled." data-help-placement="top" onClick={() => void handleImport()} style={buttonStyle('#1d4ed8', '#dbeafe')}>Import Text</button>
+          </span>
+        </div>
+        <div style={{ fontSize: 9, color: '#64748b' }}>
+          Paste a decklist, import a downloaded deck file, or edit the generated export text. Supports common text, CSV, XML, JSON, .dek, .dec, .cod, and .dck lists.
         </div>
         <textarea
           data-testid="solo-import-export-text"

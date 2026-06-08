@@ -45,7 +45,7 @@ const STEP_CARDS: Partial<Record<TutorialStep, StepCard>> = {
   command_bar: {
     title: 'Command Bar',
     body: 'The most powerful feature. Type anything in plain English — the judge assistant parses it.\n\nUse it to attack, cast, draw, scry, create tokens, adjust life totals, and more.',
-    example: '"attack with Goblin Guide" · "scry 3" · "create 2 goblin tokens" · "gain 5 life"',
+    example: '"attack with Goblin Guide" · "scry 3" · "create token Treasure" · "gain 5 life"',
     tip: 'Press ↑ to scroll command history. Tab to autocomplete.',
     position: 'bottom',
   },
@@ -75,8 +75,8 @@ const STEP_CARDS: Partial<Record<TutorialStep, StepCard>> = {
   },
   token_shortcuts: {
     title: 'Token Shortcuts',
-    body: 'Known token producers show a "✨ Create Token" button directly in the right-click menu.\n\nFor variable amounts (like Krenko), use the command bar.',
-    example: '"activate krenko" · "create 4 goblin tokens" · "make treasure token"',
+    body: 'Known token producers show a "Create Token" button directly in the right-click menu.\n\nFor variable amounts, Scryfall-backed tokens, or custom tokens, use the command bar.',
+    example: '"activate krenko" · "generate token Zombie" · "create 3 1/1 white Soldier tokens"',
     tip: 'Academy Manufactor shows all 3 token types — Treasure + Clue + Food.',
     position: 'center',
   },

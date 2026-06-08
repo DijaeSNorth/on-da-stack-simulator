@@ -423,13 +423,13 @@ function BattlefieldStackShowcase() {
   );
 }
 
-function getPlayerLayout(playerCount: number): {
+export function getPlayerLayout(playerCount: number): {
   top?: number[]; left?: number[]; right?: number[]; bottom: number[];
 } {
   switch (playerCount) {
     case 2: return { top: [1], bottom: [0] };
     case 3: return { top: [1, 2], bottom: [0] };
-    case 4: return { top: [2], left: [1], right: [3], bottom: [0] };
+    case 4: return { top: [2, 3], bottom: [0, 1] };
     case 5: return { top: [2, 3], left: [1], right: [4], bottom: [0] };
     case 6: return { top: [2, 3], left: [1], right: [4], bottom: [0, 5] };
     default: return { bottom: [0] };

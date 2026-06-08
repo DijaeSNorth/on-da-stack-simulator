@@ -8,7 +8,55 @@ import { useCallback } from 'react';
 import { useGameStore } from '../store/gameStore';
 import { parseCommand, resolveIntent, getSuggestions } from '../engine/nlpParser';
 import type { ResolvedIntent } from '../engine/nlpParser';
-import { resolveTokenShortcut, getBattlefieldTokenSuggestions } from '../engine/tokenRegistry';
+import { resolveTokenShortcut, getBattlefieldTokenSuggestions, getTokenDefinitionByName } from '../engine/tokenRegistry';
+import type { TokenDef } from '../engine/tokenRegistry';
+import { fetchScryfallTokenDefinition } from '../engine/scryfallTokens';
+import type { CardDefinition, CardType, ManaColor } from '../types/game';
+
+function tokenDefToCardDefinition(token: TokenDef): Partial<CardDefinition> & { name: string } {
+  return {
+    id: `token-${token.name.toLowerCase().replace(/\s+/g, '-')}`,
+    name: token.name,
+    power: token.power,
+    toughness: token.toughness,
+    colors: token.colors,
+    cardTypes: token.cardTypes as CardType[],
+    subTypes: token.subTypes,
+    keywords: token.keywords,
+    oracleText: token.oracleText ?? '',
+    typeLine: token.typeLine,
+    colorIdentity: token.colors,
+    cmc: 0,
+    isDoubleFaced: false,
+    legalities: {},
+  };
+}
+
+function parsedTokenToCardDefinition(token: NonNullable<ResolvedIntent['token']>): Partial<CardDefinition> & { name: string } {
+  const colors = token.colors as ManaColor[];
+  const subTypes = token.subTypes.filter(Boolean);
+  const power = token.power ?? 1;
+  const toughness = token.toughness ?? 1;
+  const typeLine = token.typeLine
+    ?? `Token Creature${subTypes.length ? ` - ${subTypes.join(' ')}` : ''}`;
+  return {
+    id: `custom-token-${token.name.toLowerCase().replace(/\s+/g, '-')}`,
+    name: token.name,
+    power: String(power),
+    toughness: String(toughness),
+    colors,
+    cardTypes: (token.cardTypes as CardType[] | undefined) ?? ['Creature'],
+    subTypes,
+    keywords: token.keywords ?? [],
+    oracleText: token.oracleText ?? '',
+    typeLine,
+    imageUrl: token.imageUrl,
+    colorIdentity: colors,
+    cmc: 0,
+    isDoubleFaced: false,
+    legalities: {},
+  };
+}
 
 export function useNLPCommand(onCombatIntent?: (intent: ResolvedIntent) => void) {
   const store = useGameStore();
@@ -265,14 +313,31 @@ export function useNLPCommand(onCombatIntent?: (intent: ResolvedIntent) => void)
       case 'CREATE_TOKEN': {
         if (!intent.token) return { success: false, message: 'Token definition incomplete' };
         const count = intent.token.count ?? 1;
-        store.createTokenCards(localPlayerId, {
-          name: intent.token.name,
-          power: String(intent.token.power),
-          toughness: String(intent.token.toughness),
-          colors: intent.token.colors as import('../types/game').ManaColor[],
-          cardTypes: ['Creature'],
-          subTypes: intent.token.subTypes,
-        }, count);
+        const lookupQuery = intent.token.lookupQuery ?? intent.token.name;
+        if (intent.token.preferScryfall) {
+          store.addAssistantMessage({
+            severity: 'info',
+            label: 'Info',
+            text: `Searching Scryfall for "${lookupQuery}" token data...`,
+          });
+          void fetchScryfallTokenDefinition(lookupQuery).then(definition => {
+            const localToken = getTokenDefinitionByName(lookupQuery);
+            const tokenDef = definition ?? (localToken ? tokenDefToCardDefinition(localToken) : parsedTokenToCardDefinition(intent.token!));
+            store.createTokenCards(localPlayerId, tokenDef, count);
+            store.addAssistantMessage({
+              severity: definition ? 'info' : 'warning',
+              label: definition ? 'Info' : 'Needs Review',
+              text: definition
+                ? `Created ${count} ${definition.name} token${count === 1 ? '' : 's'} using Scryfall data.`
+                : localToken
+                  ? `Scryfall lookup missed "${lookupQuery}", so On-Da-Stack used the local token template.`
+                  : `Scryfall lookup missed "${lookupQuery}", so On-Da-Stack created a custom 1/1 token you can adjust on the battlefield.`,
+            });
+          });
+          return { success: true, message: `Searching Scryfall for ${lookupQuery} token...` };
+        }
+        const localToken = getTokenDefinitionByName(lookupQuery);
+        store.createTokenCards(localPlayerId, localToken ? tokenDefToCardDefinition(localToken) : parsedTokenToCardDefinition(intent.token), count);
         return { success: true, message: `Created ${count} ${intent.token.name} token(s)` };
       }
 
@@ -302,22 +367,7 @@ export function useNLPCommand(onCombatIntent?: (intent: ResolvedIntent) => void)
         if (tokenShortcut) {
           const { entry, count } = tokenShortcut;
           for (const tok of entry.tokens) {
-            store.createTokenCards(localPlayerId, {
-              id: `token-${tok.name.toLowerCase().replace(/\s+/g, '-')}`,
-              name: tok.name,
-              power: tok.power,
-              toughness: tok.toughness,
-              colors: tok.colors,
-              cardTypes: tok.cardTypes as import('../types/game').CardType[],
-              subTypes: tok.subTypes,
-              keywords: tok.keywords,
-              oracleText: tok.oracleText ?? '',
-              typeLine: tok.typeLine,
-              isDoubleFaced: false,
-              legalities: {},
-              colorIdentity: tok.colors,
-              cmc: 0,
-            }, count);
+            store.createTokenCards(localPlayerId, tokenDefToCardDefinition(tok), count);
           }
           const names = entry.tokens.map(t => t.name).join(', ');
           return { success: true, message: `Created ${count}× ${names} token(s)` };

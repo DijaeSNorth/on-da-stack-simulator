@@ -6,7 +6,22 @@ export interface DeckBuilderRow {
   section: DeckBuilderSection;
   name: string;
   count: number;
+  primaryType: DeckBuilderTypeGroup;
+  typeLine?: string;
 }
+
+export type DeckBuilderTypeGroup =
+  | 'Commander'
+  | 'Creature'
+  | 'Land'
+  | 'Artifact'
+  | 'Instant'
+  | 'Sorcery'
+  | 'Enchantment'
+  | 'Planeswalker'
+  | 'Battle'
+  | 'Other'
+  | 'Unknown';
 
 export interface DeckBuilderStats {
   totalCards: number;
@@ -91,14 +106,31 @@ export function getDeckEntryCount(deck: Deck, section: DeckBuilderSection, rawNa
 
 export function getDeckBuilderRows(deck: Deck): DeckBuilderRow[] {
   const commanderNames = new Set(deck.commanders.map(name => name.toLowerCase()));
+  const cardIndex = getDeckCardMetadataIndex(deck);
+  const makeRow = (section: DeckBuilderSection, name: string, count: number): DeckBuilderRow => {
+    const metadata = cardIndex.get(name.toLowerCase());
+    return {
+      section,
+      name,
+      count,
+      primaryType: section === 'commander' ? 'Commander' : getPrimaryTypeGroup(metadata),
+      typeLine: metadata?.typeLine,
+    };
+  };
   return [
-    ...deck.commanders.map(name => ({ section: 'commander' as const, name, count: 1 })),
+    ...deck.commanders.map(name => makeRow('commander', name, 1)),
     ...deck.cards
       .filter(card => !commanderNames.has(card.name.toLowerCase()))
-      .map(card => ({ section: 'main' as const, name: card.name, count: card.count })),
-    ...deck.sideboard.map(card => ({ section: 'sideboard' as const, name: card.name, count: card.count })),
-    ...deck.maybeboard.map(card => ({ section: 'maybeboard' as const, name: card.name, count: card.count })),
-  ];
+      .map(card => makeRow('main', card.name, card.count)),
+    ...deck.sideboard.map(card => makeRow('sideboard', card.name, card.count)),
+    ...deck.maybeboard.map(card => makeRow('maybeboard', card.name, card.count)),
+  ].sort((a, b) => {
+    const typeDelta = getTypeGroupRank(a.primaryType) - getTypeGroupRank(b.primaryType);
+    if (typeDelta !== 0) return typeDelta;
+    const sectionDelta = getSectionRank(a.section) - getSectionRank(b.section);
+    if (sectionDelta !== 0) return sectionDelta;
+    return a.name.localeCompare(b.name);
+  });
 }
 
 export function setCardNote(deck: Deck, cardName: string, note: string): Deck {
@@ -229,7 +261,7 @@ export function serializeDeckLogic(deck: Deck): string {
 }
 
 export function analyzeDeckBuilderStats(deck: Deck): DeckBuilderStats {
-  const customCards = new Map((deck.logicFile?.customCards ?? []).map(card => [card.name.toLowerCase(), card]));
+  const cardIndex = getDeckCardMetadataIndex(deck);
   const curve: Record<number, number> = {};
   const colorPips: Record<string, number> = { W: 0, U: 0, B: 0, R: 0, G: 0, C: 0 };
   const typeCounts: Record<string, number> = {};
@@ -251,9 +283,8 @@ export function analyzeDeckBuilderStats(deck: Deck): DeckBuilderStats {
   const entries = [...deck.cards, ...commanderOnlyEntries];
 
   for (const entry of entries) {
-    const card = customCards.get(entry.name.toLowerCase());
-    const typeLine = card?.typeLine ?? '';
-    const matchedTypes = getCardTypes(typeLine);
+    const card = cardIndex.get(entry.name.toLowerCase());
+    const matchedTypes = getCardTypes(card);
     for (const type of matchedTypes) typeCounts[type] = (typeCounts[type] ?? 0) + entry.count;
     if (matchedTypes.length === 0) {
       typeCounts.Unknown = (typeCounts.Unknown ?? 0) + entry.count;
@@ -319,7 +350,87 @@ function singleLine(value: string): string {
   return value.replace(/\s*\n+\s*/g, ' / ').replace(/\|/g, '/').trim();
 }
 
-function getCardTypes(typeLine: string): string[] {
+function getTypeGroupRank(type: DeckBuilderTypeGroup): number {
+  const order: DeckBuilderTypeGroup[] = [
+    'Commander',
+    'Creature',
+    'Land',
+    'Artifact',
+    'Enchantment',
+    'Planeswalker',
+    'Battle',
+    'Instant',
+    'Sorcery',
+    'Other',
+    'Unknown',
+  ];
+  const index = order.indexOf(type);
+  return index === -1 ? order.length : index;
+}
+
+function getSectionRank(section: DeckBuilderSection): number {
+  return { commander: 0, main: 1, sideboard: 2, maybeboard: 3 }[section];
+}
+
+type DeckCardMetadata = Partial<CustomCardDefinition> & {
+  cardTypes?: string[];
+  type_line?: string;
+  type?: string;
+  card?: Partial<CustomCardDefinition> & { cardTypes?: string[]; type_line?: string; type?: string };
+  definition?: Partial<CustomCardDefinition> & { cardTypes?: string[]; type_line?: string; type?: string };
+};
+
+function getDeckCardMetadataIndex(deck: Deck): Map<string, DeckCardMetadata> {
+  const index = new Map<string, DeckCardMetadata>();
+  for (const card of deck.logicFile?.customCards ?? []) {
+    index.set(card.name.toLowerCase(), card);
+  }
+
+  const readEntryMetadata = (entry: { name: string; count: number }): DeckCardMetadata | undefined => {
+    const raw = entry as unknown as DeckCardMetadata;
+    return raw.definition ?? raw.card ?? raw;
+  };
+
+  for (const entry of [...deck.cards, ...deck.sideboard, ...deck.maybeboard]) {
+    if (index.has(entry.name.toLowerCase())) continue;
+    const metadata = readEntryMetadata(entry);
+    if (metadata?.typeLine || metadata?.type_line || metadata?.cardTypes || metadata?.faces) {
+      index.set(entry.name.toLowerCase(), { ...metadata, name: entry.name });
+    }
+  }
+  return index;
+}
+
+function getPrimaryTypeGroup(card?: DeckCardMetadata): DeckBuilderTypeGroup {
+  const types = getCardTypes(card);
+  const priority: DeckBuilderTypeGroup[] = [
+    'Land',
+    'Creature',
+    'Artifact',
+    'Enchantment',
+    'Planeswalker',
+    'Battle',
+    'Instant',
+    'Sorcery',
+  ];
+  return priority.find(type => types.includes(type)) ?? (types.length ? 'Other' : 'Unknown');
+}
+
+function getCardTypes(card?: DeckCardMetadata): string[] {
   const candidates = ['Creature', 'Land', 'Artifact', 'Enchantment', 'Planeswalker', 'Instant', 'Sorcery', 'Battle'];
-  return candidates.filter(type => new RegExp(`\\b${type}\\b`, 'i').test(typeLine));
+  const explicitTypes = Array.isArray(card?.cardTypes) ? card.cardTypes : [];
+  const faceTypes = (card?.faces ?? [])
+    .flatMap(face => Array.isArray(face.cardTypes) ? face.cardTypes : getCardTypesFromTypeLine(face.typeLine));
+  const typeLine = card?.typeLine ?? card?.type_line ?? card?.type ?? '';
+  const fromLine = getCardTypesFromTypeLine(typeLine);
+  return candidates.filter(type =>
+    explicitTypes.some(cardType => cardType.toLowerCase() === type.toLowerCase()) ||
+    faceTypes.some(cardType => cardType.toLowerCase() === type.toLowerCase()) ||
+    fromLine.includes(type)
+  );
+}
+
+function getCardTypesFromTypeLine(typeLine: string | undefined): string[] {
+  const candidates = ['Creature', 'Land', 'Artifact', 'Enchantment', 'Planeswalker', 'Instant', 'Sorcery', 'Battle'];
+  return candidates.filter(type => new RegExp(`\\b${type}\\b`, 'i').test(typeLine ?? ''));
 }

@@ -201,6 +201,52 @@ assert(stats.sorceryCount === 1, 'expected stats to count known sorceries separa
 assert(stats.curve[2] >= 1, 'expected stats to include Scryfall mana curve data');
 assert(stats.colorPips.U >= 1, 'expected stats to include Scryfall color identity data');
 
+const metadataOnlyDeck = {
+  ...createBlankDeck('Metadata Only Deck'),
+  cards: [
+    {
+      name: 'Metadata Elf',
+      count: 2,
+      definition: {
+        name: 'Metadata Elf',
+        typeLine: 'Creature - Elf Druid',
+        cardTypes: ['Creature'],
+        cmc: 1,
+        colors: ['G'],
+        colorIdentity: ['G'],
+      },
+    },
+    {
+      name: 'Metadata Island',
+      count: 4,
+      definition: {
+        name: 'Metadata Island',
+        typeLine: 'Basic Land - Island',
+        cardTypes: ['Land'],
+        cmc: 0,
+        colors: [],
+        colorIdentity: ['U'],
+      },
+    },
+    {
+      name: 'Metadata Counter',
+      count: 1,
+      typeLine: 'Instant',
+      cardTypes: ['Instant'],
+      cmc: 2,
+      colors: ['U'],
+      colorIdentity: ['U'],
+    },
+  ],
+} as unknown as ReturnType<typeof createBlankDeck>;
+const metadataStats = analyzeDeckBuilderStats(metadataOnlyDeck);
+const metadataRows = getDeckBuilderRows(metadataOnlyDeck);
+assert(metadataStats.creatureCount === 2, 'expected stats to read creature metadata stored on deck entries');
+assert(metadataStats.landCount === 4, 'expected stats to read land metadata stored on deck entries');
+assert(metadataStats.instantCount === 1, 'expected stats to read instant metadata stored on deck entries');
+assert(metadataRows[0].primaryType === 'Creature', `expected first row type grouping to be Creature, got ${metadataRows[0].primaryType}`);
+assert(metadataRows.some(row => row.name === 'Metadata Island' && row.primaryType === 'Land'), 'expected row grouping to split lands by type');
+
 const originalFetch = globalThis.fetch;
 globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
   const target = String(url);

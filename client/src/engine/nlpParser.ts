@@ -117,11 +117,18 @@ export interface ParsedIntent {
   // Token creation
   token?: {
     count: number;
-    power: number;
-    toughness: number;
+    power?: number;
+    toughness?: number;
     colors: string[];
     subTypes: string[];
     name: string;
+    cardTypes?: string[];
+    typeLine?: string;
+    oracleText?: string;
+    keywords?: string[];
+    imageUrl?: string;
+    lookupQuery?: string;
+    preferScryfall?: boolean;
   };
 
   // Dice / coin
@@ -619,16 +626,41 @@ export function parseCommand(raw: string): ParsedIntent {
   // "create 3 1/1 white soldier tokens"
   // "make a 2/2 green bear token"
   // "create treasure token" / "create 2 treasure tokens"
+  const tokenLookupMatch = lower.match(
+    /^(?:create|make|generate|add)\s+(?:(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten)\s+)?(?:a\s+|an\s+)?(?:custom\s+)?tokens?\s*(?:named|called|of|for)?\s+(.+)$/
+  );
+  if (tokenLookupMatch) {
+    const count = parseWordNumber(tokenLookupMatch[1]) || 1;
+    const lookupQuery = tokenLookupMatch[2].replace(/\s+tokens?$/i, '').trim();
+    return {
+      ...result,
+      intent: 'CREATE_TOKEN',
+      count,
+      token: {
+        count,
+        colors: [],
+        subTypes: [],
+        name: normalizeName(lookupQuery),
+        lookupQuery,
+        preferScryfall: true,
+      },
+      confidence: 'medium',
+    };
+  }
+
   const namedTokenMatch = lower.match(
-    /^(?:create|make|generate|add)\s+(?:(\d+|a|an)\s+)?(?:a\s+)?([a-z ]+?)\s+tokens?$/
+    /^(?:create|make|generate|add)\s+(?:(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten)\s+)?(?:a\s+)?([a-z0-9 /+-]+?)\s+tokens?$/
   );
   if (namedTokenMatch) {
     const countRaw = namedTokenMatch[1];
     const tokenDesc = namedTokenMatch[2].trim();
+    const count = parseWordNumber(countRaw) || 1;
 
     // Check if it has P/T in it: "1/1 white soldier"
     const ptMatch = tokenDesc.match(/^(\d+)\/(\d+)\s*(.*)$/);
-    let power = 1, toughness = 1, extras = tokenDesc;
+    let power: number | undefined;
+    let toughness: number | undefined;
+    let extras = tokenDesc;
     if (ptMatch) { power = parseInt(ptMatch[1]); toughness = parseInt(ptMatch[2]); extras = ptMatch[3].trim(); }
 
     // Extract colors
@@ -641,13 +673,23 @@ export function parseCommand(raw: string): ParsedIntent {
     });
 
     const subTypes = cleanWords.filter(Boolean);
-    const name = `${power}/${toughness} ${extras.trim()}`.trim() || tokenDesc;
+    const hasPowerToughness = power !== undefined && toughness !== undefined;
+    const name = hasPowerToughness ? `${power}/${toughness} ${extras.trim()}`.trim() : normalizeName(tokenDesc);
 
     return {
       ...result,
       intent: 'CREATE_TOKEN',
-      count: parseWordNumber(countRaw) || 1,
-      token: { count: parseWordNumber(countRaw) || 1, power, toughness, colors, subTypes, name },
+      count,
+      token: {
+        count,
+        power,
+        toughness,
+        colors,
+        subTypes,
+        name,
+        lookupQuery: tokenDesc,
+        preferScryfall: !hasPowerToughness,
+      },
       confidence: 'medium',
     };
   }
