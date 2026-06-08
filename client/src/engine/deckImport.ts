@@ -27,6 +27,17 @@ export interface DeckFileImportResult {
   error?: string;
 }
 
+export interface PreparedCommanderDeck {
+  deck: Deck;
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+  mainDeckCount: number;
+  commanderCount: number;
+  totalCommanderCount: number;
+  deckHash: string;
+}
+
 export interface ImportOptions {
   allowBannedCards?: boolean;
   captureFetchedCardData?: boolean;
@@ -584,6 +595,19 @@ function normalizeDeckEntries(entries: unknown): Deck['cards'] {
   return normalized;
 }
 
+function mergeDeckEntries(entries: Deck['cards']): Deck['cards'] {
+  const counts = new Map<string, { name: string; count: number }>();
+  for (const entry of entries) {
+    const name = normalizeName(entry.name);
+    const count = Math.max(0, Math.floor(Number(entry.count) || 0));
+    if (!name || count <= 0) continue;
+    const key = name.toLowerCase();
+    const existing = counts.get(key);
+    counts.set(key, { name: existing?.name ?? name, count: (existing?.count ?? 0) + count });
+  }
+  return [...counts.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export function normalizeCommanderDeck(deck: unknown): Deck {
   const raw = (deck && typeof deck === 'object' ? deck : {}) as Partial<Deck>;
   const commanders = uniqueCommanderNames(raw.commanders).slice(0, MAX_COMMANDERS);
@@ -609,6 +633,77 @@ export function normalizeCommanderDeck(deck: unknown): Deck {
     importSource: raw.importSource,
     importedAt: typeof raw.importedAt === 'number' ? raw.importedAt : Date.now(),
     logicFile: raw.logicFile,
+  };
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function hashText(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+export function createCommanderDeckHash(deck: Pick<Deck, 'cards' | 'commanders'>): string {
+  return hashText(stableStringify({
+    commanderNames: uniqueCommanderNames(deck.commanders).sort((a, b) => a.localeCompare(b)),
+    cards: mergeDeckEntries(normalizeDeckEntries(deck.cards)),
+  }));
+}
+
+export function prepareCommanderDeckForUse(deck: Deck): PreparedCommanderDeck {
+  const requestedCommanders = uniqueCommanderNames(deck.commanders);
+  const normalized = normalizeCommanderDeck(deck);
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const commanders = uniqueCommanderNames(normalized.commanders);
+  const cardsWithCommanders = [...normalized.cards];
+
+  for (const commander of commanders) {
+    if (!cardsWithCommanders.some(card => card.name.toLowerCase() === commander.toLowerCase())) {
+      cardsWithCommanders.push({ name: commander, count: 1 });
+    }
+  }
+
+  const canonicalDeck: Deck = {
+    ...normalized,
+    commanders,
+    cards: mergeDeckEntries(cardsWithCommanders),
+    sideboard: mergeDeckEntries(normalized.sideboard),
+    maybeboard: mergeDeckEntries(normalized.maybeboard),
+  };
+  const totalCommanderCount = canonicalDeck.cards.reduce((sum, card) => sum + card.count, 0);
+  const commanderNameSet = new Set(commanders.map(name => name.toLowerCase()));
+  const mainDeckCount = canonicalDeck.cards
+    .filter(card => !commanderNameSet.has(card.name.toLowerCase()))
+    .reduce((sum, card) => sum + card.count, 0);
+  const commanderCount = requestedCommanders.length || commanders.length;
+
+  if (commanderCount === 0) errors.push('Missing commander. Add one commander card to the Commander section.');
+  if (commanderCount > MAX_COMMANDERS) errors.push(`Too many commanders. Commander allows one commander, or two only when both cards can be partners/backgrounds; found ${commanderCount}.`);
+  if (totalCommanderCount !== 100) errors.push(`Card count not 100. This deck has ${totalCommanderCount} cards including commanders.`);
+
+  return {
+    deck: canonicalDeck,
+    valid: errors.length === 0,
+    errors,
+    warnings,
+    mainDeckCount,
+    commanderCount,
+    totalCommanderCount,
+    deckHash: createCommanderDeckHash(canonicalDeck),
   };
 }
 
@@ -1034,10 +1129,11 @@ export function loadDecksFromStorage(): Deck[] {
 }
 
 export function saveDeck(deck: Deck): void {
+  const canonicalDeck = prepareCommanderDeckForUse(deck).deck;
   const decks = loadDecksFromStorage();
-  const idx = decks.findIndex(d => d.id === deck.id);
-  if (idx >= 0) decks[idx] = deck;
-  else decks.push(deck);
+  const idx = decks.findIndex(d => d.id === canonicalDeck.id);
+  if (idx >= 0) decks[idx] = canonicalDeck;
+  else decks.push(canonicalDeck);
   saveDecksToStorage(limitStoredDecks(decks));
 }
 

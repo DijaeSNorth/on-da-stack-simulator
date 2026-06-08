@@ -5,6 +5,9 @@
  */
 
 import {
+  prepareCommanderDeckForUse,
+} from '../client/src/engine/deckImport';
+import {
   createCardState,
   createDefaultGameConfig,
   createEmptyGameState,
@@ -93,6 +96,7 @@ function makeLobby(ready = true): LobbyState {
         cardCount: s1.cardCount,
         deckHash: s1.deckHash,
         status: 'valid',
+        errors: [],
         warnings: [],
       },
       [p2.playerId]: {
@@ -103,6 +107,7 @@ function makeLobby(ready = true): LobbyState {
         cardCount: s2.cardCount,
         deckHash: s2.deckHash,
         status: 'valid',
+        errors: [],
         warnings: [],
       },
     },
@@ -181,11 +186,26 @@ assert(!validateMultiplayerMessage({ ...validMessage, protocolVersion: 99 }, 'RO
 
 const submission = createDeckSubmission(deck('player-one'), 'player-one');
 assert(validateDeckSubmission(submission).valid, 'expected a valid 100-card commander submission to pass');
+const canonicalPrep = prepareCommanderDeckForUse({
+  ...deck('player-one'),
+  cards: [
+    { name: ' Vial Smasher the Fierce ', count: 1 },
+    { name: 'Island', count: 30 },
+    { name: 'Island ', count: 2 },
+    { name: 'Swamp', count: 32 },
+    { name: 'Mountain', count: 34 },
+  ],
+});
+assert(canonicalPrep.valid, 'expected canonical prep to accept a 100-card commander deck after trimming and merging');
+assert(canonicalPrep.deck.cards.find(card => card.name === 'Island')?.count === 32, 'expected canonical prep to merge duplicate card entries');
+assert(canonicalPrep.totalCommanderCount === 100, 'expected canonical prep count to match submission count logic');
 const tampered = {
   ...submission,
   cards: submission.cards.map(card => card.name === 'Island' ? { ...card, count: card.count + 1 } : card),
 };
 assert(!validateDeckSubmission(tampered).valid, 'expected deck hash/count validation to reject tampered deck contents');
+assert(!prepareCommanderDeckForUse({ ...deck('short'), cards: deck('short').cards.slice(0, -1) }).valid, 'expected 99-card deck to fail multiplayer prep');
+assert(!prepareCommanderDeckForUse({ ...deck('long'), cards: [...deck('long').cards, { name: 'Forest', count: 1 }] }).valid, 'expected 101-card deck to fail multiplayer prep');
 
 const readyLobby = makeLobby(true);
 assert(canHostStartFromLobby(readyLobby).canStart, 'expected host to start when 2 seated players have valid decks and are ready');

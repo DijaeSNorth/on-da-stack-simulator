@@ -3,6 +3,7 @@ import { useGameStore } from '../../store/gameStore';
 import {
   importDecklist,
   parseDeckFilePayload,
+  prepareCommanderDeckForUse,
   saveDeck,
   loadFavoriteDeckIds,
   toggleFavoriteDeck,
@@ -183,6 +184,8 @@ export function LobbyScreen() {
   );
   const canStartTable = gameMode !== 'table' || (tableStart.canStart && !startHandshakeActive);
   const tableSyncWaitSeconds = Math.max(1, Math.ceil(tableStart.waitMs / 1000));
+  const importPreparation = importResult ? prepareCommanderDeckForUse(importResult.deck) : null;
+  const importMultiplayerValid = Boolean(importPreparation?.valid);
 
   useEffect(() => {
     if (gameMode !== 'table' || !isTableHost || tableStart.waitMs <= 0) return;
@@ -255,7 +258,15 @@ export function LobbyScreen() {
     try {
       const importOptions = { allowBannedCards: houseRules.has('allow_banned_cards') };
       const result = await importDecklist(deckText, deckName || 'Imported Deck', undefined, undefined, customLogicText, importOptions);
-      setImportResult(result);
+      const prepared = prepareCommanderDeckForUse(result.deck);
+      setImportResult({
+        ...result,
+        deck: prepared.deck,
+        errors: [...result.errors, ...prepared.errors],
+        warnings: [...result.warnings, ...prepared.warnings],
+        cardCount: prepared.totalCommanderCount,
+        commanders: prepared.deck.commanders,
+      });
     } catch (err) {
       setImportError(err instanceof Error ? err.message : 'Deck import failed.');
     } finally {
@@ -273,8 +284,13 @@ export function LobbyScreen() {
         : 'Choose a player before assigning a deck.');
       return;
     }
-    updatePlayer(setupPlayerIndex, { deckId: deck.id });
-    await store.loadDeck(targetPlayerId, deck);
+    const prepared = prepareCommanderDeckForUse(deck);
+    if (gameMode === 'table' && !prepared.valid) {
+      setImportError(`Deck is not multiplayer-valid: ${prepared.errors.join(' ')}`);
+      return;
+    }
+    updatePlayer(setupPlayerIndex, { deckId: prepared.deck.id });
+    await store.loadDeck(targetPlayerId, prepared.deck);
     setImportResult(null);
     setImportError('');
     setImportNotice('');
@@ -304,10 +320,15 @@ export function LobbyScreen() {
 
   async function saveDeckAndAssign() {
     if (!importResult) return;
-    saveDeck(importResult.deck);
+    const prepared = prepareCommanderDeckForUse(importResult.deck);
+    if (gameMode === 'table' && !prepared.valid) {
+      setImportError(`Deck is not multiplayer-valid: ${prepared.errors.join(' ')}`);
+      return;
+    }
+    saveDeck(prepared.deck);
     store.loadDecks();
     setFavoriteDeckIds(loadFavoriteDeckIds());
-    await assignDeckToPlayer(importResult.deck);
+    await assignDeckToPlayer(prepared.deck);
   }
 
   function getGameConfig(configPlayerCount: PlayerCount = playerCount, votePlayers: { id: string }[] = players) {
@@ -656,6 +677,22 @@ export function LobbyScreen() {
                     const peer = seatedPeers.find(p => p.seatIndex === index);
                     const deckStatus = deckStatusBySeat.get(index);
                     const occupied = Boolean(peer);
+                    const statusLabel = deckStatus?.deckStatus ?? 'none';
+                    const rejectionText = peer?.deck?.errors?.join(' ') || peer?.deck?.warnings?.join(' ') || '';
+                    const deckLine = statusLabel === 'valid'
+                      ? deckStatus?.deckName ?? 'Deck valid'
+                      : statusLabel === 'submitted'
+                        ? `${deckStatus?.deckName ?? 'Deck'} submitted`
+                        : statusLabel === 'rejected'
+                          ? `Rejected: ${rejectionText || 'Deck failed validation'}`
+                          : 'Deck: none';
+                    const deckLineColor = statusLabel === 'valid'
+                      ? '#86efac'
+                      : statusLabel === 'rejected'
+                        ? '#fca5a5'
+                        : statusLabel === 'submitted'
+                          ? '#93c5fd'
+                          : '#fbbf24';
                     return (
                       <div
                         key={seat.id}
@@ -697,20 +734,20 @@ export function LobbyScreen() {
                                 width: 6,
                                 height: 6,
                                 borderRadius: '50%',
-                                background: deckStatus?.ready ? '#22c55e' : '#f59e0b',
+                                background: statusLabel === 'valid' ? '#22c55e' : statusLabel === 'rejected' ? '#ef4444' : '#f59e0b',
                                 flexShrink: 0,
                               }} />
                               <span
-                                title={deckStatus?.deckName ?? 'No deck loaded'}
+                                title={deckLine}
                                 style={{
                                   fontSize: 9,
-                                  color: deckStatus?.ready ? '#86efac' : '#fbbf24',
+                                  color: deckLineColor,
                                   overflow: 'hidden',
                                   textOverflow: 'ellipsis',
                                   whiteSpace: 'nowrap',
                                 }}
                               >
-                                {deckStatus?.ready ? deckStatus.deckName ?? 'Deck loaded' : 'Needs deck'}
+                                {statusLabel}: {deckLine}
                               </span>
                             </div>
                           )}
@@ -1063,7 +1100,20 @@ export function LobbyScreen() {
                 padding: 10,
               }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: '#e2e8f0', marginBottom: 6 }}>
-                  {importResult.deck.name} — {importResult.deck.cards.reduce((s, c) => s + c.count, 0)} cards
+                  {importResult.deck.name} — {importPreparation?.totalCommanderCount ?? importResult.deck.cards.reduce((s, c) => s + c.count, 0)} cards
+                </div>
+
+                <div style={{
+                  fontSize: 10,
+                  color: importMultiplayerValid ? '#86efac' : '#fca5a5',
+                  background: importMultiplayerValid ? 'rgba(20,83,45,0.35)' : 'rgba(127,29,29,0.24)',
+                  border: `1px solid ${importMultiplayerValid ? '#166534' : '#7f1d1d'}`,
+                  borderRadius: 4,
+                  padding: '4px 6px',
+                  marginBottom: 6,
+                  fontWeight: 700,
+                }}>
+                  {importMultiplayerValid ? 'Valid for multiplayer' : 'Not valid for multiplayer'}
                 </div>
 
                 {importResult.deck.commanders.length > 0 && (
@@ -1106,14 +1156,14 @@ export function LobbyScreen() {
                     data-help-body="Stores the validated deck in one of your saved slots and assigns it to the current player or lobby seat."
                     data-help-placement="top"
                     onClick={saveDeckAndAssign}
-                    disabled={isLocalSpectator || !tableDeckControlsEnabled}
+                    disabled={isLocalSpectator || !tableDeckControlsEnabled || (gameMode === 'table' && !importMultiplayerValid)}
                     style={{
                       flex: 1, padding: '6px 0',
-                      background: (isLocalSpectator || !tableDeckControlsEnabled) ? '#182127' : '#14532d',
-                      color: (isLocalSpectator || !tableDeckControlsEnabled) ? '#475569' : '#86efac',
+                      background: (isLocalSpectator || !tableDeckControlsEnabled || (gameMode === 'table' && !importMultiplayerValid)) ? '#182127' : '#14532d',
+                      color: (isLocalSpectator || !tableDeckControlsEnabled || (gameMode === 'table' && !importMultiplayerValid)) ? '#475569' : '#86efac',
                       border: 'none',
                       borderRadius: 4,
-                      cursor: (isLocalSpectator || !tableDeckControlsEnabled) ? 'not-allowed' : 'pointer',
+                      cursor: (isLocalSpectator || !tableDeckControlsEnabled || (gameMode === 'table' && !importMultiplayerValid)) ? 'not-allowed' : 'pointer',
                       fontSize: 10,
                       fontWeight: 700,
                     }}

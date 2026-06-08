@@ -86,6 +86,7 @@ export interface RoomDeckSummary {
   commanders: string[];
   deckHash?: string;
   status?: 'none' | 'submitted' | 'valid' | 'rejected';
+  errors?: string[];
   warnings?: string[];
 }
 
@@ -467,6 +468,7 @@ function compactDeckSummaryForRelay(deck: RoomDeckSummary | undefined): RoomDeck
       : [],
     deckHash: deck.deckHash ? clampText(deck.deckHash, '', 80) : undefined,
     status: deck.status,
+    errors: Array.isArray(deck.errors) ? deck.errors.slice(0, 6).map(error => clampText(error, '', 160)) : undefined,
     warnings: Array.isArray(deck.warnings) ? deck.warnings.slice(0, 4).map(warning => clampText(warning, '', 120)) : undefined,
   };
 }
@@ -564,6 +566,7 @@ function refreshLobbyState(status?: LobbyState['status']): LobbyState | null {
       cardCount: presence.deck.cardCount,
       deckHash: presence.deck.deckHash ?? '',
       status: presence.deck.status ?? presence.deckStatus ?? 'none',
+      errors: presence.deck.errors ?? [],
       warnings: presence.deck.warnings ?? [],
     };
   }
@@ -1241,7 +1244,7 @@ function autoAssignSeat(presence: RoomPresence): { isSpectator: boolean; seatInd
 function handleDeckSubmitted(submission: DeckSubmission, presence: RoomPresence): SubmittedDeckPublicSummary {
   const authoritativePresence = _peers.get(presence.peerId) ?? presence;
   if (submission.playerId !== authoritativePresence.playerId) {
-    const rejected = publicDeckSummary({ ...submission, playerId: authoritativePresence.playerId }, 'rejected', ['Deck submission player id did not match the connection identity.']);
+    const rejected = publicDeckSummary({ ...submission, playerId: authoritativePresence.playerId }, 'rejected', [], ['Deck submission player id did not match the connection identity.']);
     sendDeckValidationToPeer(authoritativePresence.peerId, rejected, false);
     return rejected;
   }
@@ -1249,7 +1252,7 @@ function handleDeckSubmitted(submission: DeckSubmission, presence: RoomPresence)
   _deckSubmissions.set(submission.playerId, submission);
   const validation = validateDeckSubmission(submission);
   const status = validation.valid ? 'valid' : 'rejected';
-  const summary = publicDeckSummary(submission, status, validation.warnings);
+  const summary = publicDeckSummary(submission, status, validation.warnings, validation.errors);
   _peers.set(authoritativePresence.peerId, {
     ...authoritativePresence,
     deck: {
@@ -1259,6 +1262,7 @@ function handleDeckSubmitted(submission: DeckSubmission, presence: RoomPresence)
       commanders: summary.commanderNames,
       deckHash: summary.deckHash,
       status,
+      errors: summary.errors,
       warnings: summary.warnings,
     },
     deckStatus: status,
@@ -1521,6 +1525,7 @@ function handleJoinerMessage(conn: DataConnection, raw: unknown): void {
           commanders: summary.commanderNames,
           deckHash: summary.deckHash,
           status: summary.status,
+          errors: summary.errors,
           warnings: summary.warnings,
         },
         lastSeen: Date.now(),

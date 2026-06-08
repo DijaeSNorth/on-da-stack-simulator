@@ -1,4 +1,5 @@
 import type { Deck, GameState, Player, PlayerAvatarImage } from '../types/game';
+import { prepareCommanderDeckForUse } from './deckImport';
 
 export const MULTIPLAYER_PROTOCOL_VERSION = 2;
 const PLAYER_ID_KEY = 'on_da_stack_player_id_v2';
@@ -49,6 +50,7 @@ export interface SubmittedDeckPublicSummary {
   cardCount: number;
   deckHash: string;
   status: DeckStatus;
+  errors: string[];
   warnings: string[];
 }
 
@@ -276,48 +278,63 @@ export function validateMultiplayerMessage(raw: unknown, expectedRoomId?: string
 }
 
 export function createDeckSubmission(deck: Deck, playerId: string, submittedAt = Date.now()): DeckSubmission {
-  const normalizedCards = normalizeDeckCards(deck);
-  const cardCount = normalizedCards.reduce((sum, card) => sum + card.count, 0);
+  const prepared = prepareCommanderDeckForUse(deck);
   const base = {
     playerId,
-    deckId: deck.id,
-    deckName: deck.name,
-    commanderNames: [...deck.commanders],
-    cardCount,
-    cards: normalizedCards,
+    deckId: prepared.deck.id,
+    deckName: prepared.deck.name,
+    commanderNames: [...prepared.deck.commanders],
+    cardCount: prepared.totalCommanderCount,
+    cards: prepared.deck.cards,
   };
   return {
     ...base,
-    deckHash: computeDeckHash(base),
+    deckHash: prepared.deckHash,
     submittedAt,
   };
 }
 
 export function computeDeckHash(submission: Omit<DeckSubmission, 'deckHash' | 'submittedAt'>): string {
-  return hashText(stableStringify({
-    playerId: submission.playerId,
-    deckId: submission.deckId,
-    deckName: submission.deckName,
-    commanderNames: [...submission.commanderNames].sort(),
-    cardCount: submission.cardCount,
-    cards: normalizeDeckCards({ cards: submission.cards } as Deck),
-  }));
+  return prepareCommanderDeckForUse({
+    id: submission.deckId || 'submitted-deck',
+    name: submission.deckName || 'Submitted deck',
+    format: 'commander',
+    commanders: submission.commanderNames,
+    cards: submission.cards,
+    sideboard: [],
+    maybeboard: [],
+    colorIdentity: [],
+    importedAt: Date.now(),
+  }).deckHash;
 }
 
-export function validateDeckSubmission(submission: DeckSubmission): { valid: boolean; warnings: string[]; expectedHash: string } {
+export function validateDeckSubmission(submission: DeckSubmission): { valid: boolean; errors: string[]; warnings: string[]; expectedHash: string } {
+  const errors: string[] = [];
   const warnings: string[] = [];
+  const prepared = prepareCommanderDeckForUse({
+    id: submission.deckId || 'submitted-deck',
+    name: submission.deckName || 'Submitted deck',
+    format: 'commander',
+    commanders: submission.commanderNames,
+    cards: submission.cards,
+    sideboard: [],
+    maybeboard: [],
+    colorIdentity: [],
+    importedAt: submission.submittedAt,
+  });
   const expectedHash = computeDeckHash(submission);
-  const actualCount = submission.cards.reduce((sum, card) => sum + card.count, 0);
-  if (!submission.playerId) warnings.push('Missing player id.');
-  if (!submission.deckId) warnings.push('Missing deck id.');
-  if (actualCount !== submission.cardCount) warnings.push(`Card count mismatch: expected ${submission.cardCount}, got ${actualCount}.`);
-  if (submission.deckHash !== expectedHash) warnings.push('Deck hash mismatch.');
-  if (submission.cardCount !== 100) warnings.push(`Commander deck has ${submission.cardCount} cards instead of 100.`);
-  if (submission.commanderNames.length === 0 || submission.commanderNames.length > 2) warnings.push('Commander deck must identify one or two commanders.');
-  return { valid: warnings.length === 0, warnings, expectedHash };
+  if (!submission.playerId) errors.push('Missing playerId.');
+  if (!submission.deckId) errors.push('Missing deckId.');
+  if (prepared.commanderCount === 0) errors.push('Missing commander.');
+  if (prepared.commanderCount > 2) errors.push(`Too many commanders: found ${prepared.commanderCount}.`);
+  if (prepared.totalCommanderCount !== 100) errors.push(`Card count not 100: found ${prepared.totalCommanderCount}.`);
+  if (submission.cardCount !== prepared.totalCommanderCount) errors.push(`Submitted card count mismatch: claimed ${submission.cardCount}, canonical count is ${prepared.totalCommanderCount}.`);
+  if (submission.deckHash !== expectedHash) errors.push('Deck hash mismatch.');
+  warnings.push(...prepared.warnings);
+  return { valid: errors.length === 0, errors, warnings, expectedHash };
 }
 
-export function publicDeckSummary(submission: DeckSubmission, status: DeckStatus, warnings: string[] = []): SubmittedDeckPublicSummary {
+export function publicDeckSummary(submission: DeckSubmission, status: DeckStatus, warnings: string[] = [], errors: string[] = []): SubmittedDeckPublicSummary {
   return {
     playerId: submission.playerId,
     deckId: submission.deckId,
@@ -326,6 +343,7 @@ export function publicDeckSummary(submission: DeckSubmission, status: DeckStatus
     cardCount: submission.cardCount,
     deckHash: submission.deckHash,
     status,
+    errors: errors.slice(0, 6),
     warnings: warnings.slice(0, 4),
   };
 }
@@ -448,33 +466,6 @@ function publicPlayerState(player: Player): PublicPlayerState {
     hasPriority: player.hasPriority,
     deckId: player.deckId,
   };
-}
-
-function normalizeDeckCards(deck: Pick<Deck, 'cards'>): { name: string; count: number }[] {
-  return deck.cards
-    .map(card => ({ name: String(card.name).replace(/\s+/g, ' ').trim(), count: Math.max(0, Math.floor(Number(card.count) || 0)) }))
-    .filter(card => card.name && card.count > 0)
-    .sort((a, b) => a.name.localeCompare(b.name));
-}
-
-function stableStringify(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
-  if (value && typeof value === 'object') {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
-      .join(',')}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function hashText(value: string): string {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < value.length; i += 1) {
-    hash ^= value.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return `fnv1a-${(hash >>> 0).toString(16).padStart(8, '0')}`;
 }
 
 function isValidProtocolId(value: unknown): value is string {

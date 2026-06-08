@@ -227,12 +227,26 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
             ) : peers.map(p => (
               (() => {
                 const deckStatus = deckStatusByPeer.get(p.peerId);
+                const statusLabel = p.deckStatus ?? p.deck?.status ?? deckStatus?.deckStatus ?? 'none';
+                const rejectionText = p.deck?.errors?.join(' ') || p.deck?.warnings?.join(' ') || '';
                 const deckLabel = p.isSpectator
                   ? 'No deck needed'
-                  : deckStatus?.ready
-                    ? deckStatus.deckName ?? 'Deck loaded'
-                    : 'Needs deck';
-                const deckColor = p.isSpectator ? '#64748b' : deckStatus?.ready ? '#86efac' : '#fbbf24';
+                  : statusLabel === 'valid'
+                    ? deckStatus?.deckName ?? p.deck?.name ?? 'Deck valid'
+                    : statusLabel === 'submitted'
+                      ? `${deckStatus?.deckName ?? p.deck?.name ?? 'Deck'} submitted`
+                      : statusLabel === 'rejected'
+                        ? `Rejected: ${rejectionText || 'Deck failed validation'}`
+                        : 'none';
+                const deckColor = p.isSpectator
+                  ? '#64748b'
+                  : statusLabel === 'valid'
+                    ? '#86efac'
+                    : statusLabel === 'rejected'
+                      ? '#fca5a5'
+                      : statusLabel === 'submitted'
+                        ? '#93c5fd'
+                        : '#fbbf24';
                 return (
               <div
                 key={p.peerId}
@@ -282,7 +296,7 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
                       whiteSpace: 'nowrap',
                     }}
                   >
-                    {p.isSpectator ? deckLabel : `Deck: ${deckLabel}`}
+                    {p.isSpectator ? deckLabel : `Deck ${statusLabel}: ${deckLabel}`}
                   </div>
                 </div>
                 {isHost && p.peerId === multiplayer.peerId && (

@@ -42,13 +42,17 @@ function mockScryfallCard(name: string): Record<string, unknown> {
 
 function presence(peerId: string, name: string, seatIndex: number): RoomPresence {
   return {
+    playerId: `player-${peerId}`,
     peerId,
+    sessionId: `session-${peerId}`,
     name,
     color: seatIndex === 0 ? '#3b82f6' : '#ef4444',
     seatIndex,
     isSpectator: false,
     online: true,
     lastSeen: Date.now(),
+    deckStatus: 'valid',
+    ready: true,
   };
 }
 
@@ -81,7 +85,7 @@ try {
     '1 Test Captain',
     '',
     'Deck',
-    '10 Forest',
+    '97 Forest',
     '1 Sol Ring',
     '1 Counterspell',
   ].join('\n'), 'Imported Host Deck');
@@ -91,7 +95,7 @@ try {
     '1 Test Sage',
     '',
     'Deck',
-    '10 Island',
+    '97 Island',
     '1 Command Tower',
     '1 Lightning Bolt',
   ].join('\n'), 'Favorite Guest Deck');

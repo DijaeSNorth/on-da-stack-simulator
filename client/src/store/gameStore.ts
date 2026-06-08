@@ -20,7 +20,7 @@ import {
   type DetectedTrigger,
 } from '../engine/assistantEngine';
 import { getEffectiveCardDefinition, getEffectiveCardName, getEffectiveOracleText } from '../engine/cardFaces';
-import { saveDeck, loadDecksFromStorage, normalizeCommanderDeck } from '../engine/deckImport';
+import { saveDeck, loadDecksFromStorage, normalizeCommanderDeck, prepareCommanderDeckForUse } from '../engine/deckImport';
 import { getBannedReason } from '../data/cardDatabase';
 import { createReplay, saveReplayToStorage } from '../engine/replayEngine';
 import { getActiveProfile } from '../engine/profileStorage';
@@ -691,11 +691,16 @@ function sameHandMembers(current: string[], proposed: string[]): boolean {
 }
 
 function createRoomDeckSummary(deck: Deck): RoomDeckSummary {
+  const prepared = prepareCommanderDeckForUse(deck);
   return {
-    id: deck.id,
-    name: deck.name || 'Loaded deck',
-    cardCount: deck.cards.reduce((sum, card) => sum + card.count, 0) + deck.commanders.length,
-    commanders: deck.commanders.slice(0, 2),
+    id: prepared.deck.id,
+    name: prepared.deck.name || 'Loaded deck',
+    cardCount: prepared.totalCommanderCount,
+    commanders: prepared.deck.commanders.slice(0, 2),
+    deckHash: prepared.deckHash,
+    status: prepared.valid ? 'valid' : 'rejected',
+    errors: prepared.errors,
+    warnings: prepared.warnings,
   };
 }
 
@@ -1175,7 +1180,9 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   loadDeck: async (playerId, deck) => {
-    const newState = await loadDeckIntoPlayer(get().game, playerId, normalizeCommanderDeck(deck));
+    const prepared = prepareCommanderDeckForUse(deck);
+    const canonicalDeck = prepared.deck;
+    const newState = await loadDeckIntoPlayer(get().game, playerId, canonicalDeck);
     const flags = getLoadedBannedCardFlags(newState, playerId);
     set({ game: newState, ui: withAssistantMessages(get().ui, newState, flags) });
     const state = get();
@@ -1184,17 +1191,17 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       playerId === state.localPlayerId &&
       ['host', 'joined', 'migrating'].includes(state.multiplayer.status)
     ) {
-      const submitted = submitDeckToHost(normalizeCommanderDeck(deck));
+      const submitted = submitDeckToHost(canonicalDeck);
       if (submitted && state.multiplayer.status === 'host') return;
       state.updateMultiplayerPresence({
         deck: submitted
           ? {
-            ...createRoomDeckSummary(normalizeCommanderDeck(deck)),
+            ...createRoomDeckSummary(canonicalDeck),
             deckHash: submitted.deckHash,
             status: 'submitted',
           }
-          : createRoomDeckSummary(normalizeCommanderDeck(deck)),
-        deckStatus: submitted ? 'submitted' : 'valid',
+          : createRoomDeckSummary(canonicalDeck),
+        deckStatus: submitted ? 'submitted' : prepared.valid ? 'valid' : 'rejected',
         ready: false,
       });
     }
