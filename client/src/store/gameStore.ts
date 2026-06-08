@@ -670,6 +670,18 @@ export function syncGamePlayerMetadataFromPresence(game: GameState, peers: Recor
   return changed ? { ...game, players } : game;
 }
 
+export function resolveLocalPlayerIdFromPresence(
+  game: Pick<GameState, 'players'>,
+  peers: Record<string, RoomPresence>,
+  peerId: string | null | undefined,
+  fallback = '',
+): string {
+  const self = peerId ? peers[peerId] : undefined;
+  if (!self) return fallback;
+  if (self.isSpectator) return '';
+  return game.players[self.seatIndex]?.id ?? fallback;
+}
+
 export const useGameStore = create<GameStore>()((set, get) => ({
   game: createEmptyGameState(createDefaultGameConfig(4)),
   ui: DEFAULT_UI,
@@ -683,10 +695,24 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     initMultiplayer(
       // onGameUpdate — remote peer pushed a new GameState
       (game: GameState) => {
-        const status = get().multiplayer.status;
+        const { multiplayer, localPlayerId: currentLocalPlayerId, ui } = get();
+        const status = multiplayer.status;
         const remoteHostStateIsAuthoritative = status === 'connecting' || status === 'joined' || status === 'migrating';
         if (remoteHostStateIsAuthoritative || game.lastUpdatedAt > get().game.lastUpdatedAt) {
-          set({ game });
+          const syncedGame = syncGamePlayerMetadataFromPresence(game, multiplayer.peers);
+          const localPlayerId = resolveLocalPlayerIdFromPresence(
+            syncedGame,
+            multiplayer.peers,
+            multiplayer.peerId,
+            currentLocalPlayerId,
+          );
+          set({
+            game: syncedGame,
+            localPlayerId,
+            ui: syncedGame.status === 'playing'
+              ? { ...ui, screen: 'game', lobbyOpen: false }
+              : ui,
+          });
         }
       },
       // onPresenceUpdate — someone joined/left
@@ -694,11 +720,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         set(s => {
           const game = syncGamePlayerMetadataFromPresence(s.game, peers);
           const self = s.multiplayer.peerId ? peers[s.multiplayer.peerId] : undefined;
-          const localPlayerId = self
-            ? self.isSpectator
-              ? ''
-              : (game.players[self.seatIndex]?.id ?? s.localPlayerId)
-            : s.localPlayerId;
+          const localPlayerId = resolveLocalPlayerIdFromPresence(game, peers, s.multiplayer.peerId, s.localPlayerId);
           return {
             game,
             localPlayerId,
@@ -1076,7 +1098,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     }
     const action = createAction(g, g.activePlayerId, 'GAME_START', 'Game started.');
     set({
-      game: { ...g, status: 'playing', phase: 'main1', actionLog: [...g.actionLog, action] },
+      game: { ...g, status: 'playing', phase: 'main1', actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() },
       ui: { ...get().ui, screen: 'game', lobbyOpen: false },
     });
   },

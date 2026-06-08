@@ -4,7 +4,7 @@
  * Run with: npx tsx tests/multiplayer-role-store.test.ts
  */
 
-import { syncGamePlayerMetadataFromPresence, useGameStore } from '../client/src/store/gameStore';
+import { resolveLocalPlayerIdFromPresence, syncGamePlayerMetadataFromPresence, useGameStore } from '../client/src/store/gameStore';
 import { createCardState, createDefaultGameConfig, createEmptyGameState, createPlayer } from '../client/src/engine/gameEngine';
 import type { CardDefinition, GameState } from '../client/src/types/game';
 import type { RoomPresence } from '../client/src/engine/multiplayerSync';
@@ -91,6 +91,19 @@ assert(syncedGame.players[1].library.length === 1, 'presence sync must preserve 
 assert(syncedGame.players[1].name === 'Guest Profile', 'presence sync should update seat display name');
 assert(syncedGame.players[1].color === '#f59e0b', 'presence sync should update seat color');
 assert(syncedGame.lastUpdatedAt === baseSyncGame.lastUpdatedAt, 'presence sync should not change the game clock');
+assert(
+  resolveLocalPlayerIdFromPresence(syncedGame, {
+    host: makePresence('host', 0),
+    'peer-local': makePresence('peer-local', 1),
+  }, 'peer-local', 'stale-local-id') === 'p2',
+  'remote host snapshots must resolve the joiner local player id from the assigned seat',
+);
+assert(
+  resolveLocalPlayerIdFromPresence(syncedGame, {
+    spectator: makePresence('spectator', -1, true),
+  }, 'spectator', 'stale-local-id') === '',
+  'spectator remote snapshots must not keep a stale local player id',
+);
 
 const testDef: CardDefinition = {
   id: 'test-card',

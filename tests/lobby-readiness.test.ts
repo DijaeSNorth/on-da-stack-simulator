@@ -75,6 +75,17 @@ const ready = canStartCommanderTable({
 assert(ready.canStart, 'expected host to start when both seated authoritative players have loaded decks');
 assert(ready.occupiedCount === 2, 'expected spectator to be ignored by occupied player count');
 
+const readyWithActualDeckSync = canStartCommanderTable({
+  isHost: true,
+  peers,
+  playerCount: 2,
+  seats: staleLocalSeats,
+  gamePlayers: [hostPlayer, guestPlayer],
+  savedDecks: [],
+  requireLoadedGameDecks: true,
+});
+assert(readyWithActualDeckSync.canStart, 'expected host to start when actual synced card state exists for every seated player');
+
 const namedDeckStatuses = getTableDeckStatus({
   peers,
   playerCount: 2,
@@ -105,6 +116,24 @@ assert(
   syncedPresenceOnly.find(status => status.peer.peerId === 'guest')?.deckName === 'Guest Remote Deck',
   'expected joiners and host to see synced deck names from presence',
 );
+
+const hostWaitingForActualDeckSync = canStartCommanderTable({
+  isHost: true,
+  peers: {
+    host: { ...presence('host', 'Host', 0), deck: { id: 'host-remote-deck', name: 'Host Remote Deck', cardCount: 100, commanders: ['Host Commander'] } },
+    guest: { ...presence('guest', 'Guest', 1), deck: { id: 'guest-remote-deck', name: 'Guest Remote Deck', cardCount: 100, commanders: ['Guest Commander'] } },
+  },
+  playerCount: 2,
+  seats: staleLocalSeats,
+  gamePlayers: [
+    { ...hostPlayer, deckId: undefined, library: [], commandZone: [] },
+    { ...guestPlayer, deckId: undefined, library: [], commandZone: [] },
+  ],
+  savedDecks: [],
+  requireLoadedGameDecks: true,
+});
+assert(!hostWaitingForActualDeckSync.canStart, 'expected host start to wait until actual card state syncs, not only deck summaries');
+assert(hostWaitingForActualDeckSync.missingDeckPlayers.includes('Guest'), 'expected host start wait message to name missing joined deck state');
 
 const missingGuest = canStartCommanderTable({
   isHost: true,

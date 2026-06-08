@@ -39,12 +39,14 @@ export function getTableDeckStatus({
   seats,
   gamePlayers,
   savedDecks,
+  requireLoadedGameDecks = false,
 }: {
   peers: Record<string, RoomPresence>;
   playerCount: number;
   seats: LobbySeat[];
   gamePlayers: Player[];
   savedDecks: Deck[];
+  requireLoadedGameDecks?: boolean;
 }): TableDeckStatus[] {
   return getSeatedLobbyPeers(peers, playerCount).map(peer => {
     const seat = seats[peer.seatIndex];
@@ -70,7 +72,9 @@ export function getTableDeckStatus({
       player: loadedPlayer,
       deckId,
       deckName,
-      ready: hasLoadedDeck || hasSyncedDeck || hasAssignedSavedDeck,
+      ready: requireLoadedGameDecks
+        ? hasLoadedDeck
+        : hasLoadedDeck || hasSyncedDeck || hasAssignedSavedDeck,
     };
   });
 }
@@ -83,6 +87,7 @@ export function canStartCommanderTable({
   gamePlayers,
   savedDecks,
   minimumPlayers = 2,
+  requireLoadedGameDecks = false,
 }: {
   isHost: boolean;
   peers: Record<string, RoomPresence>;
@@ -91,8 +96,9 @@ export function canStartCommanderTable({
   gamePlayers: Player[];
   savedDecks: Deck[];
   minimumPlayers?: number;
+  requireLoadedGameDecks?: boolean;
 }): { canStart: boolean; occupiedCount: number; missingDeckPlayers: string[] } {
-  const statuses = getTableDeckStatus({ peers, playerCount, seats, gamePlayers, savedDecks });
+  const statuses = getTableDeckStatus({ peers, playerCount, seats, gamePlayers, savedDecks, requireLoadedGameDecks });
   const missingDeckPlayers = statuses
     .filter(status => !status.ready)
     .map(status => status.peer.name);

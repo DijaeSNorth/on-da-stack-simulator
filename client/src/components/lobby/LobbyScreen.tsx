@@ -150,6 +150,7 @@ export function LobbyScreen() {
       gamePlayers: store.game.players,
       savedDecks,
       minimumPlayers: minimumTablePlayers,
+      requireLoadedGameDecks: isTableHost,
     })
     : { canStart: true, occupiedCount: playerCount, missingDeckPlayers: [] as string[] };
   const missingDeckPlayers = tableStart.missingDeckPlayers;
