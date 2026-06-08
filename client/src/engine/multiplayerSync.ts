@@ -194,6 +194,7 @@ const MAX_RELAY_NAME_LENGTH = 40;
 const MAX_RELAY_INITIAL_LENGTH = 3;
 const MAX_RELAY_DECK_NAME_LENGTH = 80;
 const MAX_RELAY_COMMANDER_NAME_LENGTH = 80;
+const DECK_SUBMISSION_FALLBACK_MS = 3000;
 
 // ─── Internal state ───────────────────────────────────────────────────────────
 
@@ -210,6 +211,9 @@ let _gamePatchSeq = 0;
 let _heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let _migrationTimer: ReturnType<typeof setTimeout> | null = null;
 let _firebasePollTimer: ReturnType<typeof setInterval> | null = null;
+let _deckSubmissionFallbackTimer: ReturnType<typeof setTimeout> | null = null;
+let _lastLocalDeckSubmission: DeckSubmission | null = null;
+let _deckSubmissionFallbackUsed = false;
 
 // Host-side: map of peerId → DataConnection for each joiner
 const _connections: Map<string, DataConnection> = new Map();
@@ -953,43 +957,69 @@ function pruneStaleDuplicatePresence(incoming: RoomPresence): void {
   replacePeers(pruneDuplicatePeerPresence(Object.fromEntries(_peers), incoming));
 }
 
+function isTerminalDeckStatus(status?: RoomPresence['deckStatus']): boolean {
+  return status === 'valid' || status === 'rejected';
+}
+
+export function mergePresenceWithHostDeckAuthority(existing: RoomPresence | undefined, incoming: RoomPresence): RoomPresence {
+  const incomingStatus = incoming.deckStatus ?? incoming.deck?.status;
+  if (!existing || !isTerminalDeckStatus(existing.deckStatus ?? existing.deck?.status)) {
+    if (!isTerminalDeckStatus(incomingStatus)) return incoming;
+    return {
+      ...incoming,
+      deck: incoming.deck ? { ...incoming.deck, status: 'submitted' } : incoming.deck,
+      deckStatus: incoming.deck ? 'submitted' : 'none',
+      ready: false,
+    };
+  }
+  return {
+    ...incoming,
+    deck: existing.deck,
+    deckStatus: existing.deckStatus ?? existing.deck?.status,
+    ready: existing.ready,
+  };
+}
+
 function upsertPresenceFromPeer(incoming: RoomPresence, assignment: { isSpectator: boolean; seatIndex: number }): RoomPresence {
+  const existingForPeer = _peers.get(incoming.peerId);
+  const authoritativeIncoming = mergePresenceWithHostDeckAuthority(existingForPeer, incoming);
   for (const [peerId, existing] of _peers.entries()) {
-    if (existing.playerId === incoming.playerId && peerId !== incoming.peerId) {
+    if (existing.playerId === authoritativeIncoming.playerId && peerId !== authoritativeIncoming.peerId) {
       _peers.delete(peerId);
       const oldConn = _connections.get(peerId);
       if (oldConn) cleanupConnection(oldConn);
       _connections.delete(peerId);
       const preservedSeat = existing.isSpectator ? -1 : existing.seatIndex;
+      const mergedIncoming = mergePresenceWithHostDeckAuthority(existing, authoritativeIncoming);
       const next: RoomPresence = {
         ...existing,
-        ...incoming,
-        peerId: incoming.peerId,
+        ...mergedIncoming,
+        peerId: authoritativeIncoming.peerId,
         isHostPeer: false,
-        isSpectator: incoming.isSpectator,
-        seatIndex: incoming.isSpectator ? -1 : preservedSeat,
+        isSpectator: authoritativeIncoming.isSpectator,
+        seatIndex: authoritativeIncoming.isSpectator ? -1 : preservedSeat,
         online: true,
         lastSeen: Date.now(),
-        ready: existing.ready,
-        deck: existing.deck ?? incoming.deck,
-        deckStatus: existing.deckStatus ?? incoming.deckStatus,
+        ready: isTerminalDeckStatus(existing.deckStatus ?? existing.deck?.status) ? existing.ready : mergedIncoming.ready,
+        deck: isTerminalDeckStatus(existing.deckStatus ?? existing.deck?.status) ? existing.deck : existing.deck ?? mergedIncoming.deck,
+        deckStatus: isTerminalDeckStatus(existing.deckStatus ?? existing.deck?.status) ? existing.deckStatus : existing.deckStatus ?? mergedIncoming.deckStatus,
       };
-      _peers.set(incoming.peerId, next);
+      _peers.set(authoritativeIncoming.peerId, next);
       return next;
     }
   }
 
   const next: RoomPresence = {
-    ...incoming,
+    ...authoritativeIncoming,
     isHostPeer: false,
     isSpectator: assignment.isSpectator,
     seatIndex: assignment.seatIndex,
     online: true,
     lastSeen: Date.now(),
-    ready: Boolean(incoming.ready),
-    deckStatus: incoming.deckStatus ?? (incoming.deck ? 'valid' : 'none'),
+    ready: Boolean(authoritativeIncoming.ready),
+    deckStatus: authoritativeIncoming.deckStatus ?? (authoritativeIncoming.deck ? 'valid' : 'none'),
   };
-  _peers.set(incoming.peerId, next);
+  _peers.set(authoritativeIncoming.peerId, next);
   return next;
 }
 
@@ -1285,6 +1315,38 @@ function sendDeckValidationToPeer(peerId: string, summary: SubmittedDeckPublicSu
   if (conn?.open) sendMessage(conn, msg);
 }
 
+function clearDeckSubmissionFallback(): void {
+  if (_deckSubmissionFallbackTimer) {
+    clearTimeout(_deckSubmissionFallbackTimer);
+    _deckSubmissionFallbackTimer = null;
+  }
+}
+
+function sendDeckSubmissionToHost(submission: DeckSubmission): void {
+  const msg: SyncMessage = { type: 'DECK_SUBMITTED', payload: submission };
+  if (_transportMode === 'firebase') {
+    void writeFirebaseMessage(msg);
+  } else if (_hostConn?.open) {
+    sendMessage(_hostConn, msg);
+  }
+}
+
+function scheduleDeckSubmissionFallback(submission: DeckSubmission): void {
+  clearDeckSubmissionFallback();
+  if (_isHost) return;
+  _lastLocalDeckSubmission = submission;
+  _deckSubmissionFallbackUsed = false;
+  _deckSubmissionFallbackTimer = setTimeout(() => {
+    _deckSubmissionFallbackTimer = null;
+    if (_isHost || _deckSubmissionFallbackUsed || !_lastLocalDeckSubmission || !_peerId) return;
+    const self = _peers.get(_peerId);
+    const status = self?.deckStatus ?? self?.deck?.status;
+    if (status !== 'submitted') return;
+    _deckSubmissionFallbackUsed = true;
+    sendDeckSubmissionToHost(_lastLocalDeckSubmission);
+  }, DECK_SUBMISSION_FALLBACK_MS);
+}
+
 function applyReadyChange(playerId: string, ready: boolean): boolean {
   const entry = [..._peers.entries()].find(([, presence]) => presence.playerId === playerId);
   if (!entry) return false;
@@ -1530,6 +1592,10 @@ function handleJoinerMessage(conn: DataConnection, raw: unknown): void {
         },
         lastSeen: Date.now(),
       });
+      if (summary.status === 'valid' || summary.status === 'rejected') {
+        clearDeckSubmissionFallback();
+        _lastLocalDeckSubmission = null;
+      }
       _onPresenceUpdate?.(Object.fromEntries(_peers));
     }
   }
@@ -1995,12 +2061,9 @@ export function submitDeckToHost(deck: Parameters<typeof createDeckSubmission>[0
     handleDeckSubmitted(submission, self);
     return submission;
   }
-  const msg: SyncMessage = { type: 'DECK_SUBMITTED', payload: submission };
-  if (_transportMode === 'firebase') {
-    void writeFirebaseMessage(msg);
-    return submission;
-  }
-  if (_hostConn?.open) sendMessage(_hostConn, msg);
+  _lastLocalDeckSubmission = submission;
+  sendDeckSubmissionToHost(submission);
+  scheduleDeckSubmissionFallback(submission);
   return submission;
 }
 
@@ -2128,6 +2191,9 @@ export function leaveRoom(notifyHost = true): void {
   _stopHeartbeat();
   stopFirebasePolling();
   if (_migrationTimer) { clearTimeout(_migrationTimer); _migrationTimer = null; }
+  clearDeckSubmissionFallback();
+  _lastLocalDeckSubmission = null;
+  _deckSubmissionFallbackUsed = false;
   if (_transportMode === 'firebase' && _roomCode && _peerId) {
     const peerPath = `${firebaseRoomPath()}/peers/${_peerId}`;
     if (_isHost) {

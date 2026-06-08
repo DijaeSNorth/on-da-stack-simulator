@@ -124,7 +124,11 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
     .sort((a, b) => Number(b.online) - Number(a.online) || a.seatIndex - b.seatIndex || a.name.localeCompare(b.name));
   const localPeer = multiplayer.peerId ? multiplayer.peers[multiplayer.peerId] : undefined;
   const isSpectator = localPeer?.isSpectator ?? multiplayer.isSpectator;
-  const localDeckStatus = localPeer?.deckStatus ?? localPeer?.deck?.status ?? 'none';
+  const localPlayerId = localPeer?.playerId;
+  const authoritativeDeckSummary = localPlayerId ? multiplayer.lobby?.submittedDecks?.[localPlayerId] : undefined;
+  const authoritativeDeckStatus = authoritativeDeckSummary?.status;
+  const localDeckStatus = authoritativeDeckStatus ?? localPeer?.deck?.status ?? localPeer?.deckStatus ?? 'none';
+  const localDeckReason = authoritativeDeckSummary?.errors?.join(' ') || localPeer?.deck?.errors?.join(' ') || '';
   const localReady = Boolean(localPeer?.ready);
   const canToggleReady = !isSpectator && localDeckStatus === 'valid';
   const takenSeats = new Set(
@@ -227,14 +231,15 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
             ) : peers.map(p => (
               (() => {
                 const deckStatus = deckStatusByPeer.get(p.peerId);
-                const statusLabel = p.deckStatus ?? p.deck?.status ?? deckStatus?.deckStatus ?? 'none';
-                const rejectionText = p.deck?.errors?.join(' ') || p.deck?.warnings?.join(' ') || '';
+                const authoritativeSummary = multiplayer.lobby?.submittedDecks?.[p.playerId];
+                const statusLabel = authoritativeSummary?.status ?? p.deckStatus ?? p.deck?.status ?? deckStatus?.deckStatus ?? 'none';
+                const rejectionText = authoritativeSummary?.errors?.join(' ') || p.deck?.errors?.join(' ') || p.deck?.warnings?.join(' ') || '';
                 const deckLabel = p.isSpectator
                   ? 'No deck needed'
                   : statusLabel === 'valid'
-                    ? deckStatus?.deckName ?? p.deck?.name ?? 'Deck valid'
+                    ? authoritativeSummary?.deckName ?? deckStatus?.deckName ?? p.deck?.name ?? 'Deck valid'
                     : statusLabel === 'submitted'
-                      ? `${deckStatus?.deckName ?? p.deck?.name ?? 'Deck'} submitted`
+                      ? `${authoritativeSummary?.deckName ?? deckStatus?.deckName ?? p.deck?.name ?? 'Deck'} submitted`
                       : statusLabel === 'rejected'
                         ? `Rejected: ${rejectionText || 'Deck failed validation'}`
                         : 'none';
@@ -397,7 +402,7 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
               <button
                 data-testid="btn-player-ready"
                 data-help-title="Ready For Game"
-                data-help-body="Marks your seat ready after the host validates your submitted deck. The host cannot start until every seated player is ready."
+                data-help-body="Marks your seat ready after automatic Commander rules validation accepts your submitted deck. The host cannot start until every seated player is ready."
                 data-help-placement="top"
                 onClick={() => store.setMultiplayerReady(!localReady)}
                 disabled={!canToggleReady}
@@ -417,6 +422,8 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
               </button>
               <div style={{ fontSize: 10, color: '#64748b', marginTop: 5 }}>
                 Deck status: {localDeckStatus}
+                {localDeckStatus === 'submitted' && ' - Checking deck against Commander rules...'}
+                {localDeckStatus === 'rejected' && localDeckReason ? ` - ${localDeckReason}` : ''}
               </div>
             </div>
           )}

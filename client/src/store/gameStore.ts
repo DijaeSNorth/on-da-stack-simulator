@@ -1104,7 +1104,8 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       const peerId = s.multiplayer.peerId;
       const self = peerId ? s.multiplayer.peers[peerId] : undefined;
       if (!peerId || !self) return s;
-      const canReady = ready ? self.deckStatus === 'valid' || self.deck?.status === 'valid' : true;
+      const authoritativeStatus = s.multiplayer.lobby?.submittedDecks?.[self.playerId]?.status;
+      const canReady = ready ? authoritativeStatus === 'valid' || self.deckStatus === 'valid' || self.deck?.status === 'valid' : true;
       return {
         multiplayer: {
           ...s.multiplayer,

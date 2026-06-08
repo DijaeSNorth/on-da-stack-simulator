@@ -4,7 +4,7 @@
  * Run with: npx tsx tests/automatic-seat-assignment.test.ts
  */
 
-import { canonicalizeJoinPresence, chooseAutomaticSeat, pruneDuplicatePeerPresence, type RoomPresence } from '../client/src/engine/multiplayerSync';
+import { canonicalizeJoinPresence, chooseAutomaticSeat, mergePresenceWithHostDeckAuthority, pruneDuplicatePeerPresence, type RoomPresence } from '../client/src/engine/multiplayerSync';
 
 function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
@@ -64,5 +64,48 @@ const pruned = pruneDuplicatePeerPresence(duplicatePeers, { ...presence('newAlex
 assert(!pruned.oldOfflineAlex, 'expected old offline duplicate with same player name to be removed');
 assert(pruned.onlineAlex, 'expected online player with same name to be preserved');
 assert(pruned.offlineSam, 'expected unrelated offline player to be preserved');
+
+const validatedPresence: RoomPresence = {
+  ...presence('validatedPeer', 1),
+  deckStatus: 'valid',
+  ready: true,
+  deck: {
+    id: 'valid-deck',
+    name: 'Validated Deck',
+    cardCount: 100,
+    commanders: ['Test Commander'],
+    status: 'valid',
+    deckHash: 'hash-valid',
+  },
+};
+const staleSubmittedPresence: RoomPresence = {
+  ...validatedPresence,
+  ready: false,
+  deckStatus: 'submitted',
+  deck: {
+    ...validatedPresence.deck!,
+    status: 'submitted',
+    deckHash: 'hash-stale',
+  },
+};
+const mergedPresence = mergePresenceWithHostDeckAuthority(validatedPresence, staleSubmittedPresence);
+assert(mergedPresence.deckStatus === 'valid', 'expected host-validated deck status not to downgrade to submitted');
+assert(mergedPresence.ready === true, 'expected stale submitted presence not to clear ready state');
+assert(mergedPresence.deck?.deckHash === 'hash-valid', 'expected stale submitted presence not to replace validated deck summary');
+const spoofedPresence = mergePresenceWithHostDeckAuthority(undefined, {
+  ...presence('newPeer', 1),
+  deckStatus: 'valid',
+  ready: true,
+  deck: {
+    id: 'spoofed',
+    name: 'Spoofed Deck',
+    cardCount: 100,
+    commanders: ['Test Commander'],
+    status: 'valid',
+    deckHash: 'spoofed-hash',
+  },
+});
+assert(spoofedPresence.deckStatus === 'submitted', 'expected presence-only terminal deck status to be downgraded to submitted');
+assert(spoofedPresence.ready === false, 'expected presence-only terminal deck status not to mark ready');
 
 console.log('PASS automatic seat assignment fills open seats, handles full tables, and prunes stale duplicate rejoins');
