@@ -124,6 +124,9 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
     .sort((a, b) => Number(b.online) - Number(a.online) || a.seatIndex - b.seatIndex || a.name.localeCompare(b.name));
   const localPeer = multiplayer.peerId ? multiplayer.peers[multiplayer.peerId] : undefined;
   const isSpectator = localPeer?.isSpectator ?? multiplayer.isSpectator;
+  const localDeckStatus = localPeer?.deckStatus ?? localPeer?.deck?.status ?? 'none';
+  const localReady = Boolean(localPeer?.ready);
+  const canToggleReady = !isSpectator && localDeckStatus === 'valid';
   const takenSeats = new Set(
     peers
       .filter(p => p.peerId !== multiplayer.peerId && p.online && !p.isSpectator && p.seatIndex >= 0)
@@ -375,6 +378,34 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
             </div>
           )}
           {error && <div style={{ marginTop: 8 }}><ErrorMsg msg={error} /></div>}
+          {!isSpectator && (
+            <div style={{ marginTop: 10 }}>
+              <button
+                data-testid="btn-player-ready"
+                data-help-title="Ready For Game"
+                data-help-body="Marks your seat ready after the host validates your submitted deck. The host cannot start until every seated player is ready."
+                data-help-placement="top"
+                onClick={() => store.setMultiplayerReady(!localReady)}
+                disabled={!canToggleReady}
+                style={{
+                  width: '100%',
+                  padding: '8px 10px',
+                  borderRadius: 6,
+                  cursor: canToggleReady ? 'pointer' : 'not-allowed',
+                  border: `1px solid ${localReady ? '#22c55e' : canToggleReady ? '#334155' : '#475569'}`,
+                  background: localReady ? '#113a2b' : '#182127',
+                  color: localReady ? '#bbf7d0' : canToggleReady ? '#e2e8f0' : '#64748b',
+                  fontSize: 12,
+                  fontWeight: 800,
+                }}
+              >
+                {localReady ? 'Ready' : localDeckStatus === 'valid' ? 'Mark Ready' : 'Load Valid Deck First'}
+              </button>
+              <div style={{ fontSize: 10, color: '#64748b', marginTop: 5 }}>
+                Deck status: {localDeckStatus}
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Status */}

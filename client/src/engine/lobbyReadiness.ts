@@ -14,6 +14,8 @@ export interface TableDeckStatus {
   deckId?: string;
   deckName?: string;
   ready: boolean;
+  playerReady: boolean;
+  deckStatus: RoomPresence['deckStatus'];
 }
 
 export interface LocalDeckSeatTarget {
@@ -130,18 +132,22 @@ export function getTableDeckStatus({
       ? savedDecks.find(deck => deck.id === seat.deckId)
       : undefined;
     const hasSyncedDeck = Boolean(peer.deck?.id);
+    const hasValidSubmittedDeck = peer.deckStatus === 'valid' || peer.deck?.status === 'valid';
     const hasAssignedSavedDeck = Boolean(assignedDeck);
     const deckId = loadedPlayer?.deckId ?? peer.deck?.id ?? seat?.deckId;
     const deckName = loadedDeck?.name ?? peer.deck?.name ?? assignedDeck?.name ?? (hasLoadedDeck ? 'Loaded deck' : undefined);
+    const deckReady = requireLoadedGameDecks
+      ? hasLoadedDeck && hasValidSubmittedDeck
+      : hasValidSubmittedDeck || hasLoadedDeck || hasSyncedDeck || hasAssignedSavedDeck;
     return {
       peer,
       seat,
       player: loadedPlayer,
       deckId,
       deckName,
-      ready: requireLoadedGameDecks
-        ? hasLoadedDeck
-        : hasLoadedDeck || hasSyncedDeck || hasAssignedSavedDeck,
+      ready: deckReady,
+      playerReady: Boolean(peer.ready),
+      deckStatus: peer.deckStatus ?? peer.deck?.status ?? (deckReady ? 'valid' : 'none'),
     };
   });
 }
@@ -181,6 +187,9 @@ export function canStartCommanderTable({
   const missingDeckPlayers = statuses
     .filter(status => !status.ready)
     .map(status => status.peer.name);
+  const notReadyPlayers = statuses
+    .filter(status => status.ready && !status.playerReady)
+    .map(status => status.peer.name);
   const occupiedCount = statuses.length;
   const latestPeerSeenAt = statuses.reduce(
     (latest, status) => Math.max(latest, status.peer.lastSeen || 0),
@@ -190,11 +199,11 @@ export function canStartCommanderTable({
   const waitMs = latestSyncAt > 0
     ? Math.max(0, Math.ceil(stabilizationMs - (now - latestSyncAt)))
     : 0;
-  const waitingForSync = waitMs > 0 && occupiedCount >= minimumPlayers && missingDeckPlayers.length === 0;
+  const waitingForSync = waitMs > 0 && occupiedCount >= minimumPlayers && missingDeckPlayers.length === 0 && notReadyPlayers.length === 0;
   return {
-    canStart: isHost && occupiedCount >= minimumPlayers && missingDeckPlayers.length === 0 && !waitingForSync,
+    canStart: isHost && occupiedCount >= minimumPlayers && occupiedCount <= 6 && missingDeckPlayers.length === 0 && notReadyPlayers.length === 0 && !waitingForSync,
     occupiedCount,
-    missingDeckPlayers,
+    missingDeckPlayers: [...missingDeckPlayers, ...notReadyPlayers.map(name => `${name} not ready`)],
     waitMs,
     waitingForSync,
   };

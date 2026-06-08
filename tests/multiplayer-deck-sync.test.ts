@@ -14,7 +14,9 @@ function assert(condition: boolean, message: string): void {
 
 function presence(peerId: string, seatIndex: number, isSpectator = false): RoomPresence {
   return {
+    playerId: `player-${peerId}`,
     peerId,
+    sessionId: `session-${peerId}`,
     name: peerId,
     color: '#3b82f6',
     seatIndex,

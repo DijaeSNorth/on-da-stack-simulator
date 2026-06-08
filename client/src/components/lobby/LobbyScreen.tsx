@@ -502,7 +502,7 @@ export function LobbyScreen() {
                 <button
                   data-testid="btn-mode-table"
                   data-help-title="Commander Table"
-                  data-help-body="Sets up a 2-4 player Commander game. Players join, set their own profile, load a deck, then the host starts when at least two players are ready."
+                  data-help-body="Sets up a 2-6 player Commander game. Players join, set their own profile, load a deck, ready up, then the host starts when everyone is validated."
                   data-help-placement="bottom"
                   onClick={() => updateMode('table')}
                   style={{
@@ -525,7 +525,7 @@ export function LobbyScreen() {
                   Players
                 </label>
                 <div style={{ display: 'flex', gap: 6 }}>
-                  {([2, 3, 4] as const).map(n => (
+                  {([2, 3, 4, 5, 6] as const).map(n => (
                     <button
                       key={n}
                       data-testid={`btn-player-count-${n}`}

@@ -31,11 +31,38 @@
 
 import Peer, { type DataConnection } from 'peerjs';
 import type { CardState, GameState, Player, PlayerAvatarImage } from '../types/game';
+import {
+  MULTIPLAYER_PROTOCOL_VERSION,
+  canHostStartFromLobby,
+  createDeckSubmission,
+  createPrivatePlayerState,
+  createPublicGameState,
+  createStartGamePrepare,
+  makeMultiplayerMessage,
+  publicDeckSummary,
+  sanitizeGameStateForPlayer,
+  validateDeckSubmission,
+  validateMultiplayerMessage,
+  type DeckSubmission,
+  type GameActionRequestPayload,
+  type GameStatePatchPayload,
+  type LobbyPlayer,
+  type LobbyState,
+  type MultiplayerMessage,
+  type MultiplayerMessageType,
+  type PlayerIdentity,
+  type PublicGameState,
+  type StartGameAckPayload,
+  type StartGamePreparePayload,
+  type SubmittedDeckPublicSummary,
+} from './multiplayerProtocol';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface RoomPresence {
+  playerId: string;
   peerId: string;
+  sessionId: string;
   name: string;
   color: string;
   avatarInitial?: string;
@@ -48,6 +75,8 @@ export interface RoomPresence {
   lastSeen: number;
   connectionQuality?: ConnectionQuality;
   deck?: RoomDeckSummary;
+  deckStatus?: 'none' | 'submitted' | 'valid' | 'rejected';
+  ready?: boolean;
 }
 
 export interface RoomDeckSummary {
@@ -55,6 +84,9 @@ export interface RoomDeckSummary {
   name: string;
   cardCount: number;
   commanders: string[];
+  deckHash?: string;
+  status?: 'none' | 'submitted' | 'valid' | 'rejected';
+  warnings?: string[];
 }
 
 export interface ConnectionQuality {
@@ -75,17 +107,26 @@ interface HostMigrationNotice {
 export interface StartGamePrepare {
   id: string;
   hostPeerId: string;
-  game: GameState;
+  gameId: string;
+  playerList: StartGamePreparePayload['playerList'];
+  deckHashes: Record<string, string>;
+  turnOrder: string[];
   requiredPeerIds: string[];
   createdAt: number;
+  deadline: number;
   deadlineAt: number;
+  game?: GameState;
 }
 
 export interface StartGameAck {
   id: string;
+  gameId?: string;
+  playerId: string;
   peerId: string;
+  sessionId?: string;
   seatIndex: number;
   deckId?: string;
+  deckHash?: string;
   ready: boolean;
   reason?: string;
   receivedAt: number;
@@ -93,7 +134,9 @@ export interface StartGameAck {
 
 export interface StartGameCommit {
   id: string;
+  gameId?: string;
   game: GameState;
+  publicGameState?: PublicGameState;
   fallback: boolean;
   missingPeerIds: string[];
   committedAt: number;
@@ -156,9 +199,13 @@ const MAX_RELAY_COMMANDER_NAME_LENGTH = 80;
 let _peer: Peer | null = null;
 let _roomCode: string | null = null;
 let _peerId: string | null = null;
+let _playerId: string | null = null;
+let _sessionId: string | null = null;
 let _isHost = false;
 let _status: SyncStatus = 'disconnected';
 let _transportMode: 'peerjs' | 'firebase' = 'peerjs';
+let _messageSeq = 0;
+let _gamePatchSeq = 0;
 let _heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let _migrationTimer: ReturnType<typeof setTimeout> | null = null;
 let _firebasePollTimer: ReturnType<typeof setInterval> | null = null;
@@ -176,6 +223,9 @@ const _firebaseSeenMessages: Map<string, number> = new Map();
 
 // Presence table — host owns the authoritative copy; joiners mirror it
 const _peers: Map<string, RoomPresence> = new Map();
+const _deckSubmissions: Map<string, DeckSubmission> = new Map();
+const _lastActionSeqByPlayer: Map<string, number> = new Map();
+let _lobbyState: LobbyState | null = null;
 
 // Callbacks registered by the store
 let _onGameUpdate: ((game: GameState) => void) | null = null;
@@ -184,11 +234,21 @@ let _onStatusChange: ((status: SyncStatus) => void) | null = null;
 let _onStartPrepare: ((prepare: StartGamePrepare) => void) | null = null;
 let _onStartAck: ((ack: StartGameAck) => void) | null = null;
 let _onStartCommit: ((commit: StartGameCommit) => void) | null = null;
+let _onLobbyUpdate: ((lobby: LobbyState) => void) | null = null;
+let _onDeckSubmitted: ((submission: DeckSubmission, presence: RoomPresence) => void | Promise<void>) | null = null;
+let _onGameActionRequest: ((request: GameActionRequestPayload, presence: RoomPresence) => void) | null = null;
 
 type SyncMessage =
   | { type: 'PRESENCE'; payload: RoomPresence }
   | { type: 'GAME_STATE'; payload: GameState }
   | { type: 'PRESENCE_BROADCAST'; payload: Record<string, RoomPresence> }
+  | { type: 'LOBBY_STATE'; payload: LobbyState }
+  | { type: 'DECK_SUBMITTED'; payload: DeckSubmission }
+  | { type: 'DECK_VALIDATED'; payload: SubmittedDeckPublicSummary }
+  | { type: 'DECK_REJECTED'; payload: SubmittedDeckPublicSummary }
+  | { type: 'PLAYER_READY_CHANGED'; payload: { playerId: string; ready: boolean } }
+  | { type: 'GAME_STATE_PATCH'; payload: GameStatePatchPayload }
+  | { type: 'GAME_ACTION_REQUEST'; payload: GameActionRequestPayload }
   | { type: 'HOST_MIGRATION'; payload: HostMigrationNotice }
   | { type: 'LEAVE_ROOM'; payload: { peerId: string } }
   | { type: 'KICKED'; payload: { reason: string } }
@@ -205,7 +265,8 @@ interface FirebaseRoomRelay {
   expiresAt: number;
   game: GameState | null;
   peers: Record<string, RoomPresence>;
-  messages?: Record<string, { updatedAt: number; message: SyncMessage }>;
+  lobby?: LobbyState;
+  messages?: Record<string, { updatedAt: number; message: MultiplayerMessage }>;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -216,30 +277,21 @@ function setStatus(s: SyncStatus) {
 }
 
 function parseSyncMessage(raw: unknown): SyncMessage | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const msg = raw as { type?: unknown; payload?: unknown };
-  if (typeof msg.type !== 'string') return null;
-  if (![
-    'PRESENCE',
-    'GAME_STATE',
-    'PRESENCE_BROADCAST',
-    'HOST_MIGRATION',
-    'LEAVE_ROOM',
-    'KICKED',
-    'START_GAME_PREPARE',
-    'START_GAME_ACK',
-    'START_GAME_COMMIT',
-    'PING',
-    'PONG',
-  ].includes(msg.type)) return null;
-  return msg as SyncMessage;
+  const validation = validateMultiplayerMessage(raw, _roomCode ?? undefined);
+  if (!validation.ok || !validation.message) {
+    return null;
+  }
+  return {
+    type: validation.message.type,
+    payload: validation.message.payload,
+  } as SyncMessage;
 }
 
 export function canonicalizeJoinPresence(
   peerId: string,
   presence: Omit<RoomPresence, 'online' | 'lastSeen'>,
 ): Omit<RoomPresence, 'online' | 'lastSeen'> {
-  return { ...presence, peerId };
+  return { ...presence, peerId, playerId: presence.playerId, sessionId: presence.sessionId };
 }
 
 function getDataChannel(conn: DataConnection): RTCDataChannel | undefined {
@@ -285,10 +337,25 @@ function watchBufferedStateDrain(conn: DataConnection): void {
   _bufferDrainHandlers.set(conn.peer, handler);
 }
 
+function envelopeMessage(msg: SyncMessage, peerOverride?: string): MultiplayerMessage<MultiplayerMessageType, unknown> | null {
+  if (!_roomCode || !_playerId || !_sessionId) return null;
+  return makeMultiplayerMessage({
+    roomId: _roomCode,
+    playerId: _playerId,
+    peerId: peerOverride ?? _peerId ?? 'pending-peer',
+    sessionId: _sessionId,
+    type: msg.type,
+    payload: msg.payload,
+    seq: _messageSeq++,
+  });
+}
+
 function sendMessage(conn: DataConnection, msg: SyncMessage, options: { coalesceState?: boolean } = {}): boolean {
   if (!conn.open) return false;
   const dataChannel = getDataChannel(conn);
   if (dataChannel && dataChannel.readyState !== 'open') return false;
+  const envelope = envelopeMessage(msg);
+  if (!envelope) return false;
 
   if (options.coalesceState && dataChannel && dataChannel.bufferedAmount > DATA_CHANNEL_HIGH_WATER_BYTES) {
     _pendingStateMessages.set(conn.peer, msg);
@@ -297,7 +364,7 @@ function sendMessage(conn: DataConnection, msg: SyncMessage, options: { coalesce
   }
 
   try {
-    conn.send(msg);
+    conn.send(envelope);
     return true;
   } catch {
     if (options.coalesceState) {
@@ -398,12 +465,17 @@ function compactDeckSummaryForRelay(deck: RoomDeckSummary | undefined): RoomDeck
     commanders: Array.isArray(deck.commanders)
       ? deck.commanders.slice(0, 2).map(name => clampText(name, '', MAX_RELAY_COMMANDER_NAME_LENGTH)).filter(Boolean)
       : [],
+    deckHash: deck.deckHash ? clampText(deck.deckHash, '', 80) : undefined,
+    status: deck.status,
+    warnings: Array.isArray(deck.warnings) ? deck.warnings.slice(0, 4).map(warning => clampText(warning, '', 120)) : undefined,
   };
 }
 
 export function compactPresenceForRelay(presence: RoomPresence): RoomPresence {
   return {
+    playerId: clampText(presence.playerId, crypto.randomUUID(), 120),
     peerId: clampText(presence.peerId, crypto.randomUUID(), 80),
+    sessionId: clampText(presence.sessionId, crypto.randomUUID(), 120),
     name: clampText(presence.name, 'Player', MAX_RELAY_NAME_LENGTH),
     color: normalizeRelayColor(presence.color),
     avatarInitial: presence.avatarInitial
@@ -431,6 +503,8 @@ export function compactPresenceForRelay(presence: RoomPresence): RoomPresence {
       }
       : undefined,
     deck: compactDeckSummaryForRelay(presence.deck),
+    deckStatus: presence.deckStatus ?? (presence.deck ? 'valid' : 'none'),
+    ready: Boolean(presence.ready),
   };
 }
 
@@ -438,6 +512,78 @@ function compactPeersForRelay(peers: Record<string, RoomPresence>): Record<strin
   return Object.fromEntries(
     Object.entries(peers).map(([peerId, presence]) => [peerId, compactPresenceForRelay(presence)]),
   );
+}
+
+function presenceToLobbyPlayer(presence: RoomPresence): LobbyPlayer {
+  return {
+    playerId: presence.playerId,
+    peerId: presence.peerId,
+    sessionId: presence.sessionId,
+    name: presence.name,
+    color: presence.color,
+    avatarInitial: presence.avatarInitial,
+    avatarStyle: presence.avatarStyle,
+    avatarImage: presence.avatarImage,
+    seatIndex: presence.isSpectator ? -1 : presence.seatIndex,
+    isSpectator: presence.isSpectator,
+    isHost: Boolean(presence.isHostPeer),
+    connected: presence.online,
+    ready: Boolean(presence.ready),
+    deckStatus: presence.deckStatus ?? (presence.deck ? 'valid' : 'none'),
+    lastSeen: presence.lastSeen,
+  };
+}
+
+function buildLobbyState(status: LobbyState['status'] = _latestGame?.status === 'playing' ? 'playing' : 'lobby'): LobbyState | null {
+  if (!_roomCode) return null;
+  const hostPeerId = [..._peers.values()].find(presence => presence.isHostPeer)?.peerId ?? _peerId ?? '';
+  return {
+    roomId: _roomCode,
+    roomCode: _roomCode,
+    hostPeerId,
+    players: Object.fromEntries([..._peers.values()].map(presence => [presence.playerId, presenceToLobbyPlayer(presence)])),
+    submittedDecks: {},
+    minPlayers: 2,
+    maxPlayers: 6,
+    status,
+    updatedAt: Date.now(),
+  };
+}
+
+function refreshLobbyState(status?: LobbyState['status']): LobbyState | null {
+  const base = buildLobbyState(status);
+  if (!base) return null;
+  const submittedDecks: LobbyState['submittedDecks'] = {};
+  for (const presence of _peers.values()) {
+    if (!presence.deck) continue;
+    submittedDecks[presence.playerId] = {
+      playerId: presence.playerId,
+      deckId: presence.deck.id,
+      deckName: presence.deck.name,
+      commanderNames: presence.deck.commanders,
+      cardCount: presence.deck.cardCount,
+      deckHash: presence.deck.deckHash ?? '',
+      status: presence.deck.status ?? presence.deckStatus ?? 'none',
+      warnings: presence.deck.warnings ?? [],
+    };
+  }
+  _lobbyState = { ...base, submittedDecks };
+  _onLobbyUpdate?.(_lobbyState);
+  return _lobbyState;
+}
+
+function broadcastLobbyState(): void {
+  const lobby = refreshLobbyState();
+  if (!lobby) return;
+  const msg: SyncMessage = { type: 'LOBBY_STATE', payload: lobby };
+  if (_transportMode === 'firebase') {
+    void writeFirebaseRoomSnapshot();
+    return;
+  }
+  if (!_isHost) return;
+  for (const conn of _connections.values()) {
+    if (conn.open) sendMessage(conn, msg);
+  }
 }
 
 async function firebaseRequest<T>(path: string, method: 'GET' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown): Promise<T> {
@@ -484,6 +630,7 @@ async function writeFirebaseRoomSnapshot(): Promise<void> {
     hostId: _peers.get(_peerId ?? '')?.isHostPeer ? _peerId : undefined,
     game: _latestGame,
     peers: compactPeersForRelay(Object.fromEntries(_peers)),
+    lobby: refreshLobbyState() ?? undefined,
     updatedAt: Date.now(),
     expiresAt: Date.now() + FIREBASE_ROOM_TTL_MS,
   });
@@ -497,9 +644,11 @@ async function writeFirebasePeerPresence(presence: RoomPresence): Promise<void> 
 async function writeFirebaseMessage(message: SyncMessage): Promise<void> {
   if (_transportMode !== 'firebase' || !_roomCode || !_peerId) return;
   if (message.type === 'GAME_STATE') assertFirebaseGameSize(message.payload);
+  const envelope = envelopeMessage(message);
+  if (!envelope) return;
   await firebaseRequest(`${firebaseRoomPath()}/messages/${_peerId}`, 'PUT', {
     updatedAt: Date.now(),
-    message,
+    message: envelope,
   });
 }
 
@@ -569,16 +718,28 @@ async function pollFirebaseRoom(): Promise<void> {
       let changed = false;
       for (const [peerId, entry] of Object.entries(room.messages ?? {})) {
         if (peerId === _peerId || !entry?.message) continue;
+        const parsed = validateMultiplayerMessage(entry.message, _roomCode ?? undefined);
+        if (!parsed.ok || !parsed.message) continue;
         const seenAt = _firebaseSeenMessages.get(peerId) ?? 0;
         if ((entry.updatedAt ?? 0) <= seenAt) continue;
         _firebaseSeenMessages.set(peerId, entry.updatedAt ?? Date.now());
-        if (entry.message.type === 'GAME_STATE') {
-          changed = applyFirebaseGameFromPeer(peerId, entry.message.payload) || changed;
+        if (parsed.message.type === 'GAME_STATE') {
+          changed = applyFirebaseGameFromPeer(peerId, parsed.message.payload as GameState) || changed;
         }
-        if (entry.message.type === 'START_GAME_ACK') {
-          _onStartAck?.(entry.message.payload);
+        if (parsed.message.type === 'DECK_SUBMITTED') {
+          const presence = _peers.get(peerId);
+          if (presence) handleDeckSubmitted(parsed.message.payload as DeckSubmission, presence);
+          changed = true;
         }
-        if (entry.message.type === 'LEAVE_ROOM') {
+        if (parsed.message.type === 'PLAYER_READY_CHANGED') {
+          const payload = parsed.message.payload as { playerId: string; ready: boolean };
+          applyReadyChange(payload.playerId, payload.ready);
+          changed = true;
+        }
+        if (parsed.message.type === 'START_GAME_ACK') {
+          _onStartAck?.(parsed.message.payload as StartGameAck);
+        }
+        if (parsed.message.type === 'LEAVE_ROOM') {
           const p = _peers.get(peerId);
           if (p) {
             _peers.set(peerId, { ...p, online: false, lastSeen: Date.now() });
@@ -599,6 +760,10 @@ async function pollFirebaseRoom(): Promise<void> {
       _latestGame = room.game;
       _onGameUpdate?.(room.game);
     }
+    if (room.lobby) {
+      _lobbyState = room.lobby;
+      _onLobbyUpdate?.(room.lobby);
+    }
   } catch {
     if (!_isHost) setStatus('error');
   }
@@ -613,8 +778,11 @@ async function createFirebaseRoom(
   _isHost = true;
   _roomCode = code;
   _peerId = hostPresence.peerId;
+  _playerId = hostPresence.playerId;
+  _sessionId = hostPresence.sessionId;
   _latestGame = initialGame;
   _peers.clear();
+  _deckSubmissions.clear();
   _firebaseSeenMessages.clear();
   const presence: RoomPresence = {
     ...hostPresence,
@@ -631,6 +799,7 @@ async function createFirebaseRoom(
     expiresAt: Date.now() + FIREBASE_ROOM_TTL_MS,
     game: initialGame,
     peers: compactPeersForRelay(Object.fromEntries(_peers)),
+    lobby: refreshLobbyState() ?? undefined,
     messages: {},
   } satisfies FirebaseRoomRelay);
   setStatus('host');
@@ -651,9 +820,15 @@ async function joinFirebaseRoom(
   _isHost = false;
   _roomCode = roomCode;
   _peerId = presence.peerId;
+  _playerId = presence.playerId;
+  _sessionId = presence.sessionId;
   _latestGame = room.game;
   _firebaseSeenMessages.clear();
   replacePeers(room.peers ?? {});
+  if (room.lobby) {
+    _lobbyState = room.lobby;
+    _onLobbyUpdate?.(room.lobby);
+  }
 
   const assignment = chooseAutomaticSeat(room.peers ?? {}, room.game?.config.playerCount ?? 0, presence as RoomPresence);
   const finalPresence: RoomPresence = {
@@ -686,6 +861,7 @@ function broadcastPresence() {
     sendMessage(conn, { type: 'PRESENCE_BROADCAST', payload });
   }
   _onPresenceUpdate?.(payload);
+  broadcastLobbyState();
 }
 
 function generateRoomCode(): string {
@@ -772,6 +948,46 @@ function replacePeers(nextPeers: Record<string, RoomPresence>): void {
 
 function pruneStaleDuplicatePresence(incoming: RoomPresence): void {
   replacePeers(pruneDuplicatePeerPresence(Object.fromEntries(_peers), incoming));
+}
+
+function upsertPresenceFromPeer(incoming: RoomPresence, assignment: { isSpectator: boolean; seatIndex: number }): RoomPresence {
+  for (const [peerId, existing] of _peers.entries()) {
+    if (existing.playerId === incoming.playerId && peerId !== incoming.peerId) {
+      _peers.delete(peerId);
+      const oldConn = _connections.get(peerId);
+      if (oldConn) cleanupConnection(oldConn);
+      _connections.delete(peerId);
+      const preservedSeat = existing.isSpectator ? -1 : existing.seatIndex;
+      const next: RoomPresence = {
+        ...existing,
+        ...incoming,
+        peerId: incoming.peerId,
+        isHostPeer: false,
+        isSpectator: incoming.isSpectator,
+        seatIndex: incoming.isSpectator ? -1 : preservedSeat,
+        online: true,
+        lastSeen: Date.now(),
+        ready: existing.ready,
+        deck: existing.deck ?? incoming.deck,
+        deckStatus: existing.deckStatus ?? incoming.deckStatus,
+      };
+      _peers.set(incoming.peerId, next);
+      return next;
+    }
+  }
+
+  const next: RoomPresence = {
+    ...incoming,
+    isHostPeer: false,
+    isSpectator: assignment.isSpectator,
+    seatIndex: assignment.seatIndex,
+    online: true,
+    lastSeen: Date.now(),
+    ready: Boolean(incoming.ready),
+    deckStatus: incoming.deckStatus ?? (incoming.deck ? 'valid' : 'none'),
+  };
+  _peers.set(incoming.peerId, next);
+  return next;
 }
 
 export function chooseMigrationHost(
@@ -969,6 +1185,9 @@ export function initMultiplayer(
   onStartPrepare?: (prepare: StartGamePrepare) => void,
   onStartAck?: (ack: StartGameAck) => void,
   onStartCommit?: (commit: StartGameCommit) => void,
+  onLobbyUpdate?: (lobby: LobbyState) => void,
+  onDeckSubmitted?: (submission: DeckSubmission, presence: RoomPresence) => void | Promise<void>,
+  onGameActionRequest?: (request: GameActionRequestPayload, presence: RoomPresence) => void,
 ): void {
   _onGameUpdate = onGameUpdate;
   _onPresenceUpdate = onPresenceUpdate;
@@ -976,14 +1195,20 @@ export function initMultiplayer(
   _onStartPrepare = onStartPrepare ?? null;
   _onStartAck = onStartAck ?? null;
   _onStartCommit = onStartCommit ?? null;
+  _onLobbyUpdate = onLobbyUpdate ?? null;
+  _onDeckSubmitted = onDeckSubmitted ?? null;
+  _onGameActionRequest = onGameActionRequest ?? null;
 }
 
 // ─── Accessors ────────────────────────────────────────────────────────────────
 
 export function getRoomCode(): string | null { return _roomCode; }
 export function getPeerId(): string | null   { return _peerId; }
+export function getPlayerId(): string | null { return _playerId; }
+export function getSessionId(): string | null { return _sessionId; }
 export function getIsHost(): boolean         { return _isHost; }
 export function getSyncStatus(): SyncStatus  { return _status; }
+export function getLobbyState(): LobbyState | null { return _lobbyState; }
 
 /** Always true — P2P needs no env vars or server config */
 export function isConfigured(): boolean { return true; }
@@ -1013,13 +1238,81 @@ function autoAssignSeat(presence: RoomPresence): { isSpectator: boolean; seatInd
   return chooseAutomaticSeat(Object.fromEntries(_peers), _latestGame?.config.playerCount ?? 0, presence);
 }
 
+function handleDeckSubmitted(submission: DeckSubmission, presence: RoomPresence): SubmittedDeckPublicSummary {
+  const authoritativePresence = _peers.get(presence.peerId) ?? presence;
+  if (submission.playerId !== authoritativePresence.playerId) {
+    const rejected = publicDeckSummary({ ...submission, playerId: authoritativePresence.playerId }, 'rejected', ['Deck submission player id did not match the connection identity.']);
+    sendDeckValidationToPeer(authoritativePresence.peerId, rejected, false);
+    return rejected;
+  }
+
+  _deckSubmissions.set(submission.playerId, submission);
+  const validation = validateDeckSubmission(submission);
+  const status = validation.valid ? 'valid' : 'rejected';
+  const summary = publicDeckSummary(submission, status, validation.warnings);
+  _peers.set(authoritativePresence.peerId, {
+    ...authoritativePresence,
+    deck: {
+      id: summary.deckId,
+      name: summary.deckName,
+      cardCount: summary.cardCount,
+      commanders: summary.commanderNames,
+      deckHash: summary.deckHash,
+      status,
+      warnings: summary.warnings,
+    },
+    deckStatus: status,
+    ready: validation.valid ? authoritativePresence.ready : false,
+    lastSeen: Date.now(),
+  });
+  void _onDeckSubmitted?.(submission, _peers.get(authoritativePresence.peerId)!);
+  sendDeckValidationToPeer(authoritativePresence.peerId, summary, validation.valid);
+  broadcastPresence();
+  return summary;
+}
+
+function sendDeckValidationToPeer(peerId: string, summary: SubmittedDeckPublicSummary, valid: boolean): void {
+  const msg: SyncMessage = { type: valid ? 'DECK_VALIDATED' : 'DECK_REJECTED', payload: summary };
+  if (_transportMode === 'firebase') {
+    if (_isHost) void writeFirebaseRoomSnapshot();
+    return;
+  }
+  const conn = _connections.get(peerId);
+  if (conn?.open) sendMessage(conn, msg);
+}
+
+function applyReadyChange(playerId: string, ready: boolean): boolean {
+  const entry = [..._peers.entries()].find(([, presence]) => presence.playerId === playerId);
+  if (!entry) return false;
+  const [peerId, presence] = entry;
+  const canReady = ready ? presence.deckStatus === 'valid' || presence.deck?.status === 'valid' : true;
+  _peers.set(peerId, {
+    ...presence,
+    ready: canReady ? ready : false,
+    lastSeen: Date.now(),
+  });
+  broadcastPresence();
+  return canReady;
+}
+
+function handleGameActionRequest(request: GameActionRequestPayload, presence: RoomPresence): void {
+  const lastSeq = _lastActionSeqByPlayer.get(presence.playerId) ?? -1;
+  if (!Number.isInteger(request.actionSeq) || request.actionSeq <= lastSeq) return;
+  _lastActionSeqByPlayer.set(presence.playerId, request.actionSeq);
+  _onGameActionRequest?.(request, presence);
+}
+
 function attachHostConnectionHandlers(peer: Peer): void {
   peer.on('connection', (conn: DataConnection) => {
     _connections.set(conn.peer, conn);
     watchPeerConnection(conn, () => markPeerOffline(conn));
 
     conn.on('open', () => {
-      if (_latestGame) sendMessage(conn, { type: 'GAME_STATE', payload: _latestGame }, { coalesceState: true });
+      const lobby = refreshLobbyState();
+      if (lobby) sendMessage(conn, { type: 'LOBBY_STATE', payload: lobby });
+      if (_latestGame?.status === 'playing') {
+        sendSanitizedGamePatch(conn);
+      }
       broadcastPresence();
     });
 
@@ -1030,16 +1323,7 @@ function attachHostConnectionHandlers(peer: Peer): void {
         const presence = msg.payload as RoomPresence;
         pruneStaleDuplicatePresence(presence);
         const assignment = autoAssignSeat(presence);
-
-        _peers.set(presence.peerId, {
-          ...presence,
-          isHostPeer: false,
-          isSpectator: assignment.isSpectator,
-          seatIndex: assignment.seatIndex,
-          online: true,
-          lastSeen: Date.now(),
-        });
-
+        upsertPresenceFromPeer(presence, assignment);
         broadcastPresence();
       }
       if (msg.type === 'LEAVE_ROOM') {
@@ -1050,8 +1334,19 @@ function attachHostConnectionHandlers(peer: Peer): void {
         broadcastPresence();
       }
       if (msg.type === 'GAME_STATE') {
-        const game = msg.payload as GameState;
-        applyIncomingGameFromPeer(conn, game);
+        // Legacy full-state messages from joiners are intentionally ignored.
+      }
+      if (msg.type === 'DECK_SUBMITTED') {
+        const presence = _peers.get(conn.peer);
+        if (presence) handleDeckSubmitted(msg.payload as DeckSubmission, presence);
+      }
+      if (msg.type === 'PLAYER_READY_CHANGED') {
+        const payload = msg.payload as { playerId: string; ready: boolean };
+        applyReadyChange(payload.playerId, payload.ready);
+      }
+      if (msg.type === 'GAME_ACTION_REQUEST') {
+        const presence = _peers.get(conn.peer);
+        if (presence) handleGameActionRequest(msg.payload as GameActionRequestPayload, presence);
       }
       if (msg.type === 'START_GAME_ACK') {
         _onStartAck?.(msg.payload as StartGameAck);
@@ -1154,7 +1449,9 @@ function connectToMigratedHost(candidatePeerId: string): void {
 
   conn.on('open', () => {
     const presence: RoomPresence = {
+      playerId: self?.playerId ?? _playerId!,
       peerId: _peerId!,
+      sessionId: self?.sessionId ?? _sessionId!,
       name: self?.name ?? 'Player',
       color: self?.color ?? '#3b82f6',
       avatarInitial: self?.avatarInitial,
@@ -1204,9 +1501,45 @@ function handleJoinerMessage(conn: DataConnection, raw: unknown): void {
     _onPresenceUpdate?.(players);
   }
 
+  if (msg.type === 'LOBBY_STATE') {
+    _lobbyState = msg.payload as LobbyState;
+    _onLobbyUpdate?.(_lobbyState);
+  }
+
+  if (msg.type === 'DECK_VALIDATED' || msg.type === 'DECK_REJECTED') {
+    const summary = msg.payload as SubmittedDeckPublicSummary;
+    const self = _peerId ? _peers.get(_peerId) : undefined;
+    if (self && self.playerId === summary.playerId) {
+      _peers.set(self.peerId, {
+        ...self,
+        deckStatus: summary.status,
+        ready: summary.status === 'valid' ? self.ready : false,
+        deck: {
+          id: summary.deckId,
+          name: summary.deckName,
+          cardCount: summary.cardCount,
+          commanders: summary.commanderNames,
+          deckHash: summary.deckHash,
+          status: summary.status,
+          warnings: summary.warnings,
+        },
+        lastSeen: Date.now(),
+      });
+      _onPresenceUpdate?.(Object.fromEntries(_peers));
+    }
+  }
+
   if (msg.type === 'GAME_STATE') {
     _latestGame = msg.payload as GameState;
     if (_latestGame) _onGameUpdate?.(_latestGame);
+  }
+
+  if (msg.type === 'GAME_STATE_PATCH') {
+    const patch = msg.payload as GameStatePatchPayload;
+    if (patch.sanitizedGame) {
+      _latestGame = patch.sanitizedGame;
+      _onGameUpdate?.(patch.sanitizedGame);
+    }
   }
 
   if (msg.type === 'START_GAME_PREPARE') {
@@ -1262,16 +1595,23 @@ export async function createRoom(
 
   const code = generateRoomCode();
   _roomCode = code;
-  _peerId = hostPresence.peerId;
+  _peerId = hostPeerId(code);
+  _playerId = hostPresence.playerId;
+  _sessionId = hostPresence.sessionId;
+  _messageSeq = 0;
+  _gamePatchSeq = 0;
+  _deckSubmissions.clear();
+  _lastActionSeqByPlayer.clear();
 
   // Register our own presence
   _peers.set(_peerId, {
     ...hostPresence,
+    peerId: _peerId,
     isHostPeer: true,
     isSpectator: hostPresence.isSpectator,
     online: true,
-    lastSeen: Date.now(),
-  });
+      lastSeen: Date.now(),
+    });
 
   return new Promise((resolve, reject) => {
     // Host peer ID = room code so joiners can connect directly
@@ -1281,6 +1621,7 @@ export async function createRoom(
     peer.on('open', () => {
       setStatus('host');
       broadcastPresence();
+      broadcastLobbyState();
       _startHeartbeat();
       resolve(code);
     });
@@ -1307,7 +1648,11 @@ export async function createRoom(
       watchPeerConnection(conn, () => markPeerOffline(conn));
 
       conn.on('open', () => {
-        if (_latestGame) sendMessage(conn, { type: 'GAME_STATE', payload: _latestGame }, { coalesceState: true });
+        const lobby = refreshLobbyState();
+        if (lobby) sendMessage(conn, { type: 'LOBBY_STATE', payload: lobby });
+        if (_latestGame?.status === 'playing') {
+          sendSanitizedGamePatch(conn);
+        }
         broadcastPresence();
       });
 
@@ -1318,16 +1663,7 @@ export async function createRoom(
           const presence = msg.payload as RoomPresence;
           pruneStaleDuplicatePresence(presence);
           const assignment = autoAssignSeat(presence);
-
-          _peers.set(presence.peerId, {
-            ...presence,
-            isHostPeer: false,
-            isSpectator: assignment.isSpectator,
-            seatIndex: assignment.seatIndex,
-            online: true,
-            lastSeen: Date.now(),
-          });
-
+          upsertPresenceFromPeer(presence, assignment);
           broadcastPresence();
         }
         if (msg.type === 'LEAVE_ROOM') {
@@ -1338,8 +1674,19 @@ export async function createRoom(
           broadcastPresence();
         }
         if (msg.type === 'GAME_STATE') {
-          const game = msg.payload as GameState;
-          applyIncomingGameFromPeer(conn, game);
+          // Legacy full-state messages from joiners are intentionally ignored.
+        }
+        if (msg.type === 'DECK_SUBMITTED') {
+          const presence = _peers.get(conn.peer);
+          if (presence) handleDeckSubmitted(msg.payload as DeckSubmission, presence);
+        }
+        if (msg.type === 'PLAYER_READY_CHANGED') {
+          const payload = msg.payload as { playerId: string; ready: boolean };
+          applyReadyChange(payload.playerId, payload.ready);
+        }
+        if (msg.type === 'GAME_ACTION_REQUEST') {
+          const presence = _peers.get(conn.peer);
+          if (presence) handleGameActionRequest(msg.payload as GameActionRequestPayload, presence);
         }
         if (msg.type === 'START_GAME_ACK') {
           _onStartAck?.(msg.payload as StartGameAck);
@@ -1385,6 +1732,9 @@ export async function joinRoom(
   _isHost = false;
   _roomCode = code.toUpperCase().trim();
   _peerId = presence.peerId;
+  _playerId = presence.playerId;
+  _sessionId = presence.sessionId;
+  _messageSeq = 0;
   _peers.clear();
 
   return new Promise((resolve, reject) => {
@@ -1471,10 +1821,28 @@ export async function joinRoom(
           }
         }
 
+        if (msg.type === 'LOBBY_STATE') {
+          _lobbyState = msg.payload as LobbyState;
+          _onLobbyUpdate?.(_lobbyState);
+        }
+
         if (msg.type === 'GAME_STATE') {
           _latestGame = msg.payload as GameState;
           receivedGame = _latestGame;
           _onGameUpdate?.(_latestGame);
+        }
+
+        if (msg.type === 'GAME_STATE_PATCH') {
+          const patch = msg.payload as GameStatePatchPayload;
+          if (patch.sanitizedGame) {
+            _latestGame = patch.sanitizedGame;
+            receivedGame = _latestGame;
+            _onGameUpdate?.(_latestGame);
+          }
+        }
+
+        if (msg.type === 'DECK_VALIDATED' || msg.type === 'DECK_REJECTED') {
+          handleJoinerMessage(conn, raw);
         }
 
         if (msg.type === 'START_GAME_PREPARE') {
@@ -1561,35 +1929,102 @@ export function sendStartGameAck(ack: StartGameAck): void {
 
 export function sendStartGameCommit(commit: StartGameCommit): void {
   _latestGame = commit.game;
-  const msg: SyncMessage = { type: 'START_GAME_COMMIT', payload: commit };
   if (_transportMode === 'firebase') {
     if (_isHost) void writeFirebaseRoomSnapshot();
     return;
   }
   if (!_isHost) return;
   for (const conn of _connections.values()) {
-    if (conn.open) sendMessage(conn, msg);
+    const presence = _peers.get(conn.peer);
+    if (!conn.open || !presence) continue;
+    const payload: StartGameCommit = {
+      ...commit,
+      publicGameState: createPublicGameState(commit.game),
+      game: sanitizeGameStateForPlayer(commit.game, presence.playerId),
+    };
+    sendMessage(conn, { type: 'START_GAME_COMMIT', payload });
   }
+}
+
+function createGamePatchForPlayer(game: GameState, playerId: string): GameStatePatchPayload {
+  return {
+    seq: ++_gamePatchSeq,
+    publicGameState: createPublicGameState(game),
+    privatePlayerState: createPrivatePlayerState(game, playerId),
+    sanitizedGame: sanitizeGameStateForPlayer(game, playerId),
+  };
+}
+
+function sendSanitizedGamePatch(conn: DataConnection, game = _latestGame): void {
+  if (!game) return;
+  const presence = _peers.get(conn.peer);
+  if (!presence) return;
+  sendMessage(conn, {
+    type: 'GAME_STATE_PATCH',
+    payload: createGamePatchForPlayer(game, presence.playerId),
+  }, { coalesceState: true });
 }
 
 export function broadcastState(game: GameState): void {
   _latestGame = game;
-  const msg: SyncMessage = { type: 'GAME_STATE', payload: game };
   if (_transportMode === 'firebase') {
     if (_isHost) {
       void writeFirebaseRoomSnapshot();
-    } else {
-      void writeFirebaseMessage(msg);
     }
     return;
   }
   if (!_isHost) {
-    if (_hostConn?.open) sendMessage(_hostConn, msg, { coalesceState: true });
+    // Joined clients request actions; they do not broadcast full GameState.
     return;
   }
   for (const conn of _connections.values()) {
-    sendMessage(conn, msg, { coalesceState: true });
+    sendSanitizedGamePatch(conn, game);
   }
+}
+
+export function submitDeckToHost(deck: Parameters<typeof createDeckSubmission>[0]): DeckSubmission | null {
+  if (!_playerId || !_peerId || !_sessionId) return null;
+  const submission = createDeckSubmission(deck, _playerId);
+  const self = _peers.get(_peerId);
+  if (_isHost && self) {
+    handleDeckSubmitted(submission, self);
+    return submission;
+  }
+  const msg: SyncMessage = { type: 'DECK_SUBMITTED', payload: submission };
+  if (_transportMode === 'firebase') {
+    void writeFirebaseMessage(msg);
+    return submission;
+  }
+  if (_hostConn?.open) sendMessage(_hostConn, msg);
+  return submission;
+}
+
+export function setLocalPlayerReady(ready: boolean): boolean {
+  if (!_playerId || !_peerId) return false;
+  if (_isHost) return applyReadyChange(_playerId, ready);
+  const msg: SyncMessage = { type: 'PLAYER_READY_CHANGED', payload: { playerId: _playerId, ready } };
+  if (_transportMode === 'firebase') {
+    void writeFirebaseMessage(msg);
+  } else if (_hostConn?.open) {
+    sendMessage(_hostConn, msg);
+  }
+  const existing = _peers.get(_peerId);
+  if (existing) {
+    _peers.set(_peerId, { ...existing, ready, lastSeen: Date.now() });
+    _onPresenceUpdate?.(Object.fromEntries(_peers));
+  }
+  return true;
+}
+
+export function sendGameActionRequest(actionType: string, params: Record<string, unknown> = {}): boolean {
+  if (!_playerId || _isHost || !_hostConn?.open) return false;
+  const actionSeq = (_lastActionSeqByPlayer.get(_playerId) ?? 0) + 1;
+  _lastActionSeqByPlayer.set(_playerId, actionSeq);
+  sendMessage(_hostConn, {
+    type: 'GAME_ACTION_REQUEST',
+    payload: { actionSeq, actionType, params },
+  });
+  return true;
 }
 
 // ─── Update presence (joiner → host) ─────────────────────────────────────────
