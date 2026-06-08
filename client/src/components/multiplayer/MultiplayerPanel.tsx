@@ -104,7 +104,7 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
   }
 
   function handleLeave() {
-    if (onExitRoom) {
+    if (isHost && onExitRoom) {
       onExitRoom();
       return;
     }
@@ -396,7 +396,7 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
         <button
           data-testid="btn-leave-room"
           data-help-title="Leave Room"
-          data-help-body="Opens the exit flow. If you are host, the app will try to migrate host duties to the strongest connected player."
+          data-help-body={isHost ? 'Opens the host exit flow and attempts host migration before disconnecting.' : 'Leaves this room and frees your lobby seat.'}
           data-help-placement="top"
           onClick={handleLeave}
           style={{
