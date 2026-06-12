@@ -199,7 +199,13 @@ export function LobbyScreen() {
     && !isTableHost
     && store.multiplayer.lobby?.status === 'playing'
     && store.game.status !== 'playing';
-  const showJoinerStartFallback = joinerCanEnterStartedGame || joinerNeedsGamePatch;
+  const joinerCanRequestHostPatch = gameMode === 'table'
+    && isInTableRoom
+    && !isTableHost
+    && store.multiplayer.status === 'joined'
+    && !joinerCanEnterStartedGame
+    && !joinerNeedsGamePatch;
+  const showJoinerStartFallback = joinerCanEnterStartedGame || joinerNeedsGamePatch || joinerCanRequestHostPatch;
 
   useEffect(() => {
     if (gameMode !== 'table' || !isTableHost || tableStart.waitMs <= 0) return;
@@ -1281,6 +1287,28 @@ export function LobbyScreen() {
                 }}
               >
                 Sync From Host
+              </button>
+            )}
+            {joinerCanRequestHostPatch && (
+              <button
+                type="button"
+                data-testid="btn-check-host-status"
+                onClick={() => store.requestMultiplayerGamePatch('joiner-check-host-status')}
+                style={{
+                  width: '100%',
+                  padding: '14px 0',
+                  border: '1px solid #334155',
+                  borderRadius: 8,
+                  background: '#111827',
+                  color: '#cbd5e1',
+                  cursor: 'pointer',
+                  fontSize: 15,
+                  fontWeight: 800,
+                  textTransform: 'uppercase',
+                  letterSpacing: '0.05em',
+                }}
+              >
+                Check Host Status
               </button>
             )}
           </div>

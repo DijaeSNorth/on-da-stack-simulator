@@ -184,6 +184,8 @@ const CONNECT_TIMEOUT_MS = 12000;
 // Heartbeat interval to keep DataChannels alive through NAT (ms)
 const HEARTBEAT_MS = 20000;
 const HOST_MIGRATION_DELAY_MS = 1800;
+const START_DELIVERY_RETRY_MS = 500;
+const START_DELIVERY_MAX_ATTEMPTS = 8;
 const DATA_CHANNEL_LOW_WATER_BYTES = 64 * 1024;
 const DATA_CHANNEL_HIGH_WATER_BYTES = 256 * 1024;
 const FIREBASE_POLL_MS = 1800;
@@ -214,6 +216,8 @@ let _firebasePollTimer: ReturnType<typeof setInterval> | null = null;
 let _deckSubmissionFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 let _lastLocalDeckSubmission: DeckSubmission | null = null;
 let _deckSubmissionFallbackUsed = false;
+let _lastStartCommit: StartGameCommit | null = null;
+let _lastStartedGame: GameState | null = null;
 
 // Host-side: map of peerId → DataConnection for each joiner
 const _connections: Map<string, DataConnection> = new Map();
@@ -224,6 +228,7 @@ let _latestGame: GameState | null = null;
 const _pendingStateMessages: Map<string, SyncMessage> = new Map();
 const _bufferDrainHandlers: Map<string, () => void> = new Map();
 const _connectionHealthHandlers: Map<string, () => void> = new Map();
+const _startDeliveryTimers: Map<string, Set<ReturnType<typeof setTimeout>>> = new Map();
 const _firebaseSeenMessages: Map<string, number> = new Map();
 
 // Presence table — host owns the authoritative copy; joiners mirror it
@@ -289,6 +294,12 @@ function setStatus(s: SyncStatus) {
 function parseSyncMessage(raw: unknown): SyncMessage | null {
   const validation = validateMultiplayerMessage(raw, _roomCode ?? undefined);
   if (!validation.ok || !validation.message) {
+    debugMultiplayer('rejected inbound message', {
+      reason: validation.reason,
+      expectedRoomId: _roomCode,
+      type: (raw as Partial<MultiplayerMessage> | null | undefined)?.type,
+      protocolVersion: (raw as Partial<MultiplayerMessage> | null | undefined)?.protocolVersion,
+    });
     return null;
   }
   return {
@@ -308,8 +319,29 @@ function getDataChannel(conn: DataConnection): RTCDataChannel | undefined {
   return (conn as DataConnection & { dataChannel?: RTCDataChannel }).dataChannel;
 }
 
+function clearStartDeliveryTimers(peerId: string): void {
+  const timers = _startDeliveryTimers.get(peerId);
+  if (!timers) return;
+  for (const timer of timers) clearTimeout(timer);
+  _startDeliveryTimers.delete(peerId);
+}
+
+function addStartDeliveryTimer(peerId: string, timer: ReturnType<typeof setTimeout>): void {
+  const timers = _startDeliveryTimers.get(peerId) ?? new Set<ReturnType<typeof setTimeout>>();
+  timers.add(timer);
+  _startDeliveryTimers.set(peerId, timers);
+}
+
+function deleteStartDeliveryTimer(peerId: string, timer: ReturnType<typeof setTimeout>): void {
+  const timers = _startDeliveryTimers.get(peerId);
+  if (!timers) return;
+  timers.delete(timer);
+  if (timers.size === 0) _startDeliveryTimers.delete(peerId);
+}
+
 function cleanupConnection(conn: DataConnection): void {
   _pendingStateMessages.delete(conn.peer);
+  clearStartDeliveryTimers(conn.peer);
   const dataChannel = getDataChannel(conn);
   const bufferDrain = _bufferDrainHandlers.get(conn.peer);
   if (dataChannel && bufferDrain) {
@@ -422,6 +454,7 @@ function cleanupAllConnections(): void {
   _pendingStateMessages.clear();
   _bufferDrainHandlers.clear();
   _connectionHealthHandlers.clear();
+  for (const peerId of _startDeliveryTimers.keys()) clearStartDeliveryTimers(peerId);
 }
 
 function getEnvValue(name: string): string | undefined {
@@ -594,7 +627,15 @@ function broadcastLobbyState(status?: LobbyState['status']): void {
   }
   if (!_isHost) return;
   for (const conn of _connections.values()) {
-    if (conn.open) sendMessage(conn, msg);
+    if (!conn.open) continue;
+    const sent = sendMessage(conn, msg);
+    if (lobby.status === 'playing') {
+      debugMultiplayer('host sent playing LOBBY_STATE', {
+        peerId: conn.peer,
+        sent,
+        lobbyStatus: lobby.status,
+      });
+    }
   }
 }
 
@@ -1341,23 +1382,69 @@ function sendDeckSubmissionToHost(submission: DeckSubmission): void {
 
 export function requestGameStatePatch(reason = 'manual-resync'): boolean {
   if (_isHost || !_playerId || !_peerId) return false;
-  const msg: SyncMessage = {
-    type: 'GAME_STATE_PATCH_REQUEST',
-    payload: { reason, sentAt: Date.now() },
-  };
   if (_transportMode === 'firebase') {
+    const msg: SyncMessage = {
+      type: 'GAME_STATE_PATCH_REQUEST',
+      payload: { reason, sentAt: Date.now() },
+    };
     void writeFirebaseMessage(msg);
     return true;
   }
   if (_hostConn?.open) {
-    sendMessage(_hostConn, msg);
-    return true;
+    return sendPatchRequest(_hostConn, reason);
   }
-  return false;
+  return reconnectHostForPatchRequest(reason);
 }
 
 function requestFreshGameStatePatch(reason: string): void {
   requestGameStatePatch(reason);
+}
+
+function sendPatchRequest(conn: DataConnection, reason: string): boolean {
+  return sendMessage(conn, {
+    type: 'GAME_STATE_PATCH_REQUEST',
+    payload: { reason, sentAt: Date.now() },
+  });
+}
+
+function reconnectHostForPatchRequest(reason: string): boolean {
+  if (_isHost || !_peer || !_roomCode || !_peerId || !_playerId || !_sessionId) return false;
+  const existing = _peers.get(_peerId);
+  const conn = _peer.connect(hostPeerId(_roomCode), {
+    reliable: true,
+    serialization: 'json',
+  });
+  _hostConn = conn;
+  watchPeerConnection(conn, () => startHostMigration('host-disconnected'));
+
+  conn.on('open', () => {
+    const presence: RoomPresence = {
+      ...(existing ?? {
+        name: 'Player',
+        color: '#3b82f6',
+        seatIndex: -1,
+        isSpectator: false,
+        isHostPeer: false,
+        ready: false,
+      }),
+      peerId: _peerId!,
+      playerId: _playerId!,
+      sessionId: _sessionId!,
+      online: true,
+      lastSeen: Date.now(),
+    };
+    sendMessage(conn, { type: 'PRESENCE', payload: presence });
+    sendPatchRequest(conn, reason);
+  });
+  conn.on('data', (raw: unknown) => handleJoinerMessage(conn, raw));
+  conn.on('close', () => {
+    cleanupConnection(conn);
+    startHostMigration('host-disconnected');
+  });
+  conn.on('error', () => {
+    cleanupConnection(conn);
+  });
+  return true;
 }
 
 function scheduleDeckSubmissionFallback(submission: DeckSubmission): void {
@@ -1403,10 +1490,10 @@ function attachHostConnectionHandlers(peer: Peer): void {
     watchPeerConnection(conn, () => markPeerOffline(conn));
 
     conn.on('open', () => {
-      const lobby = refreshLobbyState();
+      const lobby = refreshLobbyState(_latestGame?.status === 'playing' ? 'playing' : undefined);
       if (lobby) sendMessage(conn, { type: 'LOBBY_STATE', payload: lobby });
       if (_latestGame?.status === 'playing') {
-        sendSanitizedGamePatch(conn);
+        restartStartedGameSnapshotDelivery(conn, 'connection-open');
       }
       broadcastPresence();
     });
@@ -1420,6 +1507,9 @@ function attachHostConnectionHandlers(peer: Peer): void {
         const assignment = autoAssignSeat(presence);
         upsertPresenceFromPeer(presence, assignment);
         broadcastPresence();
+        if (_latestGame?.status === 'playing') {
+          restartStartedGameSnapshotDelivery(conn, 'presence-after-start');
+        }
       }
       if (msg.type === 'LEAVE_ROOM') {
         cleanupConnection(conn);
@@ -1448,7 +1538,11 @@ function attachHostConnectionHandlers(peer: Peer): void {
           peerId: conn.peer,
           reason: (msg.payload as { reason?: string }).reason,
         });
-        sendSanitizedGamePatch(conn);
+        if (_latestGame?.status === 'playing') {
+          restartStartedGameSnapshotDelivery(conn, (msg.payload as { reason?: string }).reason ?? 'patch-request');
+        } else {
+          sendSanitizedGamePatch(conn, undefined, { reason: (msg.payload as { reason?: string }).reason ?? 'patch-request' });
+        }
       }
       if (msg.type === 'START_GAME_ACK') {
         debugMultiplayer('host receiving START_GAME_ACK', {
@@ -1745,6 +1839,8 @@ export async function createRoom(
   _gamePatchSeq = 0;
   _deckSubmissions.clear();
   _lastActionSeqByPlayer.clear();
+  _lastStartCommit = null;
+  _lastStartedGame = null;
 
   // Register our own presence
   _peers.set(_peerId, {
@@ -1791,10 +1887,10 @@ export async function createRoom(
       watchPeerConnection(conn, () => markPeerOffline(conn));
 
       conn.on('open', () => {
-        const lobby = refreshLobbyState();
+        const lobby = refreshLobbyState(_latestGame?.status === 'playing' ? 'playing' : undefined);
         if (lobby) sendMessage(conn, { type: 'LOBBY_STATE', payload: lobby });
         if (_latestGame?.status === 'playing') {
-          sendSanitizedGamePatch(conn);
+          restartStartedGameSnapshotDelivery(conn, 'connection-open');
         }
         broadcastPresence();
       });
@@ -1808,6 +1904,9 @@ export async function createRoom(
           const assignment = autoAssignSeat(presence);
           upsertPresenceFromPeer(presence, assignment);
           broadcastPresence();
+          if (_latestGame?.status === 'playing') {
+            restartStartedGameSnapshotDelivery(conn, 'presence-after-start');
+          }
         }
         if (msg.type === 'LEAVE_ROOM') {
           cleanupConnection(conn);
@@ -1836,7 +1935,11 @@ export async function createRoom(
             peerId: conn.peer,
             reason: (msg.payload as { reason?: string }).reason,
           });
-          sendSanitizedGamePatch(conn);
+          if (_latestGame?.status === 'playing') {
+            restartStartedGameSnapshotDelivery(conn, (msg.payload as { reason?: string }).reason ?? 'patch-request');
+          } else {
+            sendSanitizedGamePatch(conn, undefined, { reason: (msg.payload as { reason?: string }).reason ?? 'patch-request' });
+          }
         }
         if (msg.type === 'START_GAME_ACK') {
           debugMultiplayer('host receiving START_GAME_ACK', {
@@ -1893,6 +1996,8 @@ export async function joinRoom(
   _sessionId = presence.sessionId;
   _messageSeq = 0;
   _peers.clear();
+  _lastStartCommit = null;
+  _lastStartedGame = null;
 
   return new Promise((resolve, reject) => {
     const peer = new Peer(PEER_CONFIG);
@@ -2106,7 +2211,15 @@ export function sendStartGamePrepare(prepare: StartGamePrepare): void {
   const msg: SyncMessage = { type: 'START_GAME_PREPARE', payload: prepare };
   for (const conn of _connections.values()) {
     const presence = _peers.get(conn.peer);
-    if (conn.open && presence && !presence.isSpectator && presence.seatIndex >= 0) sendMessage(conn, msg);
+    if (conn.open && presence && !presence.isSpectator && presence.seatIndex >= 0) {
+      const sent = sendMessage(conn, msg);
+      debugMultiplayer('host sent START_GAME_PREPARE', {
+        id: prepare.id,
+        peerId: presence.peerId,
+        playerId: presence.playerId,
+        sent,
+      });
+    }
   }
 }
 
@@ -2129,24 +2242,68 @@ export function sendStartGameAck(ack: StartGameAck): void {
 export function sendStartGameCommit(commit: StartGameCommit): void {
   const playingGame: GameState = { ...commit.game, status: 'playing' };
   _latestGame = playingGame;
+  _lastStartedGame = playingGame;
+  _lastStartCommit = {
+    ...commit,
+    gameId: commit.gameId ?? playingGame.id,
+    game: playingGame,
+  };
   if (_transportMode === 'firebase') {
     if (_isHost) void writeFirebaseRoomSnapshot();
     return;
   }
   if (!_isHost) return;
-  sendStartGameCommitBurst(commit, playingGame, 0);
-}
-
-function sendStartGameCommitBurst(commit: StartGameCommit, playingGame: GameState, attempt: number): void {
-  if (!_isHost) return;
   broadcastLobbyState('playing');
   for (const conn of _connections.values()) {
-    sendStartGameCommitToConnection(conn, commit, playingGame, attempt);
+    restartStartedGameSnapshotDelivery(conn, 'start-commit');
   }
-  const hasOpenConnections = [..._connections.values()].some(conn => conn.open);
-  if (attempt < 5 && hasOpenConnections) {
-    globalThis.setTimeout(() => sendStartGameCommitBurst(commit, playingGame, attempt + 1), 500);
+}
+
+function getLatestPlayingGame(): GameState | null {
+  if (_latestGame?.status === 'playing') return _latestGame;
+  if (_lastStartedGame?.status === 'playing') return _lastStartedGame;
+  return null;
+}
+
+function restartStartedGameSnapshotDelivery(conn: DataConnection, reason: string): void {
+  clearStartDeliveryTimers(conn.peer);
+  scheduleStartedGameSnapshotDelivery(conn, reason, 0);
+}
+
+function scheduleStartedGameSnapshotDelivery(conn: DataConnection, reason: string, attempt: number): void {
+  if (!_isHost || attempt > START_DELIVERY_MAX_ATTEMPTS) return;
+  const delay = attempt === 0 ? 0 : START_DELIVERY_RETRY_MS;
+  const timer = globalThis.setTimeout(() => {
+    deleteStartDeliveryTimer(conn.peer, timer);
+    if (!_isHost || !conn.open || !getLatestPlayingGame()) return;
+    sendStartedGameSnapshotToConnection(conn, reason, attempt);
+    if (attempt < START_DELIVERY_MAX_ATTEMPTS) {
+      scheduleStartedGameSnapshotDelivery(conn, reason, attempt + 1);
+    }
+  }, delay);
+  addStartDeliveryTimer(conn.peer, timer);
+}
+
+function sendStartedGameSnapshotToConnection(conn: DataConnection, reason: string, attempt: number): boolean {
+  const playingGame = getLatestPlayingGame();
+  if (!playingGame || !conn.open) return false;
+  const lobby = _lobbyState?.status === 'playing' ? _lobbyState : refreshLobbyState('playing');
+  const lobbySent = lobby ? sendMessage(conn, { type: 'LOBBY_STATE', payload: lobby }) : false;
+  if (lobby) {
+    debugMultiplayer('host replaying playing LOBBY_STATE', {
+      peerId: conn.peer,
+      reason,
+      attempt,
+      sent: lobbySent,
+    });
   }
+  const commitSent = _lastStartCommit
+    ? sendStartGameCommitToConnection(conn, _lastStartCommit, playingGame, attempt, reason)
+    : false;
+  const patchSent = commitSent
+    ? false
+    : sendSanitizedGamePatch(conn, playingGame, { reason, attempt });
+  return lobbySent || commitSent || patchSent;
 }
 
 function sendStartGameCommitToConnection(
@@ -2154,37 +2311,63 @@ function sendStartGameCommitToConnection(
   commit: StartGameCommit,
   playingGame: GameState,
   attempt: number,
-): void {
-    const presence = _peers.get(conn.peer);
-    if (!conn.open || !presence || presence.isSpectator || presence.seatIndex < 0) return;
-    const viewerGamePlayerId = playingGame.players[presence.seatIndex]?.id;
-    if (!viewerGamePlayerId) return;
-    const payload: StartGameCommit = {
-      ...commit,
-      gameId: commit.gameId ?? playingGame.id,
-      publicGameState: createPublicGameState(playingGame),
-      game: sanitizeGameStateForPlayer(playingGame, viewerGamePlayerId),
-    };
-    debugMultiplayer('host sending START_GAME_COMMIT', {
-      id: commit.id,
+  reason = 'start-commit',
+): boolean {
+  const presence = _peers.get(conn.peer);
+  if (!conn.open || !presence || presence.isSpectator || presence.seatIndex < 0) {
+    debugMultiplayer('host skipped START_GAME_COMMIT', {
+      peerId: conn.peer,
+      reason,
+      attempt,
+      connOpen: conn.open,
+      hasPresence: Boolean(presence),
+      isSpectator: presence?.isSpectator,
+      seatIndex: presence?.seatIndex,
+    });
+    return false;
+  }
+  const viewerGamePlayerId = playingGame.players[presence.seatIndex]?.id;
+  if (!viewerGamePlayerId) {
+    debugMultiplayer('host skipped START_GAME_COMMIT without seat game player', {
       peerId: presence.peerId,
       playerId: presence.playerId,
-      viewerGamePlayerId,
       seatIndex: presence.seatIndex,
+      reason,
       attempt,
     });
-    sendMessage(conn, { type: 'START_GAME_COMMIT', payload });
-    debugMultiplayer('host sending GAME_STATE_PATCH', {
-      gameId: playingGame.id,
-      peerId: presence.peerId,
-      playerId: presence.playerId,
-      viewerGamePlayerId,
-      attempt,
-    });
-    sendMessage(conn, {
-      type: 'GAME_STATE_PATCH',
-      payload: createGamePatchForPlayer(playingGame, viewerGamePlayerId),
-    }, { coalesceState: true });
+    return false;
+  }
+  const payload: StartGameCommit = {
+    ...commit,
+    gameId: commit.gameId ?? playingGame.id,
+    publicGameState: createPublicGameState(playingGame),
+    game: sanitizeGameStateForPlayer(playingGame, viewerGamePlayerId),
+  };
+  const commitSent = sendMessage(conn, { type: 'START_GAME_COMMIT', payload });
+  debugMultiplayer('host sending START_GAME_COMMIT', {
+    id: commit.id,
+    peerId: presence.peerId,
+    playerId: presence.playerId,
+    viewerGamePlayerId,
+    seatIndex: presence.seatIndex,
+    reason,
+    attempt,
+    sent: commitSent,
+  });
+  const patchSent = sendMessage(conn, {
+    type: 'GAME_STATE_PATCH',
+    payload: createGamePatchForPlayer(playingGame, viewerGamePlayerId),
+  }, { coalesceState: true });
+  debugMultiplayer('host sending GAME_STATE_PATCH', {
+    gameId: playingGame.id,
+    peerId: presence.peerId,
+    playerId: presence.playerId,
+    viewerGamePlayerId,
+    reason,
+    attempt,
+    sent: patchSent,
+  });
+  return commitSent || patchSent;
 }
 
 function createGamePatchForPlayer(game: GameState, playerId: string): GameStatePatchPayload {
@@ -2196,16 +2379,52 @@ function createGamePatchForPlayer(game: GameState, playerId: string): GameStateP
   };
 }
 
-function sendSanitizedGamePatch(conn: DataConnection, game = _latestGame): void {
-  if (!game) return;
+function sendSanitizedGamePatch(
+  conn: DataConnection,
+  game = _latestGame,
+  meta: { reason?: string; attempt?: number } = {},
+): boolean {
+  if (!game) return false;
   const presence = _peers.get(conn.peer);
-  if (!presence) return;
+  if (!presence) {
+    if (game.status === 'playing') {
+      debugMultiplayer('host skipped GAME_STATE_PATCH without presence', {
+        peerId: conn.peer,
+        reason: meta.reason,
+        attempt: meta.attempt,
+      });
+    }
+    return false;
+  }
   const viewerGamePlayerId = presence.seatIndex >= 0 ? game.players[presence.seatIndex]?.id : undefined;
-  if (!viewerGamePlayerId) return;
-  sendMessage(conn, {
+  if (!viewerGamePlayerId) {
+    if (game.status === 'playing') {
+      debugMultiplayer('host skipped GAME_STATE_PATCH without seat game player', {
+        peerId: presence.peerId,
+        playerId: presence.playerId,
+        seatIndex: presence.seatIndex,
+        reason: meta.reason,
+        attempt: meta.attempt,
+      });
+    }
+    return false;
+  }
+  const sent = sendMessage(conn, {
     type: 'GAME_STATE_PATCH',
     payload: createGamePatchForPlayer(game, viewerGamePlayerId),
   }, { coalesceState: true });
+  if (game.status === 'playing') {
+    debugMultiplayer('host sent GAME_STATE_PATCH', {
+      gameId: game.id,
+      peerId: presence.peerId,
+      playerId: presence.playerId,
+      viewerGamePlayerId,
+      reason: meta.reason,
+      attempt: meta.attempt,
+      sent,
+    });
+  }
+  return sent;
 }
 
 export function broadcastState(game: GameState): void {
@@ -2385,6 +2604,8 @@ export function leaveRoom(notifyHost = true): void {
   _peers.clear();
   if (_peer) { _peer.destroy(); _peer = null; }
   _latestGame = null;
+  _lastStartCommit = null;
+  _lastStartedGame = null;
   _roomCode = null;
   _peerId = null;
   _isHost = false;
@@ -2393,6 +2614,71 @@ export function leaveRoom(notifyHost = true): void {
   _onPresenceUpdate?.({});
   setStatus('disconnected');
 }
+
+export const __multiplayerSyncTest = {
+  reset(): void {
+    _stopHeartbeat();
+    stopFirebasePolling();
+    if (_migrationTimer) { clearTimeout(_migrationTimer); _migrationTimer = null; }
+    clearDeckSubmissionFallback();
+    cleanupAllConnections();
+    _peers.clear();
+    _deckSubmissions.clear();
+    _lastActionSeqByPlayer.clear();
+    _firebaseSeenMessages.clear();
+    _latestGame = null;
+    _lastStartedGame = null;
+    _lastStartCommit = null;
+    _lobbyState = null;
+    _roomCode = null;
+    _peerId = null;
+    _playerId = null;
+    _sessionId = null;
+    _isHost = false;
+    _status = 'disconnected';
+    _transportMode = 'peerjs';
+    _messageSeq = 0;
+    _gamePatchSeq = 0;
+  },
+  seedHostState({
+    roomCode,
+    hostPeerId,
+    playerId,
+    sessionId,
+    game,
+    peers,
+    connections,
+  }: {
+    roomCode: string;
+    hostPeerId: string;
+    playerId: string;
+    sessionId: string;
+    game: GameState;
+    peers: RoomPresence[];
+    connections: DataConnection[];
+  }): void {
+    this.reset();
+    _roomCode = roomCode;
+    _peerId = hostPeerId;
+    _playerId = playerId;
+    _sessionId = sessionId;
+    _isHost = true;
+    _status = 'host';
+    _latestGame = game;
+    for (const presence of peers) _peers.set(presence.peerId, presence);
+    for (const conn of connections) _connections.set(conn.peer, conn);
+    refreshLobbyState(game.status === 'playing' ? 'playing' : 'lobby');
+  },
+  upsertPresence(presence: RoomPresence): void {
+    _peers.set(presence.peerId, presence);
+    refreshLobbyState(_latestGame?.status === 'playing' ? 'playing' : 'lobby');
+  },
+  replayStartedGameSnapshot(peerId: string, reason = 'test-replay'): boolean {
+    const conn = _connections.get(peerId);
+    if (!conn) return false;
+    return sendStartedGameSnapshotToConnection(conn, reason, 0);
+  },
+};
 
 // ─── Heartbeat ────────────────────────────────────────────────────────────────
 // Keeps NAT mappings alive so connections don't drop on idle games.

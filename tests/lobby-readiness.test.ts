@@ -20,13 +20,16 @@ function assert(condition: boolean, message: string): void {
 
 function presence(peerId: string, name: string, seatIndex: number, isSpectator = false): RoomPresence {
   return {
+    playerId: `player-${peerId}`,
     peerId,
+    sessionId: `session-${peerId}`,
     name,
     color: seatIndex === 0 ? '#3b82f6' : '#ef4444',
     seatIndex,
     isSpectator,
     online: true,
     lastSeen: Date.now(),
+    ready: true,
   };
 }
 
@@ -116,7 +119,11 @@ assert(ready.occupiedCount === 2, 'expected spectator to be ignored by occupied 
 
 const readyWithActualDeckSync = canStartCommanderTable({
   isHost: true,
-  peers,
+  peers: {
+    host: { ...peers.host, deckStatus: 'valid' },
+    guest: { ...peers.guest, deckStatus: 'valid' },
+    spectator: peers.spectator,
+  },
   playerCount: 2,
   seats: staleLocalSeats,
   gamePlayers: [hostPlayer, guestPlayer],
@@ -127,8 +134,8 @@ assert(readyWithActualDeckSync.canStart, 'expected host to start when actual syn
 
 const syncWindowNow = 10_000;
 const recentlyChangedPeers: Record<string, RoomPresence> = {
-  host: { ...presence('host', 'Host', 0), lastSeen: syncWindowNow - 400 },
-  guest: { ...presence('guest', 'Guest', 1), lastSeen: syncWindowNow - 300 },
+  host: { ...presence('host', 'Host', 0), deckStatus: 'valid', lastSeen: syncWindowNow - 400 },
+  guest: { ...presence('guest', 'Guest', 1), deckStatus: 'valid', lastSeen: syncWindowNow - 300 },
 };
 const waitingForSyncWindow = canStartCommanderTable({
   isHost: true,

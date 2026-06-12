@@ -9,6 +9,21 @@ export function canControlPlayer(
 ): boolean {
   if (judgeMode) return true;
   if (multiplayerStatus === 'spectator') return false;
+  if (
+    multiplayerStatus === 'disconnected' ||
+    multiplayerStatus === 'connecting' ||
+    multiplayerStatus === 'connected' ||
+    multiplayerStatus === 'error'
+  ) {
+    return true;
+  }
+  if (
+    multiplayerStatus === 'host' ||
+    multiplayerStatus === 'joined' ||
+    multiplayerStatus === 'migrating'
+  ) {
+    return Boolean(localPlayerId && targetPlayerId && localPlayerId === targetPlayerId);
+  }
   return Boolean(localPlayerId && targetPlayerId && localPlayerId === targetPlayerId);
 }
 
