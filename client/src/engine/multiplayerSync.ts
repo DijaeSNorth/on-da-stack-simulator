@@ -282,8 +282,11 @@ interface FirebaseRoomRelay {
   game: GameState | null;
   peers: Record<string, RoomPresence>;
   lobby?: LobbyState;
-  messages?: Record<string, { updatedAt: number; message: MultiplayerMessage }>;
+  messages?: Record<string, FirebaseMessageInbox>;
 }
+
+export type FirebaseMessageEntry = { updatedAt: number; message: MultiplayerMessage };
+export type FirebaseMessageInbox = FirebaseMessageEntry | Record<string, FirebaseMessageEntry>;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -700,10 +703,36 @@ async function writeFirebaseMessage(message: SyncMessage): Promise<void> {
   if (message.type === 'GAME_STATE') assertFirebaseGameSize(message.payload);
   const envelope = envelopeMessage(message);
   if (!envelope) return;
-  await firebaseRequest(`${firebaseRoomPath()}/messages/${_peerId}`, 'PUT', {
+  await firebaseRequest(`${firebaseRoomPath()}/messages/${_peerId}/${envelope.messageId}`, 'PUT', {
     updatedAt: Date.now(),
     message: envelope,
   });
+}
+
+export function firebaseInboxEntriesForRoom(
+  roomCode: string,
+  peerId: string,
+  inbox: FirebaseMessageInbox | undefined,
+): Array<FirebaseMessageEntry & { path: string }> {
+  if (!inbox || typeof inbox !== 'object') return [];
+  if ('message' in inbox) {
+    return [{ ...(inbox as FirebaseMessageEntry), path: `${firebaseRoomPath(roomCode)}/messages/${peerId}` }];
+  }
+  return Object.entries(inbox as Record<string, FirebaseMessageEntry>)
+    .filter(([, entry]) => Boolean(entry?.message))
+    .map(([messageId, entry]) => ({
+      ...entry,
+      path: `${firebaseRoomPath(roomCode)}/messages/${peerId}/${messageId}`,
+    }))
+    .sort((a, b) => (a.updatedAt ?? 0) - (b.updatedAt ?? 0));
+}
+
+function firebaseInboxEntries(peerId: string, inbox: FirebaseMessageInbox | undefined): Array<FirebaseMessageEntry & { path: string }> {
+  return _roomCode ? firebaseInboxEntriesForRoom(_roomCode, peerId, inbox) : [];
+}
+
+function firebaseSeenMessageKey(peerId: string, entry: FirebaseMessageEntry): string {
+  return `${peerId}:${entry.message?.messageId ?? entry.updatedAt}`;
 }
 
 function applyFirebasePeers(peers: Record<string, RoomPresence>): void {
@@ -770,39 +799,59 @@ async function pollFirebaseRoom(): Promise<void> {
 
     if (_isHost) {
       let changed = false;
-      for (const [peerId, entry] of Object.entries(room.messages ?? {})) {
-        if (peerId === _peerId || !entry?.message) continue;
-        const parsed = validateMultiplayerMessage(entry.message, _roomCode ?? undefined);
-        if (!parsed.ok || !parsed.message) continue;
-        const seenAt = _firebaseSeenMessages.get(peerId) ?? 0;
-        if ((entry.updatedAt ?? 0) <= seenAt) continue;
-        _firebaseSeenMessages.set(peerId, entry.updatedAt ?? Date.now());
-        if (parsed.message.type === 'GAME_STATE') {
-          changed = applyFirebaseGameFromPeer(peerId, parsed.message.payload as GameState) || changed;
-        }
-        if (parsed.message.type === 'DECK_SUBMITTED') {
-          const presence = _peers.get(peerId);
-          if (presence) handleDeckSubmitted(parsed.message.payload as DeckSubmission, presence);
-          changed = true;
-        }
-        if (parsed.message.type === 'PLAYER_READY_CHANGED') {
-          const payload = parsed.message.payload as { playerId: string; ready: boolean };
-          applyReadyChange(payload.playerId, payload.ready);
-          changed = true;
-        }
-        if (parsed.message.type === 'GAME_STATE_PATCH_REQUEST') {
-          changed = true;
-        }
-        if (parsed.message.type === 'START_GAME_ACK') {
-          _onStartAck?.(parsed.message.payload as StartGameAck);
-        }
-        if (parsed.message.type === 'LEAVE_ROOM') {
-          const p = _peers.get(peerId);
-          if (p) {
-            _peers.set(peerId, { ...p, online: false, lastSeen: Date.now() });
+      const processedPaths: string[] = [];
+      for (const [peerId, inbox] of Object.entries(room.messages ?? {})) {
+        if (peerId === _peerId) continue;
+        for (const entry of firebaseInboxEntries(peerId, inbox)) {
+          const parsed = validateMultiplayerMessage(entry.message, _roomCode ?? undefined);
+          if (!parsed.ok || !parsed.message) {
+            processedPaths.push(entry.path);
+            continue;
+          }
+          const seenKey = firebaseSeenMessageKey(peerId, entry);
+          if (_firebaseSeenMessages.has(seenKey)) {
+            processedPaths.push(entry.path);
+            continue;
+          }
+          _firebaseSeenMessages.set(seenKey, entry.updatedAt ?? Date.now());
+          processedPaths.push(entry.path);
+          if (parsed.message.type === 'GAME_STATE') {
+            changed = applyFirebaseGameFromPeer(peerId, parsed.message.payload as GameState) || changed;
+          }
+          if (parsed.message.type === 'DECK_SUBMITTED') {
+            const presence = _peers.get(peerId);
+            if (presence) handleDeckSubmitted(parsed.message.payload as DeckSubmission, presence);
             changed = true;
           }
+          if (parsed.message.type === 'PLAYER_READY_CHANGED') {
+            const payload = parsed.message.payload as { playerId: string; ready: boolean };
+            applyReadyChange(payload.playerId, payload.ready);
+            changed = true;
+          }
+          if (parsed.message.type === 'GAME_STATE_PATCH_REQUEST') {
+            changed = true;
+          }
+          if (parsed.message.type === 'GAME_ACTION_REQUEST') {
+            const presence = _peers.get(peerId);
+            if (presence) {
+              handleGameActionRequest(parsed.message.payload as GameActionRequestPayload, presence);
+              changed = true;
+            }
+          }
+          if (parsed.message.type === 'START_GAME_ACK') {
+            _onStartAck?.(parsed.message.payload as StartGameAck);
+          }
+          if (parsed.message.type === 'LEAVE_ROOM') {
+            const p = _peers.get(peerId);
+            if (p) {
+              _peers.set(peerId, { ...p, online: false, lastSeen: Date.now() });
+              changed = true;
+            }
+          }
         }
+      }
+      for (const path of processedPaths) {
+        void firebaseRequest(path, 'DELETE');
       }
       if (changed) await writeFirebaseRoomSnapshot();
       return;
@@ -2481,13 +2530,19 @@ export function setLocalPlayerReady(ready: boolean): boolean {
 }
 
 export function sendGameActionRequest(actionType: string, params: Record<string, unknown> = {}): boolean {
-  if (!_playerId || _isHost || !_hostConn?.open) return false;
+  if (!_playerId || _isHost) return false;
   const actionSeq = (_lastActionSeqByPlayer.get(_playerId) ?? 0) + 1;
   _lastActionSeqByPlayer.set(_playerId, actionSeq);
-  sendMessage(_hostConn, {
+  const message: SyncMessage = {
     type: 'GAME_ACTION_REQUEST',
     payload: { actionSeq, actionType, params },
-  });
+  };
+  if (_transportMode === 'firebase') {
+    void writeFirebaseMessage(message);
+    return true;
+  }
+  if (!_hostConn?.open) return false;
+  sendMessage(_hostConn, message);
   return true;
 }
 

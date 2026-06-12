@@ -5,7 +5,15 @@
  */
 
 import { createCardState, createDefaultGameConfig, createEmptyGameState, createPlayer } from '../client/src/engine/gameEngine';
-import { compactPresenceForRelay, generateFirebaseRoomCode, mergeRemoteSeatDeckState, resolveIncomingPeerGameState, type RoomPresence } from '../client/src/engine/multiplayerSync';
+import {
+  compactPresenceForRelay,
+  firebaseInboxEntriesForRoom,
+  generateFirebaseRoomCode,
+  mergeRemoteSeatDeckState,
+  resolveIncomingPeerGameState,
+  type FirebaseMessageEntry,
+  type RoomPresence,
+} from '../client/src/engine/multiplayerSync';
 import type { CardDefinition, CardState, GameState } from '../client/src/types/game';
 
 function assert(condition: boolean, message: string): void {
@@ -185,5 +193,34 @@ assert(compactPresence.connectionQuality?.score === 1000, 'expected Firebase rel
 assert(compactPresence.deck?.name.length === 80, 'expected Firebase relay deck names to be bounded');
 assert(compactPresence.deck?.cardCount === 500, 'expected Firebase relay deck card counts to be bounded');
 assert(compactPresence.deck?.commanders.length === 2, 'expected Firebase relay deck commander names to be capped');
+
+const firebaseMessage = (messageId: string, updatedAt: number, type: 'PLAYER_READY_CHANGED' | 'GAME_ACTION_REQUEST'): FirebaseMessageEntry => ({
+  updatedAt,
+  message: {
+    protocolVersion: 2,
+    messageId,
+    roomId: 'FTESTROOM123',
+    playerId: 'player-peer',
+    peerId: 'peer-relay',
+    sessionId: 'session-peer',
+    sentAt: updatedAt,
+    type,
+    payload: type === 'PLAYER_READY_CHANGED'
+      ? { playerId: 'player-peer', ready: true }
+      : { actionSeq: 1, actionType: 'PASS_PRIORITY', params: {} },
+  },
+});
+
+const legacyInbox = firebaseInboxEntriesForRoom('FTESTROOM123', 'peer-relay', firebaseMessage('legacy-message', 20, 'PLAYER_READY_CHANGED'));
+assert(legacyInbox.length === 1, 'expected legacy single-slot Firebase inbox to remain readable');
+assert(legacyInbox[0].path === 'onDaStackRooms/FTESTROOM123/messages/peer-relay', 'expected legacy Firebase inbox cleanup path');
+
+const queuedInbox = firebaseInboxEntriesForRoom('FTESTROOM123', 'peer-relay', {
+  newer: firebaseMessage('newer', 30, 'GAME_ACTION_REQUEST'),
+  older: firebaseMessage('older', 10, 'PLAYER_READY_CHANGED'),
+});
+assert(queuedInbox.map(entry => entry.message.messageId).join(',') === 'older,newer', 'expected Firebase relay inbox messages to process oldest first');
+assert(queuedInbox[0].path === 'onDaStackRooms/FTESTROOM123/messages/peer-relay/older', 'expected queued Firebase message cleanup path to include message id');
+assert(queuedInbox[1].path === 'onDaStackRooms/FTESTROOM123/messages/peer-relay/newer', 'expected each queued Firebase message to keep a unique path');
 
 console.log('PASS multiplayer deck sync merges only the sending player seat for 2-4 players');
