@@ -981,6 +981,40 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         });
       },
       (lobby: LobbyState) => {
+        const current = get();
+        if (
+          current.multiplayer.status === 'joined' &&
+          lobby.status === 'playing' &&
+          current.game.status !== 'playing'
+        ) {
+          const startedGame: GameState = {
+            ...ensureGameHasSeatsForPresence(current.game, current.multiplayer.peers),
+            status: 'playing',
+            lastUpdatedAt: Date.now(),
+          };
+          const localPlayerId = resolveLocalPlayerIdFromPresence(
+            startedGame,
+            current.multiplayer.peers,
+            current.multiplayer.peerId,
+            current.localPlayerId,
+          );
+          console.debug('[multiplayer] joiner applying lobby-start fallback', {
+            gameId: startedGame.id,
+            lobbyStatus: lobby.status,
+            localPlayerId,
+          });
+          set(s => ({
+            game: startedGame,
+            localPlayerId,
+            multiplayer: {
+              ...s.multiplayer,
+              lobby,
+              startHandshake: null,
+            },
+          }));
+          get().enterGameScreen();
+          return;
+        }
         set(s => ({ multiplayer: { ...s.multiplayer, lobby } }));
       },
       (submission: DeckSubmission, presence: RoomPresence) => {

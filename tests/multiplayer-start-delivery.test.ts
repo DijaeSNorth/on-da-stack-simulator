@@ -127,7 +127,11 @@ async function main(): Promise<void> {
   const types = messageTypes(sent);
   assert(types.includes('LOBBY_STATE'), 'expected host to send LOBBY_STATE during start commit');
   assert(types.includes('START_GAME_COMMIT'), 'expected host to send START_GAME_COMMIT during start commit');
-  assert(types.includes('GAME_STATE_PATCH'), 'expected host to send GAME_STATE_PATCH fallback during start commit');
+  assert(!types.includes('GAME_STATE_PATCH'), 'expected no duplicate GAME_STATE_PATCH when START_GAME_COMMIT sends successfully');
+  assert(
+    types.indexOf('START_GAME_COMMIT') < types.indexOf('LOBBY_STATE'),
+    'expected START_GAME_COMMIT to be sent before playing LOBBY_STATE',
+  );
 
   const lobby = payloadOf<{ status: string }>(sent, 'LOBBY_STATE');
   assert(lobby.status === 'playing', `expected playing lobby state, got ${lobby.status}`);
@@ -161,10 +165,10 @@ async function main(): Promise<void> {
   __multiplayerSyncTest.upsertPresence(presence('late-guest-peer', 'player-guest', 1));
   __multiplayerSyncTest.replayStartedGameSnapshot('late-guest-peer', 'presence-after-start-test');
   assert(messageTypes(lateSent).includes('START_GAME_COMMIT'), 'expected start replay after late presence is known');
-  assert(messageTypes(lateSent).includes('GAME_STATE_PATCH'), 'expected patch replay after late presence is known');
+  assert(!messageTypes(lateSent).includes('GAME_STATE_PATCH'), 'expected no duplicate patch replay when commit replay succeeds');
 
   __multiplayerSyncTest.reset();
-  console.log('PASS multiplayer start delivery sends playing lobby, commit, patch, and late-presence replay');
+  console.log('PASS multiplayer start delivery sends commit before playing lobby and replays after late presence');
 }
 
 main().catch(error => {
