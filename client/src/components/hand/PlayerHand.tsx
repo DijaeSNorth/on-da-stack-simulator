@@ -4,21 +4,62 @@ import { CardImage } from '../cards/CardImage';
 import type { CardState } from '../../types/game';
 
 // ─── SpectatorHandViewer ──────────────────────────────────────────────────────────
-// Spectators see ALL players' hands via tabbed panel, face-up, read-only.
+// Spectators see public hand/library counts only; private contents stay hidden.
 function SpectatorHandViewer() {
   const store = useGameStore();
   const { game } = store;
-  const [activeTab, setActiveTab] = useState(0);
-
   const players = game.players;
-  if (players.length === 0) return null;
-  const activePlayer = players[activeTab] ?? players[0];
-  const handCards = activePlayer.hand.map(id => game.cards[id]).filter(Boolean) as CardState[];
+  const activeTab = 0;
+  const setActiveTab = (_index: number) => {};
+  const handCards: CardState[] = [];
+
+  if (game.players.length >= 0) {
+    return (
+      <div style={{
+        minHeight: 76,
+        background: '#0d1117',
+        borderTop: '1px solid #1e293b',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 10,
+        padding: '10px 14px',
+        overflowX: 'auto',
+      }}>
+        <span style={{ fontSize: 10, color: '#a78bfa', fontWeight: 800, letterSpacing: 1, textTransform: 'uppercase', flexShrink: 0 }}>
+          Spectating
+        </span>
+        {game.players.map(player => (
+          <div
+            key={player.id}
+            style={{
+              border: '1px solid #243142',
+              borderRadius: 6,
+              padding: '6px 9px',
+              minWidth: 110,
+              color: '#94a3b8',
+              fontSize: 10,
+            }}
+            title={`${player.name}: ${player.hand.length} hand, ${player.library.length} library`}
+          >
+            <div style={{ color: player.color, fontWeight: 800, marginBottom: 2 }}>{player.name}</div>
+            <div>Hand: {player.hand.length}</div>
+            <div>Library: {player.library.length}</div>
+          </div>
+        ))}
+      </div>
+    );
+  }
 
   return (
     <div style={{
+      minHeight: 76,
       background: '#0d1117',
       borderTop: '1px solid #1e293b',
+      display: 'flex',
+      alignItems: 'center',
+      gap: 10,
+      padding: '10px 14px',
+      overflowX: 'auto',
     }}>
       {/* Spectator banner */}
       <div style={{

@@ -2174,6 +2174,13 @@ function sendStartGameCommitToConnection(
       attempt,
     });
     sendMessage(conn, { type: 'START_GAME_COMMIT', payload });
+    debugMultiplayer('host sending GAME_STATE_PATCH', {
+      gameId: playingGame.id,
+      peerId: presence.peerId,
+      playerId: presence.playerId,
+      viewerGamePlayerId,
+      attempt,
+    });
     sendMessage(conn, {
       type: 'GAME_STATE_PATCH',
       payload: createGamePatchForPlayer(playingGame, viewerGamePlayerId),

@@ -9,6 +9,7 @@ import {
 } from '../../engine/mechanicResolver';
 import { getTokenEntry, getTokensFromOracleText } from '../../engine/tokenRegistry';
 import { getLandFaceIndex } from '../../engine/cardFaces';
+import { canAccessPrivateCard, canControlPlayer, findCardOwner } from '../../engine/playerPermissions';
 
 interface MenuAction {
   label: string;
@@ -22,7 +23,7 @@ interface MenuAction {
 
 export function CardContextMenu() {
   const store = useGameStore();
-  const { ui, game, localPlayerId } = store;
+  const { ui, game, localPlayerId, multiplayer } = store;
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -42,7 +43,11 @@ export function CardContextMenu() {
   if (!card) return null;
 
   const def = card.definition;
-  const isController = card.controllerId === localPlayerId;
+  const ownerId = findCardOwner(game, card) ?? card.controllerId;
+  const multiplayerControlStatus = multiplayer.isSpectator ? 'spectator' : multiplayer.status;
+  const canControlThisCard = canControlPlayer(localPlayerId, ownerId, multiplayerControlStatus, ui.judgeMode);
+  const canViewThisCard = canAccessPrivateCard(game, card, localPlayerId, multiplayerControlStatus, ui.judgeMode);
+  if (!canViewThisCard) return null;
   const onBattlefield = card.zone === 'battlefield';
   const inHand = card.zone === 'hand';
   const inGraveyard = card.zone === 'graveyard';
@@ -56,7 +61,7 @@ export function CardContextMenu() {
   const actions: MenuAction[] = [];
 
   // ─── Hand actions ───────────────────────────────────────────────────────────
-  if (inHand) {
+  if (canControlThisCard && inHand) {
     const landFaceIndex = getLandFaceIndex(def);
     if (def.cardTypes.includes('Land')) {
       actions.push({
@@ -110,7 +115,7 @@ export function CardContextMenu() {
   }
 
   // ─── Graveyard actions ──────────────────────────────────────────────────────
-  if (inGraveyard) {
+  if (canControlThisCard && inGraveyard) {
     if (hasMechanic(def, 'dredge')) {
       actions.push({
         label: 'Dredge',
@@ -151,7 +156,7 @@ export function CardContextMenu() {
   }
 
   // ─── Exile actions ──────────────────────────────────────────────────────────
-  if (inExile) {
+  if (canControlThisCard && inExile) {
     actions.push({
       label: 'Cast from Exile',
       tier: 1,
@@ -169,7 +174,7 @@ export function CardContextMenu() {
   }
 
   // ─── Battlefield actions ────────────────────────────────────────────────────
-  if (onBattlefield) {
+  if (canControlThisCard && onBattlefield) {
     if (!card.tapped) {
       actions.push({ label: 'Tap', action: () => { store.tapCard(instanceId); close(); } });
     } else {
@@ -272,7 +277,7 @@ export function CardContextMenu() {
 
   // ─── Tier 3: Oracle-text niche mechanics (flag but don't auto-execute) ──────
   const t3 = getTier3Patterns(def);
-  if (t3.length > 0) {
+  if (canControlThisCard && t3.length > 0) {
     actions.push({ divider: true, label: '', action: () => {} });
     for (const p of t3) {
       actions.push({
@@ -293,21 +298,23 @@ export function CardContextMenu() {
   }
 
   // ─── Move to zone ───────────────────────────────────────────────────────────
-  actions.push({ divider: true, label: '', action: () => {} });
-  const moveOptions: { label: string; zone: Zone }[] = [
-    { label: 'Move to Hand', zone: 'hand' },
-    { label: 'Move to Battlefield', zone: 'battlefield' },
-    { label: 'Move to Graveyard', zone: 'graveyard' },
-    { label: 'Exile', zone: 'exile' },
-    { label: 'Move to Library (bottom)', zone: 'library' },
-    { label: 'Return to Command Zone', zone: 'command' },
-  ];
-  for (const opt of moveOptions) {
-    if (card.zone !== opt.zone) {
-      actions.push({
-        label: opt.label,
-        action: () => { store.moveCardToZone(instanceId, opt.zone); close(); },
-      });
+  if (canControlThisCard) {
+    actions.push({ divider: true, label: '', action: () => {} });
+    const moveOptions: { label: string; zone: Zone }[] = [
+      { label: 'Move to Hand', zone: 'hand' },
+      { label: 'Move to Battlefield', zone: 'battlefield' },
+      { label: 'Move to Graveyard', zone: 'graveyard' },
+      { label: 'Exile', zone: 'exile' },
+      { label: 'Move to Library (bottom)', zone: 'library' },
+      { label: 'Return to Command Zone', zone: 'command' },
+    ];
+    for (const opt of moveOptions) {
+      if (card.zone !== opt.zone) {
+        actions.push({
+          label: opt.label,
+          action: () => { store.moveCardToZone(instanceId, opt.zone); close(); },
+        });
+      }
     }
   }
 

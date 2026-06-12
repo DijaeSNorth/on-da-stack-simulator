@@ -3,6 +3,7 @@ import { useGameStore } from '../../store/gameStore';
 import { CardImage } from '../cards/CardImage';
 import type { CardState } from '../../types/game';
 import { getAllMechanics, hasMechanic } from '../../engine/mechanicResolver';
+import { canControlPlayer, isPrivateZone } from '../../engine/playerPermissions';
 
 export function ZoneDrawer() {
   const store = useGameStore();
@@ -17,10 +18,15 @@ export function ZoneDrawer() {
   if (!player) return null;
   const playerName = player.name;
 
-  const localPlayer = game.players.find(p => p.id === localPlayerId);
   const isOwnZone = playerId === localPlayerId;
+  const canControlZone = canControlPlayer(
+    localPlayerId,
+    playerId,
+    store.multiplayer.isSpectator ? 'spectator' : store.multiplayer.status,
+    ui.judgeMode,
+  );
   const isScopedLibrary = zone === 'library' && mode !== 'normal' && typeof limit === 'number';
-  const canViewPrivate = !privateView || !viewerId || viewerId === localPlayerId;
+  const canViewPrivate = (!privateView || !viewerId || viewerId === localPlayerId) && (!isPrivateZone(zone) || canControlZone);
 
   // Get cards for the zone
   const allZoneCardIds = zone === 'graveyard' ? player.graveyard
@@ -67,7 +73,14 @@ export function ZoneDrawer() {
   function CardActions({ card }: { card: CardState }) {
     const isPermanent = ['Creature', 'Artifact', 'Enchantment', 'Planeswalker', 'Land', 'Battle']
       .some(t => card.definition.cardTypes.includes(t as typeof card.definition.cardTypes[number]));
-    const isCreature = card.definition.cardTypes.includes('Creature');
+
+    if (!canControlZone) {
+      return (
+        <div style={{ fontSize: 8, color: '#475569', marginTop: 2, textAlign: 'center' }}>
+          View only
+        </div>
+      );
+    }
 
     if (zone === 'graveyard') {
       return (
@@ -282,7 +295,7 @@ export function ZoneDrawer() {
               />
             </>
           )}
-          {!isOwnZone && (
+          {canControlZone && !isOwnZone && (
             // Opponent library search (Praetor's Grasp, Bribery, etc.)
             <>
               <ActionBtn
@@ -391,7 +404,7 @@ export function ZoneDrawer() {
           </div>
         );
       }
-      // Opponent hand (peeking): no actions by default, just view
+      // Opponent hand: no actions by default, just view when judge mode allows it.
       return (
         <div style={{ fontSize: 8, color: '#475569', marginTop: 2, textAlign: 'center' }}>
           Peeking
@@ -403,7 +416,7 @@ export function ZoneDrawer() {
   }
 
   const headerNote = !isOwnZone && zone === 'hand'
-    ? ' (Peeking — Telepathy / Praetor\'s Grasp effect)'
+    ? ' (Private)'
     : mode === 'scry'
     ? ` — Scry ${zoneCards.length}`
     : mode === 'surveil'
@@ -411,7 +424,7 @@ export function ZoneDrawer() {
     : mode === 'lookTop'
     ? ` — Top ${zoneCards.length}`
     : !isOwnZone && zone === 'library'
-    ? ' (Searching — shuffle after)'
+    ? ' (Private)'
     : zone === 'library' && isOwnZone
     ? ' — Scry / Tutor / Search'
     : '';
@@ -468,9 +481,9 @@ export function ZoneDrawer() {
               {zone === 'library' && mode === 'surveil' && ' — keep on top or mill only these cards'}
               {zone === 'library' && mode === 'lookTop' && ' — view-only effect'}
               {zone === 'library' && mode === 'normal' && isOwnZone && ' — Scry/Tutor: take to hand, put on BF, or mill'}
-              {zone === 'library' && mode === 'normal' && !isOwnZone && ' — Search effect: take or put on BF · shuffle after'}
+              {zone === 'library' && mode === 'normal' && !isOwnZone && ' — Private library hidden unless judge mode is enabled'}
               {zone === 'hand' && isOwnZone && ' — Cycle / Discard / Cast from hand'}
-              {zone === 'hand' && !isOwnZone && ' — Viewing via Telepathy / Praetor\'s Grasp effect'}
+              {zone === 'hand' && !isOwnZone && ' — Private hand hidden unless judge mode is enabled'}
             </div>
           </div>
 
@@ -512,7 +525,7 @@ export function ZoneDrawer() {
               style={quickBtnStyle('#2563eb')}
             >Shuffle</button>
           )}
-          {zone === 'library' && !isOwnZone && mode === 'normal' && (
+          {zone === 'library' && !isOwnZone && mode === 'normal' && canControlZone && (
             <button
               title="Shuffle their library"
               onClick={() => {

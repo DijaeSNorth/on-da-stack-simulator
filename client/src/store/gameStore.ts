@@ -24,6 +24,7 @@ import { saveDeck, loadDecksFromStorage, normalizeCommanderDeck, prepareCommande
 import { getBannedReason } from '../data/cardDatabase';
 import { createReplay, saveReplayToStorage } from '../engine/replayEngine';
 import { getActiveProfile } from '../engine/profileStorage';
+import { canAccessPrivateCard, canControlPlayer, findCardOwner, isPrivateZone } from '../engine/playerPermissions';
 import {
   initMultiplayer, createRoom, joinRoom, leaveRoom,
   broadcastState, updatePresence, kickPeer, sendStartGameAck, sendStartGameCommit,
@@ -218,6 +219,30 @@ export function getRequiredStartAckPeerIds(
     )
     .map(peer => peer.peerId)
     .sort();
+}
+
+function canLocalControlPlayer(state: GameStore, playerId: string): boolean {
+  return canControlPlayer(
+    state.localPlayerId,
+    playerId,
+    state.multiplayer.isSpectator ? 'spectator' : state.multiplayer.status,
+    state.ui.judgeMode,
+  );
+}
+
+function canLocalAccessCard(state: GameStore, card: CardState | undefined): boolean {
+  return canAccessPrivateCard(
+    state.game,
+    card,
+    state.localPlayerId,
+    state.multiplayer.isSpectator ? 'spectator' : state.multiplayer.status,
+    state.ui.judgeMode,
+  );
+}
+
+function canLocalControlCard(state: GameStore, card: CardState | undefined): boolean {
+  if (!card) return false;
+  return canLocalControlPlayer(state, findCardOwner(state.game, card) ?? card.controllerId);
 }
 
 const DEFAULT_UI: UIState = {
@@ -1553,8 +1578,15 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const missingPeerIds = handshake.requiredPeerIds.filter(peerId => !handshake.ackedPeerIds.includes(peerId));
     const game = {
       ...handshake.pendingGame,
+      status: 'playing' as const,
       lastUpdatedAt: committedAt,
     };
+    console.debug('[multiplayer] host committed game', {
+      gameId: game.id,
+      fallback,
+      missingPeerIds,
+      playerIds: game.players.map(player => player.id),
+    });
     sendStartGameCommit({
       id: handshake.id,
       game,
@@ -1587,11 +1619,13 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   // ── Card Actions ──────────────────────────────────────────────────────────
 
   castCard: (castingPlayerId, cardInstanceId, targets) => {
+    if (!canLocalControlPlayer(get(), castingPlayerId)) return;
     let g = get().game;
     const check = checkCastLegality(g, castingPlayerId, cardInstanceId);
     const flags = filterAssistantFlags(check.flags, get().ui);
     const card = g.cards[cardInstanceId];
     if (!card) return;
+    if (!canLocalAccessCard(get(), card) || findCardOwner(g, card) !== castingPlayerId) return;
     const cardDef = getEffectiveCardDefinition(card);
     const spellNumberThisTurn = g.actionLog.filter(action =>
       action.turn === g.turn &&
@@ -1702,9 +1736,11 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   playLand: (playerId, cardInstanceId, faceIndex) => {
+    if (!canLocalControlPlayer(get(), playerId)) return;
     let g = get().game;
     let card = g.cards[cardInstanceId];
     if (!card) return;
+    if (!canLocalAccessCard(get(), card) || findCardOwner(g, card) !== playerId) return;
     if (faceIndex !== undefined) {
       card = { ...card, transformed: faceIndex === 1 };
       g = { ...g, cards: { ...g.cards, [cardInstanceId]: card } };
@@ -1723,6 +1759,8 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     let g = get().game;
     const card = g.cards[instanceId];
     if (!card) return;
+    if (!canLocalControlCard(get(), card)) return;
+    if (isPrivateZone(toZone) && toController && !canLocalControlPlayer(get(), toController)) return;
     g = moveCard(g, instanceId, toZone, toController);
     const action = createAction(g, g.activePlayerId, 'MOVE_CARD',
       `${card.definition.name} moved to ${toZone}`, [instanceId]);
@@ -1735,6 +1773,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const flags = filterAssistantFlags(check.flags, get().ui);
     const card = g.cards[instanceId];
     if (!card) return;
+    if (!canLocalControlCard(get(), card)) return;
     g = tapCard(g, instanceId, true);
     const action = createAction(g, card.controllerId, 'TAP', `Tapped ${card.definition.name}`, [instanceId], addReviewData({}, flags), flags);
     const nextGame = { ...g, actionLog: [...g.actionLog, action] };
@@ -1745,6 +1784,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     let g = get().game;
     const card = g.cards[instanceId];
     if (!card) return;
+    if (!canLocalControlCard(get(), card)) return;
     g = tapCard(g, instanceId, false);
     const action = createAction(g, card.controllerId, 'UNTAP', `Untapped ${card.definition.name}`, [instanceId]);
     set({ game: { ...g, actionLog: [...g.actionLog, action] } });
@@ -1754,7 +1794,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     let g = get().game;
     const ids = [...new Set(instanceIds)].filter(id => {
       const card = g.cards[id];
-      return card && card.zone === 'battlefield' && !card.tapped;
+      return card && card.zone === 'battlefield' && !card.tapped && canLocalControlCard(get(), card);
     });
     if (ids.length === 0) return;
     for (const id of ids) g = tapCard(g, id, true);
@@ -1768,7 +1808,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     let g = get().game;
     const ids = [...new Set(instanceIds)].filter(id => {
       const card = g.cards[id];
-      return card && card.zone === 'battlefield' && card.tapped;
+      return card && card.zone === 'battlefield' && card.tapped && canLocalControlCard(get(), card);
     });
     if (ids.length === 0) return;
     for (const id of ids) g = tapCard(g, id, false);
@@ -1779,6 +1819,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   tapAllLands: (playerId) => {
+    if (!canLocalControlPlayer(get(), playerId)) return;
     let g = get().game;
     const player = g.players.find(p => p.id === playerId);
     if (!player) return;
@@ -1792,6 +1833,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   untapAll: (playerId) => {
+    if (!canLocalControlPlayer(get(), playerId)) return;
     let g = get().game;
     const player = g.players.find(p => p.id === playerId);
     if (!player) return;
@@ -1935,6 +1977,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   drawCard: (playerId, count = 1) => {
+    if (!canLocalControlPlayer(get(), playerId)) return;
     let g = get().game;
     g = drawCards(g, playerId, count);
     const player = g.players.find(p => p.id === playerId);
@@ -1944,14 +1987,17 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   discardFromHand: (playerId, instanceId) => {
+    if (!canLocalControlPlayer(get(), playerId)) return;
     let g = get().game;
-    g = discardCard(g, playerId, instanceId);
     const card = g.cards[instanceId];
+    if (!canLocalAccessCard(get(), card) || findCardOwner(g, card) !== playerId) return;
+    g = discardCard(g, playerId, instanceId);
     const action = createAction(g, playerId, 'DISCARD', `Discarded ${card?.definition.name}`, [instanceId]);
     set({ game: { ...g, actionLog: [...g.actionLog, action] } });
   },
 
   reorderHand: (playerId, orderedInstanceIds) => {
+    if (!canLocalControlPlayer(get(), playerId)) return;
     const g = get().game;
     const player = g.players.find(p => p.id === playerId);
     if (!player || !sameHandMembers(player.hand, orderedInstanceIds)) return;
@@ -1981,6 +2027,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   shuffleLibrary: (playerId) => {
+    if (!canLocalControlPlayer(get(), playerId)) return;
     const g = get().game;
     const player = g.players.find(p => p.id === playerId);
     if (!player) return;
@@ -2625,7 +2672,10 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   }),
   toggleLeftPanel: () => set(s => ({ ui: { ...s.ui, leftPanelOpen: !s.ui.leftPanelOpen } })),
   toggleRightPanel: () => set(s => ({ ui: { ...s.ui, rightPanelOpen: !s.ui.rightPanelOpen } })),
-  openZoneDrawer: (zone, playerId, options) => set(s => ({ ui: { ...s.ui, zoneDrawer: { zone, playerId, ...options } } })),
+  openZoneDrawer: (zone, playerId, options) => set(s => {
+    if (isPrivateZone(zone) && !canLocalControlPlayer(s as GameStore, playerId)) return s;
+    return { ui: { ...s.ui, zoneDrawer: { zone, playerId, ...options } } };
+  }),
   closeZoneDrawer: () => set(s => ({ ui: { ...s.ui, zoneDrawer: null } })),
   openCardContextMenu: (instanceId, x, y) => set(s => ({ ui: { ...s.ui, cardContextMenu: { instanceId, x, y } } })),
   closeCardContextMenu: () => set(s => ({ ui: { ...s.ui, cardContextMenu: null } })),
@@ -2668,6 +2718,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   // ── Scry / Surveil / Cycle / Cast-from-zone / Reanimate ──────────────────
 
   scryCards: (playerId, count) => {
+    if (!canLocalControlPlayer(get(), playerId)) return;
     const { game } = get();
     const player = game.players.find(p => p.id === playerId);
     if (!player || player.library.length === 0) return;
@@ -2692,6 +2743,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   surveilCards: (playerId, count) => {
+    if (!canLocalControlPlayer(get(), playerId)) return;
     const { game } = get();
     const player = game.players.find(p => p.id === playerId);
     if (!player || player.library.length === 0) return;
@@ -2711,9 +2763,10 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   lookAtTopCards: (playerId, count, viewerId) => {
+    const actualViewer = viewerId ?? get().localPlayerId;
+    if (!canLocalControlPlayer(get(), playerId) || actualViewer !== playerId) return;
     const { game } = get();
     const player = game.players.find(p => p.id === playerId);
-    const actualViewer = viewerId ?? get().localPlayerId;
     if (!player || player.library.length === 0) return;
     const n = normalizeMechanicCount(count, player.library.length);
     if (n === 0) return;
@@ -2732,6 +2785,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   reorderLibraryCard: (playerId, instanceId, placement) => {
+    if (!canLocalControlPlayer(get(), playerId)) return;
     const { game } = get();
     const player = game.players.find(p => p.id === playerId);
     const card = game.cards[instanceId];
@@ -2827,9 +2881,11 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   cycleCard: (playerId, instanceId) => {
+    if (!canLocalControlPlayer(get(), playerId)) return;
     let g = get().game;
     const card = g.cards[instanceId];
     if (!card || card.zone !== 'hand') return;
+    if (!canLocalAccessCard(get(), card) || findCardOwner(g, card) !== playerId) return;
     g = discardCard(g, playerId, instanceId);
     g = drawCards(g, playerId, 1);
     const action = createAction(g, playerId, 'CYCLE',
@@ -2838,9 +2894,13 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   castFromZone: (playerId, instanceId, fromZone) => {
+    if (!canLocalControlPlayer(get(), playerId)) return;
     let g = get().game;
     const card = g.cards[instanceId];
     if (!card) return;
+    if (!canLocalAccessCard(get(), card)) return;
+    if (!canLocalControlCard(get(), card)) return;
+    if (isPrivateZone(card.zone) && findCardOwner(g, card) !== playerId) return;
     const zoneName = fromZone === 'graveyard' ? 'graveyard'
       : fromZone === 'exile' ? 'exile'
       : fromZone === 'command' ? 'command zone' : fromZone;
@@ -2865,9 +2925,12 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   reanimateCard: (instanceId, toControllerId) => {
+    if (!canLocalControlPlayer(get(), toControllerId)) return;
     let g = get().game;
     const card = g.cards[instanceId];
     if (!card) return;
+    if (!canLocalAccessCard(get(), card)) return;
+    if (!canLocalControlCard(get(), card)) return;
     g = { ...g, cards: { ...g.cards, [instanceId]: { ...g.cards[instanceId], controllerId: toControllerId } } };
     g = moveCard(g, instanceId, 'battlefield');
     const player = g.players.find(p => p.id === toControllerId);

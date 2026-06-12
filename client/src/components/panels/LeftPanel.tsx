@@ -7,6 +7,7 @@ import { getPhaseLabel } from '../../engine/phaseMeta';
 import { PlayerAvatar } from '../profile/PlayerAvatar';
 import type { CardState } from '../../types/game';
 import { CardImage } from '../cards/CardImage';
+import { canControlPlayer } from '../../engine/playerPermissions';
 
 function CommanderLifeIcon({ commander }: { commander?: CardState }) {
   const name = commander?.definition.name ?? 'Commander';
@@ -189,7 +190,7 @@ function ZoneSummaryButton({
 
 export function LeftPanel() {
   const store = useGameStore();
-  const { game, ui, localPlayerId } = store;
+  const { game, ui, localPlayerId, multiplayer } = store;
   const [revealedTopPlayers, setRevealedTopPlayers] = useState<Set<string>>(new Set());
   const phaseLabel = getPhaseLabel(game.phase);
   const phaseBlocked = game.stack.length > 0;
@@ -240,6 +241,12 @@ export function LeftPanel() {
           const isActive = player.id === game.activePlayerId;
           const hasPriority = player.id === game.priorityPlayerId;
           const isDeckOwner = player.id === localPlayerId;
+          const canControlThisPlayer = canControlPlayer(
+            localPlayerId,
+            player.id,
+            multiplayer.isSpectator ? 'spectator' : multiplayer.status,
+            ui.judgeMode,
+          );
           const topLibraryCard = player.library[0] ? game.cards[player.library[0]] : undefined;
           const revealTop = revealedTopPlayers.has(player.id);
           const bfCount = player.battlefield.length;
@@ -357,19 +364,21 @@ export function LeftPanel() {
 
               {/* Quick actions */}
               <div style={{ display: 'flex', gap: 4, marginTop: 6, flexWrap: 'wrap' }}>
-                <button
-                  data-testid={`btn-draw-${player.id}`}
-                  data-help-title="Draw Card"
-                  data-help-body="Draws from this player's library into their hand and writes the draw to the shared timeline."
-                  data-help-example="Use Draw during draw step, card effects, or solo testing."
-                  onClick={(e) => { e.stopPropagation(); store.drawCard(player.id); }}
-                  style={{
-                    fontSize: 9, padding: '2px 6px',
-                    background: '#1e3a5f', color: '#93c5fd',
-                    border: 'none', borderRadius: 3, cursor: 'pointer',
-                  }}
-                >Draw</button>
-                {isDeckOwner && (
+                {canControlThisPlayer && (
+                  <button
+                    data-testid={`btn-draw-${player.id}`}
+                    data-help-title="Draw Card"
+                    data-help-body="Draws from this player's library into their hand and writes the draw to the shared timeline."
+                    data-help-example="Use Draw during draw step, card effects, or solo testing."
+                    onClick={(e) => { e.stopPropagation(); store.drawCard(player.id); }}
+                    style={{
+                      fontSize: 9, padding: '2px 6px',
+                      background: '#1e3a5f', color: '#93c5fd',
+                      border: 'none', borderRadius: 3, cursor: 'pointer',
+                    }}
+                  >Draw</button>
+                )}
+                {canControlThisPlayer && (
                   <>
                     <button
                       data-testid={`btn-shuffle-${player.id}`}

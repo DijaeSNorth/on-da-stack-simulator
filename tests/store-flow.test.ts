@@ -473,6 +473,52 @@ test('screen and lobbyOpen stay synchronized', () => {
   assert(useGameStore.getState().ui.lobbyOpen === false, 'expected enterGameScreen to close lobby');
 });
 
+test('host player cannot control non-host private hand or library without judge mode', () => {
+  const game = makeGame(2);
+  const guestCard = createCardState({ ...vanillaCreature, id: 'guest-hand-card', name: 'Guest Private Spell' }, 'p2', 'hand');
+  const guestLibraryCard = createCardState({ ...vanillaCreature, id: 'guest-library-card', name: 'Guest Private Library Card' }, 'p2', 'library');
+  const guestGraveyardCard = createCardState({ ...vanillaCreature, id: 'guest-grave-card', name: 'Guest Public Graveyard Card' }, 'p2', 'graveyard');
+  resetStore({
+    ...game,
+    cards: {
+      ...game.cards,
+      [guestCard.instanceId]: guestCard,
+      [guestLibraryCard.instanceId]: guestLibraryCard,
+      [guestGraveyardCard.instanceId]: guestGraveyardCard,
+    },
+    players: game.players.map(player =>
+      player.id === 'p2'
+        ? { ...player, hand: [guestCard.instanceId], library: [guestLibraryCard.instanceId], graveyard: [guestGraveyardCard.instanceId] }
+        : player
+    ),
+  });
+  useGameStore.setState(state => ({
+    ...state,
+    localPlayerId: 'p1',
+    multiplayer: { ...state.multiplayer, status: 'host', isSpectator: false },
+    ui: { ...state.ui, judgeMode: false, zoneDrawer: null },
+  }));
+
+  useGameStore.getState().drawCard('p2');
+  assert(useGameStore.getState().game.players[1].hand.length === 1, 'expected host player draw on guest to be rejected');
+
+  useGameStore.getState().castCard('p1', guestCard.instanceId);
+  assert(useGameStore.getState().game.cards[guestCard.instanceId].zone === 'hand', 'expected host player cast of guest hand card to be rejected');
+
+  useGameStore.getState().moveCardToZone(guestCard.instanceId, 'battlefield');
+  assert(useGameStore.getState().game.cards[guestCard.instanceId].zone === 'hand', 'expected host player move of guest hand card to be rejected');
+
+  useGameStore.getState().castFromZone('p1', guestGraveyardCard.instanceId, 'graveyard');
+  assert(useGameStore.getState().game.cards[guestGraveyardCard.instanceId].zone === 'graveyard', 'expected host player cast of guest graveyard card to be rejected');
+
+  useGameStore.getState().openZoneDrawer('library', 'p2');
+  assert(useGameStore.getState().ui.zoneDrawer === null, 'expected guest library drawer to stay closed for host player');
+
+  useGameStore.getState().setJudgeMode(true);
+  useGameStore.getState().drawCard('p2');
+  assert(useGameStore.getState().game.players[1].hand.length === 2, 'expected judge mode to allow guest draw for sandbox testing');
+});
+
 test('panel sizes clamp and reset for resizable touch layout', () => {
   useGameStore.getState().setPanelSize('left', 999);
   useGameStore.getState().setPanelSize('right', 10);
