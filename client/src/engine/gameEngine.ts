@@ -3,7 +3,7 @@ import { v4 as uuid } from 'uuid';
 import type {
   GameState, Player, CardState, CardDefinition, ActionRecord, ActionType,
   Phase, StackObject, TriggerItem, AssistantFlag, Deck, GameConfig, Counter, CombatState, CustomCardDefinition,
-  PlayerAvatarImage,
+  PlayerAvatarImage, ManaPool,
 } from '../types/game';
 import { fetchCardsByNames } from '../data/cardDatabase';
 import { getEffectiveCardDefinition, getEffectiveOracleText } from './cardFaces';
@@ -11,6 +11,16 @@ import { normalizeCommanderDeck } from './deckImport';
 import { PHASE_ORDER } from './phaseMeta';
 
 // ─── Factory Helpers ──────────────────────────────────────────────────────────
+
+const EMPTY_MANA_POOL: ManaPool = {
+  W: 0,
+  U: 0,
+  B: 0,
+  R: 0,
+  G: 0,
+  C: 0,
+  generic: 0,
+};
 
 export function createDefaultGameConfig(playerCount: 1 | 2 | 3 | 4 | 5 | 6 = 4): GameConfig {
   return {
@@ -44,6 +54,8 @@ export function createPlayer(
     avatarImage: avatar?.image,
     seatIndex,
     life: config.startingLife,
+    mulliganCount: 0,
+    manaPool: { ...EMPTY_MANA_POOL },
     commanderDamage: {},
     poisonCounters: 0,
     energyCounters: 0,
@@ -789,6 +801,127 @@ export function drawCards(state: GameState, playerId: string, count: number): Ga
 
 export function discardCard(state: GameState, playerId: string, instanceId: string): GameState {
   return moveCard(state, instanceId, 'graveyard');
+}
+
+function clampMana(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
+}
+
+function normalizeManaPool(raw?: Partial<ManaPool>): ManaPool {
+  if (!raw) return EMPTY_MANA_POOL;
+  return {
+    W: clampMana(raw.W ?? 0),
+    U: clampMana(raw.U ?? 0),
+    B: clampMana(raw.B ?? 0),
+    R: clampMana(raw.R ?? 0),
+    G: clampMana(raw.G ?? 0),
+    C: clampMana(raw.C ?? 0),
+    generic: clampMana(raw.generic ?? 0),
+  };
+}
+
+export function setManaPool(state: GameState, playerId: string, mana: Partial<ManaPool>): GameState {
+  const player = state.players.find(p => p.id === playerId);
+  if (!player) return state;
+  const normalized = normalizeManaPool(mana);
+  return {
+    ...state,
+    players: state.players.map(p =>
+      p.id === playerId
+        ? { ...p, manaPool: normalized }
+        : p
+    ),
+    lastUpdatedAt: Date.now(),
+  };
+}
+
+export function addManaToPool(state: GameState, playerId: string, mana: Partial<ManaPool>): GameState {
+  const player = state.players.find(p => p.id === playerId);
+  if (!player) return state;
+  const next = normalizeManaPool({
+    W: player.manaPool.W + clampMana(mana.W ?? 0),
+    U: player.manaPool.U + clampMana(mana.U ?? 0),
+    B: player.manaPool.B + clampMana(mana.B ?? 0),
+    R: player.manaPool.R + clampMana(mana.R ?? 0),
+    G: player.manaPool.G + clampMana(mana.G ?? 0),
+    C: player.manaPool.C + clampMana(mana.C ?? 0),
+    generic: player.manaPool.generic + clampMana(mana.generic ?? 0),
+  });
+  return {
+    ...state,
+    players: state.players.map(p =>
+      p.id === playerId
+        ? { ...p, manaPool: next }
+        : p
+    ),
+    lastUpdatedAt: Date.now(),
+  };
+}
+
+export function clearManaPool(state: GameState, playerId: string): GameState {
+  const player = state.players.find(p => p.id === playerId);
+  if (!player) return state;
+  return setManaPool(state, playerId, EMPTY_MANA_POOL);
+}
+
+export function takeMulligan(state: GameState, playerId: string): GameState {
+  const player = state.players.find(p => p.id === playerId);
+  if (!player) return state;
+
+  let nextState = state;
+  for (const id of [...player.hand]) {
+    nextState = moveCard(nextState, id, 'library');
+  }
+  const shuffled = shuffle(nextState.players.find(p => p.id === playerId)?.library ?? []);
+  nextState = {
+    ...nextState,
+    players: nextState.players.map(p =>
+      p.id === playerId
+        ? { ...p, library: shuffled, mulliganCount: p.mulliganCount + 1 }
+        : p
+    ),
+  };
+
+  const targetSize = Math.max(0, player.mulliganCount + 1);
+  const maxSize = nextState.config.startingHandSize ?? 7;
+  const drawCount = Math.max(0, maxSize - targetSize);
+  return drawCards(nextState, playerId, drawCount);
+}
+
+export function tutorCard(state: GameState, playerId: string, instanceId: string, fromZone: CardState['zone'] = 'library'): GameState {
+  const card = state.cards[instanceId];
+  if (!card || card.zone !== fromZone) return state;
+  const player = state.players.find(p => p.id === playerId);
+  if (!player) return state;
+  if (!player.library.includes(instanceId) && !player.graveyard.includes(instanceId) && !player.exile.includes(instanceId)) return state;
+  return moveCard(state, instanceId, 'hand', playerId);
+}
+
+export function removeAllCountersFromCard(
+  state: GameState,
+  instanceId: string,
+  counterType?: string,
+): GameState {
+  const card = state.cards[instanceId];
+  if (!card) return state;
+
+  if (!counterType) {
+    if (card.counters.length === 0) return state;
+    return {
+      ...state,
+      cards: { ...state.cards, [instanceId]: { ...card, counters: [] } },
+      lastUpdatedAt: Date.now(),
+    };
+  }
+
+  const remainingCounters = card.counters.filter(counter => counter.type !== counterType);
+  if (remainingCounters.length === card.counters.length) return state;
+
+  return {
+    ...state,
+    cards: { ...state.cards, [instanceId]: { ...card, counters: remainingCounters } },
+    lastUpdatedAt: Date.now(),
+  };
 }
 
 // ─── Token Creation ────────────────────────────────────────────────────────────

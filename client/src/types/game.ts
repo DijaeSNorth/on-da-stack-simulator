@@ -74,6 +74,16 @@ export interface Counter {
   count: number;
 }
 
+export interface ManaPool {
+  W: number;
+  U: number;
+  B: number;
+  R: number;
+  G: number;
+  C: number;
+  generic: number;
+}
+
 export interface CardState {
   instanceId: string;       // unique per-game instance
   definitionId: string;     // links to CardDefinition
@@ -178,6 +188,8 @@ export interface Player {
   avatarImage?: PlayerAvatarImage;
   seatIndex: number;       // 0 = local player (bottom)
   life: number;
+  mulliganCount: number;
+  manaPool: ManaPool;
   commanderDamage: Record<string, number>; // commanderId -> damage received
   poisonCounters: number;
   energyCounters: number;
@@ -222,6 +234,7 @@ export type ActionType =
   | 'SHUFFLE' | 'SEARCH_LIBRARY'
   | 'FLIP_COIN' | 'ROLL_DICE'
   | 'ADD_TOKEN' | 'REMOVE_TOKEN'
+  | 'ADD_MANA' | 'SPEND_MANA' | 'CLEAR_MANA' | 'TUTOR' | 'REMOVE_ALL_COUNTERS'
   | 'VOTE' | 'CHOOSE_MODE'
   | 'UNDO' | 'REDO' | 'SNAPSHOT'
   | 'GAME_START' | 'GAME_END' | 'MULLIGAN'
