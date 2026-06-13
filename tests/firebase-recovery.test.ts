@@ -5,6 +5,7 @@
  */
 
 import {
+  buildFirebaseCleanupUpdates,
   buildFirebasePrivateStartSnapshots,
   buildFirebasePublicStartSnapshot,
   isFirebaseRecoveryConfigured,
@@ -24,6 +25,10 @@ function containsUndefined(value: unknown): boolean {
     return Object.values(value).some(containsUndefined);
   }
   return false;
+}
+
+function hasCleanupDeletion(updates: Record<string, null>, path: string): boolean {
+  return Object.prototype.hasOwnProperty.call(updates, path) && updates[path] === null;
 }
 
 function makeDef(id: string, name: string): CardDefinition {
@@ -126,5 +131,40 @@ assert(!('latestSnapshotId' in sanitizedControl), 'Firebase control sanitizer sh
 assert(sanitizedControl.nested.keep === true, 'Firebase control sanitizer should preserve defined nested fields');
 assert(!('drop' in sanitizedControl.nested), 'Firebase control sanitizer should omit undefined nested fields');
 assert(!sanitizedControlJson.includes('undefined'), 'Firebase writes must not contain undefined values');
+
+const cleanupNow = 10 * 24 * 60 * 60 * 1000;
+const cleanupUpdates = buildFirebaseCleanupUpdates({
+  OLD72H: {
+    control: { roomCode: 'OLD72H', roomId: 'OLD72H', hostPeerId: 'host', status: 'lobby', startSeq: 0, updatedAt: cleanupNow - (73 * 60 * 60 * 1000) },
+    presence: { host: { online: true } },
+  },
+  ENDED1: {
+    control: { roomCode: 'ENDED1', roomId: 'ENDED1', hostPeerId: 'host', status: 'ended', startSeq: 1, updatedAt: cleanupNow - (25 * 60 * 60 * 1000) },
+    presence: { host: { online: true } },
+  },
+  ABAND: {
+    control: { roomCode: 'ABAND', roomId: 'ABAND', hostPeerId: 'host', status: 'lobby', startSeq: 0, updatedAt: cleanupNow - (25 * 60 * 60 * 1000) },
+    presence: { host: { online: false } },
+  },
+  ACTIVE: {
+    control: { roomCode: 'ACTIVE', roomId: 'ACTIVE', hostPeerId: 'host', status: 'playing', startSeq: 2, latestSnapshotId: 'fresh', updatedAt: cleanupNow - 1000 },
+    presence: { host: { online: true } },
+    snapshots: {
+      old: { public: { createdAt: cleanupNow - (25 * 60 * 60 * 1000) } },
+      fresh: { public: { createdAt: cleanupNow - 1000 } },
+    },
+    resyncRequests: {
+      stale: { requestId: 'stale', playerId: 'p1', peerId: 'peer', reason: 'manual-sync', requestedAt: cleanupNow - (25 * 60 * 60 * 1000) },
+      current: { requestId: 'current', playerId: 'p1', peerId: 'peer', reason: 'manual-sync', requestedAt: cleanupNow - 1000 },
+    },
+  },
+}, cleanupNow);
+assert(hasCleanupDeletion(cleanupUpdates, 'rooms/OLD72H'), 'cleanup should delete rooms older than 72 hours');
+assert(hasCleanupDeletion(cleanupUpdates, 'rooms/ENDED1'), 'cleanup should delete ended rooms older than 24 hours');
+assert(hasCleanupDeletion(cleanupUpdates, 'rooms/ABAND'), 'cleanup should delete abandoned rooms with no online presence');
+assert(hasCleanupDeletion(cleanupUpdates, 'rooms/ACTIVE/snapshots/old'), 'cleanup should delete old non-latest snapshots');
+assert(!('rooms/ACTIVE/snapshots/fresh' in cleanupUpdates), 'cleanup should keep latest/fresh snapshots');
+assert(hasCleanupDeletion(cleanupUpdates, 'rooms/ACTIVE/resyncRequests/stale'), 'cleanup should delete old resync requests');
+assert(!('rooms/ACTIVE/resyncRequests/current' in cleanupUpdates), 'cleanup should keep fresh resync requests');
 
 console.log('PASS Firebase recovery snapshots split public and private multiplayer data');

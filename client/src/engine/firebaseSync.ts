@@ -31,6 +31,14 @@ function now(): number {
   return Date.now();
 }
 
+const FIREBASE_ROOM_MAX_AGE_MS = 72 * 60 * 60 * 1000;
+const FIREBASE_ENDED_ROOM_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const FIREBASE_ABANDONED_ROOM_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const FIREBASE_SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const FIREBASE_RESYNC_REQUEST_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+let lastFirebaseCleanupAt = 0;
+const FIREBASE_CLEANUP_INTERVAL_MS = 30 * 60 * 1000;
+
 function roomPath(roomCode: string): string {
   return `rooms/${roomCode.toUpperCase()}`;
 }
@@ -139,9 +147,74 @@ export function stripFirebaseUndefined<T>(value: T): T {
   return value;
 }
 
+type FirebaseCleanupRoomValue = {
+  control?: Partial<FirebaseRoomControl> | null;
+  presence?: Record<string, Partial<FirebasePresenceState> | null> | null;
+  snapshots?: Record<string, { public?: { createdAt?: number } | null; createdAt?: number } | null> | null;
+  resyncRequests?: Record<string, Partial<FirebaseResyncRequest> | null> | null;
+};
+
+export function buildFirebaseCleanupUpdates(
+  rooms: Record<string, FirebaseCleanupRoomValue | null>,
+  currentTime = now(),
+): Record<string, null> {
+  const updates: Record<string, null> = {};
+  for (const [roomCode, room] of Object.entries(rooms)) {
+    if (!room) continue;
+    const control = room.control ?? {};
+    const updatedAt = typeof control.updatedAt === 'number' ? control.updatedAt : 0;
+    const startedAt = typeof control.startedAt === 'number' ? control.startedAt : updatedAt;
+    const tooOld = updatedAt > 0 && currentTime - updatedAt > FIREBASE_ROOM_MAX_AGE_MS;
+    const endedTooOld = control.status === 'ended' && currentTime - Math.max(startedAt, updatedAt) > FIREBASE_ENDED_ROOM_MAX_AGE_MS;
+    const hasOnlinePresence = Object.values(room.presence ?? {}).some(presence => presence?.online === true);
+    const abandonedTooOld = !hasOnlinePresence && updatedAt > 0 && currentTime - updatedAt > FIREBASE_ABANDONED_ROOM_MAX_AGE_MS;
+
+    if (tooOld || endedTooOld || abandonedTooOld) {
+      updates[`rooms/${roomCode}`] = null;
+      continue;
+    }
+
+    const latestSnapshotId = control.latestSnapshotId;
+    for (const [snapshotId, snapshot] of Object.entries(room.snapshots ?? {})) {
+      if (snapshotId === latestSnapshotId) continue;
+      const createdAt = snapshot?.public?.createdAt ?? snapshot?.createdAt ?? 0;
+      if (createdAt > 0 && currentTime - createdAt > FIREBASE_SNAPSHOT_MAX_AGE_MS) {
+        updates[`rooms/${roomCode}/snapshots/${snapshotId}`] = null;
+      }
+    }
+
+    for (const [requestId, request] of Object.entries(room.resyncRequests ?? {})) {
+      const requestedAt = typeof request?.requestedAt === 'number' ? request.requestedAt : 0;
+      const handledAt = typeof request?.handledAt === 'number' ? request.handledAt : 0;
+      const ageAnchor = handledAt || requestedAt;
+      if (ageAnchor > 0 && currentTime - ageAnchor > FIREBASE_RESYNC_REQUEST_MAX_AGE_MS) {
+        updates[`rooms/${roomCode}/resyncRequests/${requestId}`] = null;
+      }
+    }
+  }
+  return updates;
+}
+
+export async function cleanupFirebaseRecoveryRooms(force = false): Promise<number> {
+  const db = getFirebaseDatabase();
+  if (!db) return 0;
+  const currentTime = now();
+  if (!force && currentTime - lastFirebaseCleanupAt < FIREBASE_CLEANUP_INTERVAL_MS) return 0;
+  lastFirebaseCleanupAt = currentTime;
+  const snapshot = await get(child(ref(db), 'rooms'));
+  const rooms = (snapshot.val() ?? {}) as Record<string, FirebaseCleanupRoomValue | null>;
+  const updates = buildFirebaseCleanupUpdates(rooms, currentTime);
+  const updateKeys = Object.keys(updates);
+  if (updateKeys.length > 0) {
+    await update(ref(db), updates);
+  }
+  return updateKeys.length;
+}
+
 export async function writeFirebaseRoomControl(control: FirebaseRoomControl): Promise<void> {
   const db = getFirebaseDatabase();
   if (!db) return;
+  void cleanupFirebaseRecoveryRooms();
   await set(ref(db, `${roomPath(control.roomCode)}/control`), stripFirebaseUndefined(control));
 }
 
