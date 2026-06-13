@@ -838,20 +838,7 @@ function CommanderTableInner() {
       )}
 
       {!hasSidePlayers && (
-        <div style={{ ...centerSurfaceStyle, flex: 0.7, minHeight: 150 }}>
-          <div style={{
-            color: '#1e293b', fontSize: 11, fontWeight: 600,
-            letterSpacing: '0.2em', textTransform: 'uppercase', userSelect: 'none',
-          }}>
-            Commander
-          </div>
-          <div style={{
-            fontSize: 9, color: '#1a2540', fontWeight: 600,
-            letterSpacing: '0.08em', textTransform: 'uppercase', userSelect: 'none',
-          }}>
-            T{game.turn} · {game.phase}
-          </div>
-        </div>
+        <div style={{ ...centerSurfaceStyle, flex: 0.7, minHeight: 150 }} />
       )}
 
       {/* Middle row */}
