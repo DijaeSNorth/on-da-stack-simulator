@@ -11,6 +11,7 @@
 
 import { useState, useEffect } from 'react';
 import { useGameStore } from '../../store/gameStore';
+import { getFirebaseRelayHealth, getTransportMode } from '../../engine/multiplayerSync';
 import { getActiveProfile } from '../../engine/profileStorage';
 import { getTableDeckStatus } from '../../engine/lobbyReadiness';
 import { PlayerAvatar } from '../profile/PlayerAvatar';
@@ -47,6 +48,16 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
   const connected = multiplayer.status === 'host' || multiplayer.status === 'joined' || multiplayer.status === 'migrating';
   const isHost = multiplayer.status === 'host';
   const isMigrating = multiplayer.status === 'migrating';
+  const transportMode = getTransportMode();
+  const relayHealth = transportMode === 'firebase' ? getFirebaseRelayHealth() : null;
+  const relayModeLabel = transportMode === 'firebase'
+    ? `Firebase relay (room ${relayHealth?.roomCode ?? '—'})`
+    : 'PeerJS/WebRTC';
+  const relayStatusLabel = transportMode === 'firebase'
+    ? relayHealth?.lastPollError
+      ? `degraded relay: ${relayHealth.lastPollError}`
+      : 'healthy relay'
+    : '';
 
   function applyActiveProfile() {
     const profile = getActiveProfile();
@@ -192,6 +203,10 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
             </div>
             <div style={{ fontSize: 32, fontWeight: 800, letterSpacing: 6, color: isHost ? '#4ade80' : '#60a5fa', fontFamily: 'monospace' }}>
               {multiplayer.roomCode}
+            </div>
+            <div style={{ fontSize: 10, marginTop: 4, color: '#64748b' }}>
+              {relayModeLabel}
+              {relayStatusLabel && ` • ${relayStatusLabel}`}
             </div>
           </div>
           {isHost && (

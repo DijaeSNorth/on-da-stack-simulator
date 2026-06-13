@@ -20,6 +20,9 @@ export function MultiplayerBadge() {
   const isHost = multiplayer.status === 'host';
   const isMigrating = multiplayer.status === 'migrating';
   const isSpectator = multiplayer.isSpectator;
+  const transportMode = multiplayer.roomCode?.startsWith('F') && multiplayer.roomCode.length === 12
+    ? 'Firebase Relay'
+    : 'PeerJS';
 
   const borderColor = isMigrating ? '#92400e' : isSpectator ? '#4c1d95' : isHost ? '#166534' : '#1e3a5f';
   const bgColor     = isMigrating ? '#2b1708' : isSpectator ? '#1a0a2e' : isHost ? '#0f2d1a' : '#0f1a2d';
@@ -29,7 +32,7 @@ export function MultiplayerBadge() {
     <button
       data-testid="multiplayer-badge"
       onClick={() => store.setLobbyOpen(true)}
-      title={`Room ${multiplayer.roomCode} — ${onlineCount} peer${onlineCount !== 1 ? 's' : ''} online${isSpectator ? ' (spectating)' : ''}`}
+      title={`Room ${multiplayer.roomCode} (${transportMode}) — ${onlineCount} peer${onlineCount !== 1 ? 's' : ''} online${isSpectator ? ' (spectating)' : ''}`}
       style={{
         display: 'flex', alignItems: 'center', gap: 5,
         padding: '3px 8px', borderRadius: 6, cursor: 'pointer',

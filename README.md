@@ -96,6 +96,10 @@ Best-practice notes:
 - Treat the Firebase relay as temporary room transport only. It mirrors current room state, peer presence, and latest player messages; it is not a permanent replay or deck store.
 - Uploaded profile images are not mirrored through Firebase; use card-art avatars if you need avatar continuity on fallback transport.
 - Rooms include expiry metadata and game-state size checks so stale or huge relay writes are avoided.
+- Polling + relay health now includes adaptive backoff and retry behavior:
+  - REST calls use request timeout + retry with exponential backoff.
+  - Poll interval grows under errors to reduce noisy retries and drops back on success.
+  - The lobby UI surfaces whether Firebase is operating healthy vs degraded when active.
 
 ---
 

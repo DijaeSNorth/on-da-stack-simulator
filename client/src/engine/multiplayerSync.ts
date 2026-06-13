@@ -168,6 +168,19 @@ export type SyncStatus =
   | 'migrating'
   | 'error';
 
+export interface FirebaseRelayHealth {
+  configured: boolean;
+  active: boolean;
+  roomCode: string | null;
+  transportMode: 'peerjs' | 'firebase';
+  pollIntervalMs: number;
+  lastPollAt: number | null;
+  consecutivePollErrors: number;
+  lastPollError: string | null;
+  lastSnapshotAt: number | null;
+  lastSnapshotAgeMs: number | null;
+}
+
 // ─── PeerJS config ────────────────────────────────────────────────────────────
 // Uses the free PeerJS cloud broker for signaling only.
 // Replace host/port/path for self-hosted PeerServer or AWS.
@@ -187,6 +200,10 @@ const HOST_MIGRATION_DELAY_MS = 1800;
 const DATA_CHANNEL_LOW_WATER_BYTES = 64 * 1024;
 const DATA_CHANNEL_HIGH_WATER_BYTES = 256 * 1024;
 const FIREBASE_POLL_MS = 1800;
+const FIREBASE_POLL_MS_MAX = 12000;
+const FIREBASE_FETCH_TIMEOUT_MS = 6000;
+const FIREBASE_RETRY_MAX_ATTEMPTS = 2;
+const FIREBASE_RETRY_BASE_DELAY_MS = 650;
 const FIREBASE_ROOM_TTL_MS = 6 * 60 * 60 * 1000;
 const FIREBASE_MAX_GAME_STATE_BYTES = 900 * 1024;
 const FIREBASE_ROOM_CODE_LENGTH = 12;
@@ -210,10 +227,16 @@ let _messageSeq = 0;
 let _gamePatchSeq = 0;
 let _heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let _migrationTimer: ReturnType<typeof setTimeout> | null = null;
-let _firebasePollTimer: ReturnType<typeof setInterval> | null = null;
+let _firebasePollTimer: ReturnType<typeof setTimeout> | null = null;
 let _deckSubmissionFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 let _lastLocalDeckSubmission: DeckSubmission | null = null;
 let _deckSubmissionFallbackUsed = false;
+let _firebaseErrorStreak = 0;
+let _firebaseLastPollError: string | null = null;
+let _firebaseLastPollAt = 0;
+let _firebaseLastSnapshotAt = 0;
+let _firebasePollDelayMs = FIREBASE_POLL_MS;
+let _firebasePollInFlight = false;
 
 // Host-side: map of peerId → DataConnection for each joiner
 const _connections: Map<string, DataConnection> = new Map();
@@ -598,17 +621,60 @@ function broadcastLobbyState(status?: LobbyState['status']): void {
   }
 }
 
-async function firebaseRequest<T>(path: string, method: 'GET' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown): Promise<T> {
-  const response = await fetch(firebaseUrl(path), {
-    method,
-    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  if (!response.ok) {
-    throw new Error(`Firebase fallback ${method} failed (${response.status})`);
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function clamp(ms: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, ms));
+}
+
+function retryDelay(attempt: number): number {
+  const exponential = FIREBASE_RETRY_BASE_DELAY_MS * 2 ** Math.max(0, attempt - 1);
+  const jitter = 0.85 + Math.random() * 0.3;
+  return clamp(Math.round(exponential * jitter), FIREBASE_RETRY_BASE_DELAY_MS, FIREBASE_POLL_MS_MAX);
+}
+
+function nextFirebasePollDelayMs(): number {
+  if (_firebaseErrorStreak === 0) return FIREBASE_POLL_MS;
+  const exp = FIREBASE_POLL_MS * 2 ** Math.max(0, _firebaseErrorStreak - 1);
+  const jitter = 0.85 + Math.random() * 0.3;
+  return clamp(Math.round(exp * jitter), FIREBASE_POLL_MS, FIREBASE_POLL_MS_MAX);
+}
+
+async function firebaseRequest<T>(path: string, method: 'GET' | 'PUT' | 'PATCH' | 'DELETE', body?: unknown, attempt = 0): Promise<T> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), FIREBASE_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(firebaseUrl(path), {
+      method,
+      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`Firebase fallback ${method} failed (${response.status})`);
+    }
+    if (method === 'DELETE') return null as T;
+    const text = await response.text();
+    return text ? JSON.parse(text) as T : null as T;
+  } catch (error: unknown) {
+    if (attempt >= FIREBASE_RETRY_MAX_ATTEMPTS) {
+      throw error instanceof Error ? error : new Error('Firebase request failed');
+    }
+    if (error instanceof Error && error.name === 'AbortError') {
+      await sleep(retryDelay(attempt + 1));
+      return firebaseRequest(path, method, body, attempt + 1);
+    }
+    if (error instanceof TypeError || error instanceof DOMException) {
+      await sleep(retryDelay(attempt + 1));
+      return firebaseRequest(path, method, body, attempt + 1);
+    }
+    await sleep(retryDelay(attempt + 1));
+    return firebaseRequest(path, method, body, attempt + 1);
+  } finally {
+    clearTimeout(timeout);
   }
-  if (method === 'DELETE') return null as T;
-  return await response.json() as T;
 }
 
 function firebaseRoomPath(code = _roomCode): string {
@@ -622,17 +688,34 @@ export function isFirebaseFallbackConfigured(): boolean {
 
 function stopFirebasePolling(): void {
   if (_firebasePollTimer) {
-    clearInterval(_firebasePollTimer);
+    clearTimeout(_firebasePollTimer);
     _firebasePollTimer = null;
   }
+  _firebasePollInFlight = false;
+  _firebasePollDelayMs = FIREBASE_POLL_MS;
+  _firebaseLastPollError = null;
 }
 
 function startFirebasePolling(): void {
   stopFirebasePolling();
-  _firebasePollTimer = setInterval(() => {
-    void pollFirebaseRoom();
-  }, FIREBASE_POLL_MS);
+  _transportMode = 'firebase';
+  _firebasePollDelayMs = FIREBASE_POLL_MS;
+  _firebaseErrorStreak = 0;
+  _firebaseLastPollError = null;
+  _firebaseLastPollAt = Date.now();
   void pollFirebaseRoom();
+}
+
+function scheduleFirebasePoll(delayMs: number): void {
+  if (_transportMode !== 'firebase' || !_roomCode) return;
+  if (_firebasePollTimer) clearTimeout(_firebasePollTimer);
+  _firebasePollInFlight = false;
+  _firebasePollDelayMs = delayMs;
+  _firebasePollTimer = setTimeout(() => {
+    if (_transportMode !== 'firebase' || !_roomCode || _firebasePollInFlight) return;
+    _firebasePollInFlight = true;
+    void pollFirebaseRoom();
+  }, delayMs);
 }
 
 async function writeFirebaseRoomSnapshot(): Promise<void> {
@@ -646,6 +729,7 @@ async function writeFirebaseRoomSnapshot(): Promise<void> {
     updatedAt: Date.now(),
     expiresAt: Date.now() + FIREBASE_ROOM_TTL_MS,
   });
+  _firebaseLastSnapshotAt = Date.now();
 }
 
 async function writeFirebasePeerPresence(presence: RoomPresence): Promise<void> {
@@ -708,14 +792,20 @@ async function migrateFirebaseHostBeforeLeave(): Promise<void> {
 
 async function pollFirebaseRoom(): Promise<void> {
   if (_transportMode !== 'firebase' || !_roomCode) return;
+  const now = Date.now();
   try {
     const room = await firebaseRequest<FirebaseRoomRelay | null>(firebaseRoomPath(), 'GET');
+    _firebaseErrorStreak = 0;
+    _firebaseLastPollError = null;
+    _firebaseLastPollAt = now;
     if (!room) {
       if (!_isHost) setStatus('error');
+      scheduleFirebasePoll(nextFirebasePollDelayMs());
       return;
     }
     if (room.expiresAt && room.expiresAt < Date.now()) {
       setStatus('error');
+      scheduleFirebasePoll(nextFirebasePollDelayMs());
       return;
     }
 
@@ -763,6 +853,7 @@ async function pollFirebaseRoom(): Promise<void> {
         }
       }
       if (changed) await writeFirebaseRoomSnapshot();
+      scheduleFirebasePoll(nextFirebasePollDelayMs());
       return;
     }
 
@@ -779,8 +870,13 @@ async function pollFirebaseRoom(): Promise<void> {
       _lobbyState = room.lobby;
       _onLobbyUpdate?.(room.lobby);
     }
-  } catch {
-    if (!_isHost) setStatus('error');
+    scheduleFirebasePoll(nextFirebasePollDelayMs());
+  } catch (error: unknown) {
+    _firebaseErrorStreak += 1;
+    _firebaseLastPollError = error instanceof Error ? error.message : 'Unknown Firebase polling error';
+    _firebaseLastPollAt = Date.now();
+    if (!_isHost && _firebaseErrorStreak >= 3) setStatus('error');
+    scheduleFirebasePoll(nextFirebasePollDelayMs());
   }
 }
 
@@ -1248,6 +1344,21 @@ export function getPeerId(): string | null   { return _peerId; }
 export function getPlayerId(): string | null { return _playerId; }
 export function getSessionId(): string | null { return _sessionId; }
 export function getIsHost(): boolean         { return _isHost; }
+export function getTransportMode(): 'peerjs' | 'firebase' { return _transportMode; }
+export function getFirebaseRelayHealth(): FirebaseRelayHealth {
+  return {
+    configured: isFirebaseFallbackConfigured(),
+    active: _transportMode === 'firebase' && _firebasePollTimer !== null,
+    roomCode: _roomCode,
+    transportMode: _transportMode,
+    pollIntervalMs: _firebasePollDelayMs,
+    lastPollAt: _firebaseLastPollAt || null,
+    consecutivePollErrors: _firebaseErrorStreak,
+    lastPollError: _firebaseLastPollError,
+    lastSnapshotAt: _firebaseLastSnapshotAt || null,
+    lastSnapshotAgeMs: _firebaseLastSnapshotAt ? Date.now() - _firebaseLastSnapshotAt : null,
+  };
+}
 export function getSyncStatus(): SyncStatus  { return _status; }
 export function getLobbyState(): LobbyState | null { return _lobbyState; }
 
