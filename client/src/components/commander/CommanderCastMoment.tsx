@@ -14,7 +14,11 @@ interface CommanderMoment {
 
 export function CommanderCastMoment() {
   const game = useGameStore(state => state.game);
+  const multiplayer = useGameStore(state => state.multiplayer);
   const [moment, setMoment] = useState<CommanderMoment | null>(null);
+
+  const isMultiplayer =
+    multiplayer.status === 'host' || multiplayer.status === 'joined' || multiplayer.status === 'migrating';
 
   useEffect(() => {
     const action = game.actionLog[game.actionLog.length - 1];
@@ -44,36 +48,44 @@ export function CommanderCastMoment() {
   return (
     <div
       data-testid="commander-cast-moment"
+      data-mode={isMultiplayer ? 'toast' : 'hero'}
       style={{
         position: 'fixed',
-        inset: 0,
-        zIndex: 25000,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
+        top: isMultiplayer ? 88 : 0,
+        right: isMultiplayer ? 16 : 'auto',
+        left: isMultiplayer ? 'auto' : 0,
+        bottom: isMultiplayer ? 'auto' : 0,
+        zIndex: isMultiplayer ? 14000 : 25000,
+        display: isMultiplayer ? 'block' : 'flex',
+        alignItems: isMultiplayer ? 'flex-start' : 'center',
+        justifyContent: isMultiplayer ? 'flex-end' : 'center',
         pointerEvents: 'none',
-        background: 'radial-gradient(circle at 50% 44%, rgba(251,191,36,0.24), rgba(8,13,17,0.05) 34%, transparent 58%)',
-        animation: 'commanderMomentBackdrop 3.8s ease forwards',
+        background: isMultiplayer ? 'transparent' : 'radial-gradient(circle at 50% 44%, rgba(251,191,36,0.24), rgba(8,13,17,0.05) 34%, transparent 58%)',
+        animation: isMultiplayer ? 'none' : 'commanderMomentBackdrop 3.8s ease forwards',
       }}
     >
       <div style={{
-        width: 'min(520px, calc(100vw - 28px))',
-        minHeight: 190,
+        width: isMultiplayer ? 'min(420px, calc(100vw - 28px))' : 'min(520px, calc(100vw - 28px))',
+        minHeight: isMultiplayer ? 86 : 190,
         display: 'grid',
-        gridTemplateColumns: card ? '112px 1fr' : '1fr',
-        gap: 18,
-        alignItems: 'center',
-        padding: 18,
+        gridTemplateColumns: card ? (isMultiplayer ? '94px 1fr' : '112px 1fr') : '1fr',
+        gap: isMultiplayer ? 12 : 18,
+        alignItems: isMultiplayer ? 'flex-start' : 'center',
+        padding: isMultiplayer ? 12 : 18,
         border: `1px solid ${moment.playerColor}`,
-        borderRadius: 8,
+        borderRadius: isMultiplayer ? 10 : 8,
         background: 'linear-gradient(135deg, rgba(15,23,42,0.96), rgba(17,24,39,0.92))',
-        boxShadow: `0 0 0 1px rgba(251,191,36,0.28), 0 24px 80px ${moment.playerColor}55`,
-        animation: 'commanderMomentCard 3.8s cubic-bezier(.16,1,.3,1) forwards',
+        boxShadow: isMultiplayer
+          ? `0 0 0 1px rgba(251,191,36,0.28), 0 14px 35px ${moment.playerColor}55`
+          : `0 0 0 1px rgba(251,191,36,0.28), 0 24px 80px ${moment.playerColor}55`,
+        animation: isMultiplayer ? 'none' : 'commanderMomentCard 3.8s cubic-bezier(.16,1,.3,1) forwards',
       }}>
         {card && (
           <div style={{
-            transform: 'rotate(-4deg)',
-            filter: `drop-shadow(0 0 18px ${moment.playerColor}aa)`,
+            transform: isMultiplayer ? 'rotate(-2deg)' : 'rotate(-4deg)',
+            filter: `drop-shadow(0 0 ${isMultiplayer ? 12 : 18}px ${moment.playerColor}aa)`,
+            transformOrigin: 'top center',
+            width: isMultiplayer ? 84 : 'auto',
           }}>
             <CardImage card={card} size="normal" />
           </div>
@@ -81,18 +93,18 @@ export function CommanderCastMoment() {
         <div style={{ minWidth: 0 }}>
           <div style={{
             color: '#fbbf24',
-            fontSize: 11,
+            fontSize: isMultiplayer ? 10 : 11,
             fontWeight: 900,
             letterSpacing: '0.18em',
             textTransform: 'uppercase',
-            marginBottom: 8,
+            marginBottom: isMultiplayer ? 6 : 8,
           }}>
             Commander Cast
           </div>
           <div style={{
             color: '#f8fafc',
-            fontSize: 32,
-            lineHeight: 1.02,
+            fontSize: isMultiplayer ? 22 : 32,
+            lineHeight: isMultiplayer ? 1.08 : 1.02,
             fontWeight: 900,
             textShadow: `0 0 24px ${moment.playerColor}77`,
             overflowWrap: 'anywhere',
@@ -102,12 +114,18 @@ export function CommanderCastMoment() {
           <div style={{
             marginTop: 10,
             color: '#cbd5e1',
-            fontSize: 14,
+            fontSize: isMultiplayer ? 12 : 14,
             fontWeight: 700,
+            lineHeight: 1.2,
           }}>
             {moment.playerName} put their commander on the stack.
           </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 14 }}>
+          <div style={{
+            display: 'flex',
+            gap: 8,
+            flexWrap: 'wrap',
+            marginTop: isMultiplayer ? 10 : 14,
+          }}>
             {moment.castNumber !== undefined && (
               <span style={pillStyle(moment.playerColor)}>
                 Cast #{moment.castNumber}

@@ -137,6 +137,20 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
   const localDeckReason = authoritativeDeckSummary?.errors?.join(' ') || localPeer?.deck?.errors?.join(' ') || '';
   const localReady = Boolean(localPeer?.ready);
   const canToggleReady = !isSpectator && localDeckStatus === 'valid';
+  const startHandshake = multiplayer.startHandshake;
+  const startVoteRequired = startHandshake?.status === 'preparing' || startHandshake?.status === 'waiting';
+  const canCastStartVote = Boolean(
+    !isSpectator &&
+    !isHost &&
+    startVoteRequired &&
+    localPeer &&
+    !localPeer.isSpectator &&
+    localPeer.seatIndex >= 0 &&
+    startHandshake.requiredPeerIds?.includes(localPeer.peerId) &&
+    (localPeer.deckStatus === 'valid' || localPeer.deck?.status === 'valid')
+  );
+  const hasCastStartVote = localPeer ? startHandshake?.ackedPeerIds.includes(localPeer.peerId) : false;
+  const remainingStartVotes = startHandshake?.missingPeerIds.length ?? 0;
   const takenSeats = new Set(
     peers
       .filter(p => p.peerId !== multiplayer.peerId && p.online && !p.isSpectator && p.seatIndex >= 0)
@@ -407,7 +421,7 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
             </div>
           )}
           {error && <div style={{ marginTop: 8 }}><ErrorMsg msg={error} /></div>}
-          {!isSpectator && (
+          {!isSpectator && isHost && (
             <div style={{ marginTop: 10 }}>
               <button
                 data-testid="btn-player-ready"
@@ -434,6 +448,47 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
                 Deck status: {localDeckStatus}
                 {localDeckStatus === 'submitted' && ' - Checking deck against Commander rules...'}
                 {localDeckStatus === 'rejected' && localDeckReason ? ` - ${localDeckReason}` : ''}
+              </div>
+            </div>
+          )}
+          {!isSpectator && !isHost && (
+            <div style={{ marginTop: 10, fontSize: 10, color: '#64748b', lineHeight: 1.5 }}>
+              Deck status: {localDeckStatus}
+              {localDeckStatus === 'submitted' && ' - Checking deck against Commander rules...'}
+              {localDeckStatus === 'rejected' && localDeckReason ? ` - ${localDeckReason}` : ''}
+              {localDeckStatus === 'valid' && ' - Deck loaded. Host controls start time; vote to begin when start phase is ready.'}
+            </div>
+          )}
+
+          {canCastStartVote && (
+            <div style={{ marginTop: 10 }}>
+              <button
+                data-testid="btn-vote-start"
+                data-help-title="Vote Start"
+                data-help-body={hasCastStartVote
+                  ? `You already voted to start. Waiting on ${remainingStartVotes} remaining player${remainingStartVotes === 1 ? '' : 's'}.`
+                  : 'Vote that you are ready and want to begin once all players are seated and deck-ready.'}
+                data-help-placement="top"
+                onClick={() => store.voteToStartMultiplayerGame()}
+                disabled={hasCastStartVote}
+                style={{
+                  width: '100%',
+                  padding: '8px 10px',
+                  borderRadius: 6,
+                  cursor: hasCastStartVote ? 'not-allowed' : 'pointer',
+                  border: `1px solid ${hasCastStartVote ? '#14532d' : '#0f766e'}`,
+                  background: hasCastStartVote ? '#14532d22' : '#042f2e',
+                  color: hasCastStartVote ? '#a7f3d0' : '#5eead4',
+                  fontSize: 12,
+                  fontWeight: 800,
+                }}
+              >
+                {hasCastStartVote ? 'Start Vote Sent' : 'Vote to Start'}
+              </button>
+              <div style={{ fontSize: 10, color: '#64748b', marginTop: 5 }}>
+                {hasCastStartVote
+                  ? `Votes received: ${startHandshake?.ackedPeerIds.length ?? 0} / ${startHandshake?.requiredPeerIds.length ?? 0}`
+                  : `Waiting for votes from ${startHandshake?.missingPeerIds.length ?? 0} other player${(startHandshake?.missingPeerIds.length ?? 0) === 1 ? '' : 's'}.`}
               </div>
             </div>
           )}

@@ -1,0 +1,34 @@
+﻿# Magic: The Gathering Simulator — Game Logic Notes
+
+## Session Notes Log
+- Created: 2026-06-12
+- Purpose: Track major game-logic decisions, pending rules clarifications, and implementation references for this chat.
+
+### Reference notes
+- Focus area for this chat: core MTG gameplay logic and simulation behavior.
+- Source of truth for future changes should be updated here as each major change is made.
+
+### Format
+- Date
+- Area touched
+- Rationale / decision
+- Files/functions affected
+- Follow-up questions / risks
+
+### Entries
+- 2026-06-12: Notes file initialized to track future game logic updates.
+- 2026-06-13: Battlefield token cloud UX updated to support grouped attack counts and splits.
+  - `renderTokenCloud` now supports split mode by cloud ID and uses `cloudSplits` state.
+  - Unsplitted clusters show `renderTokenCloudCluster` actions including Attack and Split.
+  - Split clusters show two independent stacks plus Unsplit button.
+- 2026-06-13: Command parser/UI bugfixes for continuity pass.
+  - `client/src/engine/nlpParser.ts`: added support for `clear player N mana` in addition to existing clear-mana patterns.
+  - `client/src/components/battlefield/PlayerBattlefield.tsx`:
+    - removed unused `parseAttackCount`.
+    - fixed `attackTokenBatch` signature to avoid stale cluster-name arg usage.
+    - fixed token cloud segment expand/collapse to use `segmentKey` rather than `cloud.key` so split branches toggle independently.
+- 2026-06-13: Combat declaration quality-of-life pass.
+  - `client/src/components/battlefield/CommanderTable.tsx`: added a compact combat declaration dock with explicit attacker/target and blocker/attacker selects plus Declare Attack, Blockers Step, and Declare Block buttons.
+  - `client/src/engine/nlpParser.ts`: added explicit declaration phrases such as `declare attackers with X`, `declare X attacking player N`, `declare X blocking Y`, and `declare blockers with A, B on X`.
+  - `client/src/engine/nlpParser.ts`: block command resolution now converts the blocked attacker name into an attacker instance ID before `declareBlock`.
+  - `tests/command-rules.test.ts`: added regression coverage for explicit attack/block declaration command parsing.

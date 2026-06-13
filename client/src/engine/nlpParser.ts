@@ -66,10 +66,16 @@ export type IntentType =
   | 'PROLIFERATE'
   | 'CAST_FROM_GY'
   | 'CAST_FROM_EXILE'
+  | 'TUTOR'
+  | 'MULLIGAN'
   | 'REANIMATE'
   | 'LOOK_AT_HAND'   // peek at opponent's hand
   | 'LOOK_AT_TOP'    // look at top N of any player's library
   | 'SORT_HAND'
+  | 'ADD_MANA'
+  | 'SPEND_MANA'
+  | 'CLEAR_MANA'
+  | 'REMOVE_ALL_COUNTERS'
   | 'UNKNOWN';
 
 export interface ParsedIntent {
@@ -80,6 +86,7 @@ export interface ParsedIntent {
   // Card targeting — single
   cardName?: string;
   resolvedInstanceId?: string;   // filled after fuzzy match against game state
+  attackCount?: number;
 
   // Card targeting — multi (MULTI_ATTACK, MULTI_BLOCK, etc.)
   // Each entry is a raw card name parsed from the comma list.
@@ -100,6 +107,17 @@ export interface ParsedIntent {
   // Zone movement
   fromZone?: Zone;
   toZone?: Zone;
+
+  // Mana
+  mana?: {
+    W: number;
+    U: number;
+    B: number;
+    R: number;
+    G: number;
+    C: number;
+    generic: number;
+  };
 
   // Counters
   counterType?: string;
@@ -256,6 +274,37 @@ export function parseCommand(raw: string): ParsedIntent {
   // ── Shuffle ──
   if (/^(shuffle|shuffle (my )?library|shuffle (my )?deck)$/.test(lower)) {
     return { ...result, intent: 'SHUFFLE', confidence: 'high' };
+  }
+
+  const playerMulliganMatch = lower.match(/^player\s+(\d)\s+(?:mulligan|take mulligan)$/);
+  if (playerMulliganMatch) {
+    return {
+      ...result,
+      intent: 'MULLIGAN',
+      targetPlayerIndex: parseInt(playerMulliganMatch[1]),
+      confidence: 'high',
+    };
+  }
+
+  if (/^(?:mulligan|take mulligan)$/.test(lower)) {
+    return { ...result, intent: 'MULLIGAN', confidence: 'high' };
+  }
+
+  const playerTutorMatch = lower.match(/^player\s+(\d)\s+(?:tutor|search(?:\s+for)?|find)\s+(.+)$/);
+  if (playerTutorMatch) {
+    return {
+      ...result,
+      intent: 'TUTOR',
+      cardName: normalizeName(playerTutorMatch[2]),
+      targetPlayerIndex: parseInt(playerTutorMatch[1]),
+      confidence: 'high',
+    };
+  }
+
+  // Tutor search
+  const tutorMatch = lower.match(/^tutor\s+(?:for\s+)?(.+)$/);
+  if (tutorMatch) {
+    return { ...result, intent: 'TUTOR', cardName: normalizeName(tutorMatch[1]), confidence: 'high' };
   }
 
   if (/^(sort|sort hand|sort my hand|organize hand|organize my hand)$/.test(lower)) {
@@ -475,6 +524,32 @@ export function parseCommand(raw: string): ParsedIntent {
   // "Goblin Guide, Mayhem Devil attack"
   // Also handles optional per-creature target annotations in the list:
   //   "Goblin Guide (player 2), Mayhem Devil (player 3) attack"
+  const declareAttackersWith = lower.match(/^declare\s+attackers?\s+with\s+(.+?)(?:\s+(?:at|against|on)\s+player\s+(\d))?$/);
+  if (declareAttackersWith) {
+    const raw = declareAttackersWith[1];
+    const defaultTarget = declareAttackersWith[2] ? parseInt(declareAttackersWith[2]) : undefined;
+    if (raw.includes(',') || /\band\b/.test(raw)) {
+      const { names, assignments } = parseAttackerList(raw, defaultTarget);
+      if (names.length > 1) {
+        return {
+          ...result,
+          intent: 'MULTI_ATTACK',
+          cardNames: names,
+          targetPlayerIndex: defaultTarget,
+          attackAssignments: Object.keys(assignments).length > 0 ? assignments : undefined,
+          confidence: 'high',
+        };
+      }
+    }
+    return {
+      ...result,
+      intent: 'ATTACK',
+      cardName: normalizeName(raw),
+      targetPlayerIndex: defaultTarget,
+      confidence: 'high',
+    };
+  }
+
   const multiAttackWith = lower.match(/^attack(?:\s+player\s+(\d))?\s+with\s+(.+)$/);
   if (multiAttackWith) {
     const raw = multiAttackWith[2];
@@ -518,6 +593,39 @@ export function parseCommand(raw: string): ParsedIntent {
   // ── Multi-block ──
   // "Goblin Guide, Wall of Blossoms block Mayhem Devil"
   // "block Mayhem Devil with Goblin Guide, Wall of Blossoms"
+  const declareSingleAttacker = lower.match(/^declare\s+(.+?)\s+(?:as\s+an?\s+attacker|attacking(?:\s+player\s+(\d))?)(?:\s+(?:at|against|on)\s+player\s+(\d))?$/);
+  if (declareSingleAttacker) {
+    return {
+      ...result,
+      intent: 'ATTACK',
+      cardName: normalizeName(declareSingleAttacker[1]),
+      targetPlayerIndex: declareSingleAttacker[2] || declareSingleAttacker[3]
+        ? parseInt(declareSingleAttacker[2] || declareSingleAttacker[3])
+        : undefined,
+      confidence: 'high',
+    };
+  }
+
+  const declareBlockersWith = lower.match(/^declare\s+blockers?\s+with\s+(.+?)\s+(?:on|against|blocking)\s+(.+)$/);
+  if (declareBlockersWith) {
+    const rawBlockers = declareBlockersWith[1];
+    const attackerName = normalizeName(declareBlockersWith[2]);
+    if (rawBlockers.includes(',') || /\band\b/.test(rawBlockers)) {
+      const blockerNames = splitNameList(rawBlockers).map(normalizeName);
+      if (blockerNames.length > 1) {
+        return { ...result, intent: 'MULTI_BLOCK', cardName: attackerName, cardNames: blockerNames, confidence: 'high' };
+      }
+    }
+    return {
+      ...result,
+      intent: 'BLOCK',
+      cardName: normalizeName(rawBlockers),
+      targetName: attackerName,
+      candidates: [attackerName],
+      confidence: 'high',
+    };
+  }
+
   const multiBlockWith = lower.match(/^block\s+(.+?)\s+with\s+(.+)$/);
   if (multiBlockWith && (multiBlockWith[2].includes(',') || /\band\b/.test(multiBlockWith[2]))) {
     const blockerNames = splitNameList(multiBlockWith[2]).map(normalizeName);
@@ -542,13 +650,56 @@ export function parseCommand(raw: string): ParsedIntent {
   // "attack player 2 with goblin guide"
   // "attack with goblin guide"
   // "goblin guide attacks"
+  const attackWithTargetCount = lower.match(
+    /^attack\s+(?:([a-z0-9]+)\s+)?player\s+(\d)\s+with\s+(.+)$/i,
+  );
+  if (attackWithTargetCount) {
+    const count = parseWordNumber(attackWithTargetCount[1] || '1');
+    if (count > 1) {
+      return {
+        ...result,
+        intent: 'ATTACK',
+        targetPlayerIndex: parseInt(attackWithTargetCount[2], 10),
+        attackCount: count,
+        cardName: normalizeName(attackWithTargetCount[3]),
+        confidence: 'high',
+      };
+    }
+  }
   const attackWithTarget = lower.match(/^attack\s+player\s+(\d)\s+with\s+(.+)$/);
   if (attackWithTarget) {
     return { ...result, intent: 'ATTACK', targetPlayerIndex: parseInt(attackWithTarget[1]), cardName: normalizeName(attackWithTarget[2]), confidence: 'high' };
   }
+  const attackWithCount = lower.match(/^attack\s+([a-z0-9]+)\s+with\s+(.+)$/i);
+  if (attackWithCount) {
+    const count = parseWordNumber(attackWithCount[1]);
+    if (count > 1) {
+      return {
+        ...result,
+        intent: 'ATTACK',
+        attackCount: count,
+        cardName: normalizeName(attackWithCount[2]),
+        confidence: 'high',
+      };
+    }
+  }
   const attackWith = lower.match(/^attack\s+with\s+(.+)$/);
   if (attackWith) {
     return { ...result, intent: 'ATTACK', cardName: normalizeName(attackWith[1]), confidence: 'medium' };
+  }
+  const attackCountAsVerb = lower.match(/^attack\s+([a-z0-9]+)\s+(.+?)(?:\s+player\s+(\d))?$/i);
+  if (attackCountAsVerb) {
+    const count = parseWordNumber(attackCountAsVerb[1]);
+    if (count > 1) {
+      return {
+        ...result,
+        intent: 'ATTACK',
+        targetPlayerIndex: attackCountAsVerb[3] ? parseInt(attackCountAsVerb[3]) : undefined,
+        attackCount: count,
+        cardName: normalizeName(attackCountAsVerb[2]),
+        confidence: 'medium',
+      };
+    }
   }
   const cardAttacks = lower.match(/^(.+?)\s+attacks?(?:\s+player\s+(\d))?$/);
   if (cardAttacks && !lower.startsWith('declare') && cardAttacks[1].split(' ').length <= 6) {
@@ -556,9 +707,31 @@ export function parseCommand(raw: string): ParsedIntent {
   }
 
   // ── Block ──
+  const declareSingleBlocker = lower.match(/^declare\s+(.+?)\s+(?:as\s+a\s+blocker\s+(?:on|against|blocking)|blocking)\s+(.+)$/);
+  if (declareSingleBlocker) {
+    const attackerName = normalizeName(declareSingleBlocker[2]);
+    return {
+      ...result,
+      intent: 'BLOCK',
+      cardName: normalizeName(declareSingleBlocker[1]),
+      targetName: attackerName,
+      candidates: [attackerName],
+      confidence: 'high',
+    };
+  }
+
   const blockMatch = lower.match(/^(.+?)\s+blocks?\s+(.+)$/);
   if (blockMatch) {
-    return { ...result, intent: 'BLOCK', cardName: normalizeName(blockMatch[1]), ambiguous: false, candidates: [normalizeName(blockMatch[2])], confidence: 'medium' };
+    const attackerName = normalizeName(blockMatch[2]);
+    return {
+      ...result,
+      intent: 'BLOCK',
+      cardName: normalizeName(blockMatch[1]),
+      targetName: attackerName,
+      ambiguous: false,
+      candidates: [attackerName],
+      confidence: 'medium',
+    };
   }
 
   // ── Move card to zone ──
@@ -588,10 +761,11 @@ export function parseCommand(raw: string): ParsedIntent {
   // "+1/+1 on goblin guide" / "add 2 charge counters to sol ring"
   const addCounterPatterns = [
     /^(\+1\/\+1|[-+]\d\/[-+]\d)\s+(?:on|to|counter on)\s+(.+)$/,
-    /^add\s+(?:a\s+)?(\w+)\s+counter\s+(?:on|to)\s+(.+)$/,
-    /^add\s+(\d+)\s+(\w+)\s+counters?\s+(?:on|to)\s+(.+)$/,
-    /^put\s+(?:a\s+)?(\w+)\s+counter\s+on\s+(.+)$/,
-    /^put\s+(\d+)\s+(\w+)\s+counters?\s+on\s+(.+)$/,
+    /^add\s+(?:a|an|one)\s+(.+?)\s+counter\s+(?:on|to)\s+(.+)$/,
+    /^add\s+(\d+)\s+(.+?)\s+counters?\s+(?:on|to)\s+(.+)$/,
+    /^add\s+(.+?)\s+counter\s+(?:on|to)\s+(.+)$/,
+    /^put\s+(?:a|an|one)\s+(.+?)\s+counter\s+on\s+(.+)$/,
+    /^put\s+(\d+)\s+(.+?)\s+counters?\s+on\s+(.+)$/,
   ];
   for (const p of addCounterPatterns) {
     const m = lower.match(p);
@@ -609,16 +783,48 @@ export function parseCommand(raw: string): ParsedIntent {
   }
 
   // ── Remove Counter ──
+  const removeAllCounterPatterns = [
+    /^remove\s+all\s+(.+?)\s+counter(?:s)?\s+(?:from|on)\s+(.+)$/,
+    /^remove\s+all\s+counters\s+(?:from|on)\s+(.+)$/,
+    /^clear\s+all\s+counters\s+(?:from|on)\s+(.+)$/,
+  ];
+  for (const p of removeAllCounterPatterns) {
+    const m = lower.match(p);
+    if (m) {
+      const hasTypedCounter = m[2] !== undefined;
+      const counterType = hasTypedCounter ? resolveCounterType(m[1]) : undefined;
+      const cardName = normalizeName(hasTypedCounter ? m[2] : m[1]);
+      return { ...result, intent: 'REMOVE_ALL_COUNTERS', cardName, counterType, confidence: 'high' };
+    }
+  }
+
   const removeCounterPatterns = [
-    /^remove\s+(?:a\s+)?(\w+)\s+counter\s+(?:from)\s+(.+)$/,
-    /^remove\s+(\d+)\s+(\w+)\s+counters?\s+from\s+(.+)$/,
+    /^remove\s+(?:a|an|one)\s+(.+?)\s+counter\s+(?:from|on)\s+(.+)$/,
+    /^remove\s+(\d+)\s+(.+?)\s+counters?\s+(?:from|on)\s+(.+)$/,
+    /^remove\s+(.+?)\s+counters?\s+(?:from|on)\s+(.+)$/,
   ];
   for (const p of removeCounterPatterns) {
     const m = lower.match(p);
     if (m) {
-      const cType = resolveCounterType(m[1]);
-      const cCard = m[2] || m[3];
-      return { ...result, intent: 'REMOVE_COUNTER', counterType: cType, counterAmount: 1, cardName: normalizeName(cCard), confidence: 'medium' };
+      let cAmount = 1;
+      let cType: string;
+      let cCard: string;
+      if (m.length === 4 && /^\d+$/.test(m[1])) {
+        cAmount = parseInt(m[1], 10);
+        cType = resolveCounterType(m[2]);
+        cCard = m[3];
+      } else {
+        cType = resolveCounterType(m[1]);
+        cCard = m[2];
+      }
+      return {
+        ...result,
+        intent: 'REMOVE_COUNTER',
+        counterType: cType,
+        counterAmount: cAmount,
+        cardName: normalizeName(cCard),
+        confidence: 'medium',
+      };
     }
   }
 
@@ -626,6 +832,7 @@ export function parseCommand(raw: string): ParsedIntent {
   // "create 3 1/1 white soldier tokens"
   // "make a 2/2 green bear token"
   // "create treasure token" / "create 2 treasure tokens"
+
   const tokenLookupMatch = lower.match(
     /^(?:create|make|generate|add)\s+(?:(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten)\s+)?(?:a\s+|an\s+)?(?:custom\s+)?tokens?\s*(?:named|called|of|for)?\s+(.+)$/
   );
@@ -694,6 +901,76 @@ export function parseCommand(raw: string): ParsedIntent {
     };
   }
 
+  const clearManaTarget = lower.match(/^(?:clear|wipe)\s+(?:mana|mana pool)(?:\s+for\s+player\s+([1-8]))?(?:\s+of\s+player\s+([1-8]))?$/);
+  if (clearManaTarget) {
+    const targetPlayerIndex = clearManaTarget[1] ?? clearManaTarget[2];
+    return {
+      ...result,
+      intent: 'CLEAR_MANA',
+      targetPlayerIndex: targetPlayerIndex ? parseInt(targetPlayerIndex) : undefined,
+      confidence: 'high',
+    };
+  }
+  const clearManaByOrderMatch = lower.match(/^player\s+([1-8])\s+clear\s+(?:mana|mana pool)$/);
+  if (clearManaByOrderMatch) {
+    return {
+      ...result,
+      intent: 'CLEAR_MANA',
+      targetPlayerIndex: parseInt(clearManaByOrderMatch[1]),
+      confidence: 'high',
+    };
+  }
+  const clearManaReversedMatch = lower.match(/^clear\s+player\s+([1-8])\s+(?:mana|mana pool)$/);
+  if (clearManaReversedMatch) {
+    return {
+      ...result,
+      intent: 'CLEAR_MANA',
+      targetPlayerIndex: parseInt(clearManaReversedMatch[1]),
+      confidence: 'high',
+    };
+  }
+
+  const parseManaTarget = (raw: string): { targetPlayerIndex?: number; mana: ParsedIntent['mana'] } | null => {
+    const playerMatch = raw.match(/^(.*)\s+(?:to|for)\s+player\s+([1-8])$/);
+    let candidate = raw;
+    let targetPlayerIndex: number | undefined;
+    if (playerMatch) {
+      candidate = playerMatch[1];
+      targetPlayerIndex = parseInt(playerMatch[2]);
+    }
+    const mana = parseManaInput(candidate.replace(/\bmana(?:\s+pool)?\b/g, ' '));
+    if (!mana) return null;
+    return { mana, targetPlayerIndex };
+  };
+
+  const addManaMatch = lower.match(/^add\s+(.+)$/);
+  if (addManaMatch) {
+    const parsed = parseManaTarget(addManaMatch[1]);
+    if (parsed) {
+      return {
+        ...result,
+        intent: 'ADD_MANA',
+        mana: parsed.mana,
+        targetPlayerIndex: parsed.targetPlayerIndex,
+        confidence: 'high',
+      };
+    }
+  }
+
+  const spendManaMatch = lower.match(/^(?:spend|pay|use)\s+(.+)$/);
+  if (spendManaMatch) {
+    const parsed = parseManaTarget(spendManaMatch[1]);
+    if (parsed) {
+      return {
+        ...result,
+        intent: 'SPEND_MANA',
+        mana: parsed.mana,
+        targetPlayerIndex: parsed.targetPlayerIndex,
+        confidence: 'high',
+      };
+    }
+  }
+
   // ── Fallback: try to match a bare card name (any word sequence that isn't a keyword) ──
   const cleaned = lower.replace(/[^a-z0-9 ',\-]/g, '').trim();
   if (cleaned.length > 2) {
@@ -730,9 +1007,20 @@ export function resolveIntent(
 
   // Resolve card name → instance ID (single card intents)
   if (intent.cardName) {
-    const matches = findCardsByName(intent.cardName, state, actingPlayerId, intent);
+    const matches = findCardsByName(intent.cardName, state, actingPlayerId, intent, !!(intent.attackCount && intent.attackCount > 1));
     if (matches.length === 0) {
       r.error = `No card named "${intent.cardName}" found in the relevant zone.`;
+    } else if (intent.attackCount && intent.attackCount > 1) {
+      const requested = Math.max(1, intent.attackCount);
+      if (matches.length < requested) {
+        r.error = `Only ${matches.length} matching card${matches.length === 1 ? '' : 's'} found for "${intent.cardName}".`;
+      }
+      r.resolvedInstanceIds = matches.slice(0, requested);
+      r.resolvedInstanceId = r.resolvedInstanceIds[0];
+      if (matches.length > 1) {
+        r.ambiguous = true;
+        r.candidates = matches;
+      }
     } else if (matches.length === 1) {
       r.resolvedInstanceId = matches[0];
     } else {
@@ -743,6 +1031,27 @@ export function resolveIntent(
   }
 
   // Resolve multi-card name list → instance IDs (MULTI_ATTACK, MULTI_BLOCK)
+  if (intent.intent === 'BLOCK') {
+    const blockedAttackerName = intent.targetName ?? intent.candidates?.[0];
+    if (blockedAttackerName) {
+      if (state.cards[blockedAttackerName]) {
+        r.candidates = [blockedAttackerName];
+      } else {
+        const attackerMatches = findCardsByName(
+          blockedAttackerName,
+          state,
+          actingPlayerId,
+          { ...intent, intent: 'ATTACK', cardName: blockedAttackerName },
+        );
+        if (attackerMatches.length === 0) {
+          r.error = `No attacking card named "${blockedAttackerName}" found.`;
+        } else {
+          r.candidates = [attackerMatches[0]];
+        }
+      }
+    }
+  }
+
   if (intent.cardNames && intent.cardNames.length > 0) {
     const fakeIntent: ParsedIntent = {
       ...intent,
@@ -786,7 +1095,8 @@ function findCardsByName(
   name: string,
   state: GameState,
   actingPlayerId: string,
-  intent: ParsedIntent
+  intent: ParsedIntent,
+  allowDuplicateNames = false
 ): string[] {
   const normalizedQuery = name.toLowerCase().trim();
   const searchZones = getSearchZones(intent);
@@ -810,6 +1120,7 @@ function findCardsByName(
     }
     if (results.length > 0) {
       results.sort((a, b) => b.score - a.score);
+      if (allowDuplicateNames) return results.map(c => c.instanceId);
       const seen = new Set<string>();
       return results
         .filter(c => {
@@ -835,6 +1146,7 @@ function findCardsByName(
 
   candidates.sort((a, b) => b.score - a.score);
 
+  if (allowDuplicateNames) return candidates.map(c => c.instanceId).slice(0, 5);
   const seen = new Set<string>();
   return candidates
     .filter(c => {
@@ -857,10 +1169,12 @@ function getSearchZones(intent: ParsedIntent): import('../types/game').Zone[] {
     case 'UNTAP': return ['battlefield'];
     case 'TRANSFORM': return ['battlefield'];
     case 'ADD_COUNTER': return ['battlefield'];
-    case 'REMOVE_COUNTER': return ['battlefield'];
-    case 'DISCARD': return ['hand'];
-    case 'CYCLE': return ['hand'];
-    case 'DREDGE': return ['graveyard'];
+  case 'REMOVE_COUNTER': return ['battlefield'];
+  case 'REMOVE_ALL_COUNTERS': return ['battlefield'];
+  case 'DISCARD': return ['hand'];
+  case 'CYCLE': return ['hand'];
+  case 'DREDGE': return ['graveyard'];
+  case 'TUTOR': return ['library'];
     case 'COUNTER_SPELL': return ['stack'];
     case 'MOVE_CARD': return ['battlefield', 'hand', 'graveyard', 'exile', 'library'];
     case 'CAST_FROM_GY': return ['graveyard'];
@@ -972,8 +1286,60 @@ function normalizeName(raw: string): string {
     .replace(/^(the|a|an|my|your|their)\s+/i, '')
     .replace(/\s+(it|that|this|card|permanent|creature|spell)$/i, '')
     .trim()
-    // Title-case each word
-    .replace(/\b\w/g, c => c.toUpperCase());
+  // Title-case each word
+  .replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function parseManaInput(raw: string): ParsedIntent['mana'] | null {
+  let normalized = raw
+    .toLowerCase()
+    .replace(/x/gi, '')
+    .replace(/\{|\}/g, ' ')
+    .replace(/\bwhite\b/g, 'w')
+    .replace(/\bblue\b/g, 'u')
+    .replace(/\bblack\b/g, 'b')
+    .replace(/\bred\b/g, 'r')
+    .replace(/\bgreen\b/g, 'g')
+    .replace(/\bcolorless\b/g, 'c')
+    .replace(/\bgeneric\b/g, ' ')
+    .replace(/([wubrgc])([wubrgc]+)/g, (match) => match.split('').join(' '))
+    .replace(/(\d+)([wubrgc])/g, (_, n, symbol) => ` ${(Array(Number(n) || 0).fill(symbol).join(' '))} `)
+    .replace(/([wubrgc])(\d+)/g, '$1 $2')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+
+  const tokens = normalized.match(/[a-z0-9]+/g);
+  if (!tokens || tokens.length === 0) return null;
+  const hasForeignWords = tokens.some(token => !/^\d+$/.test(token) && !/^[wubrgc]+$/.test(token));
+  if (hasForeignWords) return null;
+
+  const mana = {
+    W: 0,
+    U: 0,
+    B: 0,
+    R: 0,
+    G: 0,
+    C: 0,
+    generic: 0,
+  };
+
+  for (const token of tokens) {
+    if (/^\d+$/.test(token)) {
+      mana.generic += parseInt(token, 10);
+      continue;
+    }
+    for (const symbol of token) {
+      if (symbol === 'w') mana.W += 1;
+      else if (symbol === 'u') mana.U += 1;
+      else if (symbol === 'b') mana.B += 1;
+      else if (symbol === 'r') mana.R += 1;
+      else if (symbol === 'g') mana.G += 1;
+      else if (symbol === 'c') mana.C += 1;
+    }
+  }
+
+  if (mana.W + mana.U + mana.B + mana.R + mana.G + mana.C + mana.generic === 0) return null;
+  return mana;
 }
 
 function resolveCounterType(raw: string): string {
@@ -1070,10 +1436,29 @@ function getContextualSuggestions(state: GameState, actingPlayerId: string): str
     }
     suggestions.push('move to combat');
   }
+  if (phase === 'beginningOfCombat' || phase === 'declareAttackers') {
+    const player = state.players.find(p => p.id === actingPlayerId);
+    const firstAttacker = player?.battlefield
+      .map(id => state.cards[id])
+      .find(card => card?.definition.cardTypes.includes('Creature') && !card.tapped);
+    if (firstAttacker) suggestions.push(`declare attackers with ${firstAttacker.definition.name}`);
+  }
   if (phase === 'beginningOfCombat') suggestions.push('declare attackers', 'end combat', 'pass');
-  if (phase === 'declareAttackers') suggestions.push('pass', 'end turn');
+  if (phase === 'declareAttackers') suggestions.push('declare blockers', 'pass', 'end turn');
+  if (phase === 'declareBlockers') {
+    const player = state.players.find(p => p.id === actingPlayerId);
+    const firstBlocker = player?.battlefield
+      .map(id => state.cards[id])
+      .find(card => card?.definition.cardTypes.includes('Creature') && !card.tapped);
+    const incoming = state.combat.attackers
+      .find(attacker => attacker.targetPlayerId === actingPlayerId);
+    const incomingCard = incoming ? state.cards[incoming.instanceId] : undefined;
+    if (firstBlocker && incomingCard) suggestions.push(`declare ${firstBlocker.definition.name} blocking ${incomingCard.definition.name}`);
+    suggestions.push('pass');
+  }
   if (phase === 'endStep') suggestions.push('end turn', 'pass');
 
   suggestions.push('end turn', 'pass', 'undo');
   return [...new Set(suggestions)].slice(0, 8);
 }
+

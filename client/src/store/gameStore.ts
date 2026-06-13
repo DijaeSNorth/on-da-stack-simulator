@@ -2,7 +2,7 @@
 import { create } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import type {
-  GameState, Player, CardState, Phase, StackObject, TriggerItem,
+  GameState, Player, CardState, Phase, StackObject, TriggerItem, ManaPool,
   AssistantFlag, Deck, GameConfig, ActionRecord, PlayerAvatarImage, CardDefinition
 } from '../types/game';
 import {
@@ -12,7 +12,8 @@ import {
   addTrigger, acknowledgeTrigger, drawCards, discardCard, createToken,
   createTokens, checkStateBasedActions, declareAttacker, declareBlocker, undoAction,
   loadDeckIntoPlayer, createDefaultGameConfig, createCardState,
-  triggerMyriad, clearCombatAssignments,
+  triggerMyriad, clearCombatAssignments, setManaPool, addManaToPool, clearManaPool,
+  takeMulligan, tutorCard as tutorCardFromEngine, removeAllCountersFromCard,
 } from '../engine/gameEngine';
 import {
   checkCastLegality, checkTapLegality, checkAttackLegality, checkBlockLegality,
@@ -180,6 +181,19 @@ function loadPanelSizes(): UIState['panelSizes'] {
   }
 }
 
+function formatManaPool(mana: Partial<ManaPool>): string {
+  const parts = [
+    mana.W ? `${mana.W}W` : '',
+    mana.U ? `${mana.U}U` : '',
+    mana.B ? `${mana.B}B` : '',
+    mana.R ? `${mana.R}R` : '',
+    mana.G ? `${mana.G}G` : '',
+    mana.C ? `${mana.C}C` : '',
+    mana.generic ? `${mana.generic}` : '',
+  ].filter(Boolean);
+  return parts.length ? parts.join(' ') : '0';
+}
+
 function savePanelSizes(sizes: UIState['panelSizes']): void {
   if (typeof localStorage === 'undefined') return;
   try {
@@ -328,6 +342,7 @@ export interface GameStore {
   removePracticeDummy: (playerId: string) => void;
   startGame: () => void;
   beginMultiplayerGameStart: () => void;
+  voteToStartMultiplayerGame: () => void;
   handleMultiplayerStartPrepare: (prepare: StartGamePrepare) => void;
   handleMultiplayerStartAck: (ack: StartGameAck) => void;
   commitMultiplayerGameStart: (fallback?: boolean) => void;
@@ -342,6 +357,13 @@ export interface GameStore {
   untapCards: (instanceIds: string[]) => void;
   tapAllLands: (playerId: string) => void;
   untapAll: (playerId: string) => void;
+  setManaPool: (playerId: string, mana: Partial<ManaPool>) => void;
+  addManaToPool: (playerId: string, mana: Partial<ManaPool>) => void;
+  spendManaFromPool: (playerId: string, mana: Partial<ManaPool>) => void;
+  clearManaPool: (playerId: string) => void;
+  takeMulligan: (playerId: string) => void;
+  tutorCard: (playerId: string, instanceId: string, fromZone?: CardState['zone']) => void;
+  removeAllCountersFromCard: (instanceId: string, counterType?: string) => void;
   addCounterToCard: (instanceId: string, counterType: string, amount?: number) => void;
   removeCounterFromCard: (instanceId: string, counterType: string, amount?: number) => void;
   attachCard: (attachmentId: string, targetId: string) => void;
@@ -786,11 +808,43 @@ export function resolveLocalPlayerIdFromPresence(
   peers: Record<string, RoomPresence>,
   peerId: string | null | undefined,
   fallback = '',
+  fallbackPlayerId = '',
+  fallbackSessionId = '',
 ): string {
-  const self = peerId ? peers[peerId] : undefined;
+  const selfEntry = resolveSelfPresenceFromPeers(peers, peerId, fallbackPlayerId, fallbackSessionId);
+  const self = selfEntry?.presence;
   if (!self) return fallback;
   if (self.isSpectator) return '';
   return game.players[self.seatIndex]?.id ?? fallback;
+}
+
+function resolveSelfPresenceFromPeers(
+  peers: Record<string, RoomPresence>,
+  peerId: string | null | undefined,
+  fallbackPlayerId = '',
+  fallbackSessionId = '',
+): { peerId: string; presence: RoomPresence } | null {
+  if (peerId && peers[peerId]) {
+    return { peerId, presence: peers[peerId] };
+  }
+
+  const exactIdentityMatch = fallbackPlayerId && fallbackSessionId
+    ? Object.entries(peers).find(([, presence]) => presence.playerId === fallbackPlayerId && presence.sessionId === fallbackSessionId)
+    : undefined;
+  if (exactIdentityMatch) {
+    const [matchedPeerId, presence] = exactIdentityMatch;
+    return { peerId: matchedPeerId, presence };
+  }
+
+  const playerOnlyMatch = fallbackPlayerId
+    ? Object.entries(peers).find(([, presence]) => presence.playerId === fallbackPlayerId)
+    : undefined;
+  if (playerOnlyMatch) {
+    const [matchedPeerId, presence] = playerOnlyMatch;
+    return { peerId: matchedPeerId, presence };
+  }
+
+  return null;
 }
 
 function normalizePresencePlayerCount(game: GameState, peers: Record<string, RoomPresence>): 2 | 3 | 4 | 5 | 6 {
@@ -877,6 +931,8 @@ export const useGameStore = create<GameStore>()((set, get) => ({
             multiplayer.peers,
             multiplayer.peerId,
             currentLocalPlayerId,
+            multiplayer.playerId ?? '',
+            multiplayer.sessionId ?? '',
           );
           if (syncedGame.status === 'playing') {
             console.debug('[multiplayer] joiner received GAME_STATE_PATCH with status playing', {
@@ -912,13 +968,28 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       (peers: Record<string, RoomPresence>) => {
         set(s => {
           const game = ensureGameHasSeatsForPresence(s.game, peers);
-          const self = s.multiplayer.peerId ? peers[s.multiplayer.peerId] : undefined;
-          const localPlayerId = resolveLocalPlayerIdFromPresence(game, peers, s.multiplayer.peerId, s.localPlayerId);
+          const selfEntry = resolveSelfPresenceFromPeers(
+            peers,
+            s.multiplayer.peerId,
+            s.multiplayer.playerId ?? '',
+            s.multiplayer.sessionId ?? '',
+          );
+          const self = selfEntry?.presence;
+          const resolvedPeerId = selfEntry?.peerId ?? s.multiplayer.peerId;
+          const localPlayerId = resolveLocalPlayerIdFromPresence(
+            game,
+            peers,
+            resolvedPeerId,
+            s.localPlayerId,
+            s.multiplayer.playerId ?? '',
+            s.multiplayer.sessionId ?? '',
+          );
           return {
             game,
             localPlayerId,
             multiplayer: {
               ...s.multiplayer,
+              peerId: resolvedPeerId,
               peers,
               isSpectator: self?.isSpectator ?? s.multiplayer.isSpectator,
             },
@@ -951,6 +1022,8 @@ export const useGameStore = create<GameStore>()((set, get) => ({
           get().multiplayer.peers,
           get().multiplayer.peerId,
           get().localPlayerId,
+          get().multiplayer.playerId ?? '',
+          get().multiplayer.sessionId ?? '',
         );
         console.debug('[multiplayer] joiner applying game screen', {
           commitId: commit.id,
@@ -1018,8 +1091,8 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
   createMultiplayerRoom: async (hostName, hostColor, seatIndex, avatar, asSpectator = false) => {
     const { game, decks } = get();
-    const identityPlayerId = getOrCreateStablePlayerId();
     const sessionId = createSessionId();
+    const identityPlayerId = getOrCreateStablePlayerId();
     const peerId = `pending-host-${crypto.randomUUID()}`;
     const assignedSeatIndex = asSpectator ? -1 : Math.max(0, seatIndex);
     const localGamePlayerId = game.players[assignedSeatIndex]?.id ?? '';
@@ -1055,8 +1128,8 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   joinMultiplayerRoom: async (code, peerName, peerColor, seatIndex, avatar, asSpectator = false) => {
-    const identityPlayerId = getOrCreateStablePlayerId();
     const sessionId = createSessionId();
+    const identityPlayerId = getOrCreateStablePlayerId();
     const peerId = `pending-join-${crypto.randomUUID()}`;
     const requestedSeatIndex = asSpectator ? -1 : Math.max(0, seatIndex);
     const current = get();
@@ -1077,8 +1150,10 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     // P2P: joinRoom returns null game — joiner keeps existing local state
     // until host broadcasts the authoritative state on next game action.
     const currentGame = get().game;
+    const selfEntry = resolveSelfPresenceFromPeers(joinedPeers, joinedPeerId, identityPlayerId, sessionId);
+    const resolvedPeerId = selfEntry?.peerId ?? joinedPeerId;
+    const self = selfEntry?.presence;
     const resolvedGame = ensureGameHasSeatsForPresence(remoteGame ?? currentGame, joinedPeers);
-    const self = joinedPeers[joinedPeerId];
     const localSeatIndex = self && !self.isSpectator ? self.seatIndex : assignedSeatIndex;
     // Spectators get no local player id — they observe only
     const localGamePlayerId = (self?.isSpectator ?? isSpectator)
@@ -1091,7 +1166,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         ...s.multiplayer,
         status: 'joined',
         roomCode: code.toUpperCase(),
-        peerId: joinedPeerId,
+        peerId: resolvedPeerId,
         playerId: identityPlayerId,
         sessionId,
         peers: joinedPeers,
@@ -1121,7 +1196,13 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
   updateMultiplayerPresence: (fields) => {
     const current = get();
-    const peerId = current.multiplayer.peerId;
+    const selfEntry = resolveSelfPresenceFromPeers(
+      current.multiplayer.peers,
+      current.multiplayer.peerId,
+      current.multiplayer.playerId ?? '',
+      current.multiplayer.sessionId ?? '',
+    );
+    const peerId = selfEntry?.peerId ?? current.multiplayer.peerId;
     const existing = peerId ? current.multiplayer.peers[peerId] : undefined;
     const nextSeatIndex = fields.isSpectator ? -1 : (fields.seatIndex ?? existing?.seatIndex ?? -1);
     const nextLocalPlayerId = fields.isSpectator
@@ -1151,6 +1232,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         localPlayerId,
         multiplayer: {
           ...s.multiplayer,
+          peerId: peerId ?? s.multiplayer.peerId,
           isSpectator: nextSelf.isSpectator,
           peers: {
             ...s.multiplayer.peers,
@@ -1167,7 +1249,13 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const accepted = setLocalPlayerReady(ready);
     if (!accepted) return;
     set(s => {
-      const peerId = s.multiplayer.peerId;
+      const selfEntry = resolveSelfPresenceFromPeers(
+        s.multiplayer.peers,
+        s.multiplayer.peerId,
+        s.multiplayer.playerId ?? '',
+        s.multiplayer.sessionId ?? '',
+      );
+      const peerId = selfEntry?.peerId ?? s.multiplayer.peerId;
       const self = peerId ? s.multiplayer.peers[peerId] : undefined;
       if (!peerId || !self) return s;
       const authoritativeStatus = s.multiplayer.lobby?.submittedDecks?.[self.playerId]?.status;
@@ -1429,7 +1517,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const deadlineAt = now + START_GAME_ACK_TIMEOUT_MS;
     const lobby = state.multiplayer.lobby;
     if (lobby) {
-      const eligibility = canHostStartFromLobby(lobby);
+      const eligibility = canHostStartFromLobby(lobby, { requirePlayerReady: false });
       if (!eligibility.canStart) return;
     }
 
@@ -1481,26 +1569,29 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const state = get();
     if (state.multiplayer.status !== 'joined' || !state.multiplayer.peerId) return;
 
-    const self = state.multiplayer.peers[state.multiplayer.peerId];
+    const selfEntry = resolveSelfPresenceFromPeers(
+      state.multiplayer.peers,
+      state.multiplayer.peerId,
+      state.multiplayer.playerId ?? '',
+      state.multiplayer.sessionId ?? '',
+    );
+    const self = selfEntry?.presence;
+    const resolvedPeerId = selfEntry?.peerId ?? state.multiplayer.peerId;
     const seatIndex = self?.seatIndex ?? -1;
     const pendingGame = ensureGameHasSeatsForPresence(state.game, state.multiplayer.peers);
-    const seatPlayer = seatIndex >= 0 ? pendingGame.players[seatIndex] : undefined;
-    const preparePlayer = self?.playerId
-      ? prepare.playerList.find(player => player.playerId === self.playerId)
-      : undefined;
     const authoritativeDeck = self?.playerId
       ? state.multiplayer.lobby?.submittedDecks?.[self.playerId]
       : undefined;
-    const expectedDeckHash = preparePlayer?.deckHash ?? (self?.playerId ? prepare.deckHashes[self.playerId] : undefined);
-    const actualDeckHash = authoritativeDeck?.deckHash ?? self?.deck?.deckHash;
-    const authoritativeDeckValid = authoritativeDeck?.status === 'valid';
-    const ready = Boolean(
-      self?.isSpectator ||
-      (authoritativeDeckValid && preparePlayer && actualDeckHash && actualDeckHash === expectedDeckHash)
+    const expectedDeckHash = authoritativeDeck?.deckHash;
+    const actualDeckHash = self?.deck?.deckHash;
+    const canVote = Boolean(
+      self?.isSpectator === false &&
+      self?.seatIndex >= 0 &&
+      expectedDeckHash &&
+      actualDeckHash === expectedDeckHash &&
+      authoritativeDeck?.status === 'valid' &&
+      state.game.players[seatIndex]
     );
-    const reason = ready
-      ? undefined
-      : `Automatic start check failed: deck status ${authoritativeDeck?.status ?? self?.deckStatus ?? 'none'}, deck hash ${actualDeckHash ? 'present' : 'missing'}.`;
 
     set(s => ({
       multiplayer: {
@@ -1509,10 +1600,8 @@ export const useGameStore = create<GameStore>()((set, get) => ({
           id: prepare.id,
           status: 'preparing',
           requiredPeerIds: prepare.requiredPeerIds,
-          ackedPeerIds: ready ? [state.multiplayer.peerId!] : [],
-          missingPeerIds: ready
-            ? prepare.requiredPeerIds.filter(peerId => peerId !== state.multiplayer.peerId)
-            : prepare.requiredPeerIds,
+          ackedPeerIds: [],
+          missingPeerIds: prepare.requiredPeerIds,
           startedAt: prepare.createdAt,
           deadlineAt: prepare.deadlineAt,
           pendingGame,
@@ -1520,17 +1609,90 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       },
     }));
 
+    if (canVote) {
+      console.debug('[multiplayer] joiner ready to vote start', {
+        id: prepare.id,
+        playerId: self?.playerId,
+        peerId: resolvedPeerId,
+      });
+    } else {
+      console.debug('[multiplayer] joiner waiting for start vote', {
+        id: prepare.id,
+        playerId: self?.playerId,
+        deckStatus: authoritativeDeck?.status ?? self?.deckStatus,
+      });
+    }
+  },
+
+  voteToStartMultiplayerGame: () => {
+    const state = get();
+    const handshake = state.multiplayer.startHandshake;
+    if (!handshake || state.multiplayer.status !== 'joined' || !state.multiplayer.peerId) return;
+
+    const selfEntry = resolveSelfPresenceFromPeers(
+      state.multiplayer.peers,
+      state.multiplayer.peerId,
+      state.multiplayer.playerId ?? '',
+      state.multiplayer.sessionId ?? '',
+    );
+    const self = selfEntry?.presence;
+    if (!self || self.isSpectator || self.seatIndex < 0 || !handshake.id) return;
+
+    const requiredPeerIds = handshake.requiredPeerIds;
+    if (requiredPeerIds.length === 0) return;
+    if (!requiredPeerIds.includes(selfEntry?.peerId ?? state.multiplayer.peerId)) {
+      return;
+    }
+
+    const authoritativeDeck = self.playerId
+      ? state.multiplayer.lobby?.submittedDecks?.[self.playerId]
+      : undefined;
+    const actualDeckHash = self.deck?.deckHash;
+    const expectedDeckHash = authoritativeDeck?.deckHash;
+    const seatPlayer = self.seatIndex >= 0 ? state.game.players[self.seatIndex] : undefined;
+    const ready = Boolean(
+      authoritativeDeck?.status === 'valid' &&
+      seatPlayer &&
+      expectedDeckHash &&
+      actualDeckHash &&
+      actualDeckHash === expectedDeckHash
+    );
+    const deckId = seatPlayer?.deckId ?? authoritativeDeck?.deckId ?? self.deck?.id;
+
+    if (!ready) return;
+    get().setMultiplayerReady(true);
+
+    set(s => {
+      const active = s.multiplayer.startHandshake;
+      if (!active || active.id !== handshake.id) return s;
+      const selfPeerId = selfEntry?.peerId ?? s.multiplayer.peerId;
+      const nextAcked = new Set(active.ackedPeerIds);
+      nextAcked.add(selfPeerId);
+      const nextMissing = active.requiredPeerIds.filter(peerId => !nextAcked.has(peerId));
+      return {
+        multiplayer: {
+          ...s.multiplayer,
+          startHandshake: {
+            ...active,
+            status: nextMissing.length === 0 ? 'committing' : 'waiting',
+            ackedPeerIds: [...nextAcked],
+            missingPeerIds: nextMissing,
+          },
+        },
+      };
+    });
+
     sendStartGameAck({
-      id: prepare.id,
-      gameId: prepare.gameId,
-      playerId: self?.playerId ?? state.multiplayer.playerId ?? '',
-      peerId: state.multiplayer.peerId,
+      id: handshake.id,
+      gameId: undefined,
+      playerId: self.playerId,
+      peerId: selfEntry?.peerId ?? state.multiplayer.peerId,
       sessionId: state.multiplayer.sessionId ?? undefined,
-      seatIndex,
-      deckId: preparePlayer?.deckId ?? seatPlayer?.deckId,
+      seatIndex: self.seatIndex,
+      deckId,
       deckHash: actualDeckHash,
       ready,
-      reason,
+      reason: undefined,
       receivedAt: Date.now(),
     });
   },
@@ -1541,9 +1703,11 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     if (!handshake || handshake.id !== ack.id || current.multiplayer.status !== 'host') return;
 
     const acked = new Set(handshake.ackedPeerIds);
-    const peerPresence = current.multiplayer.peers[ack.peerId];
+    const peerPresence = current.multiplayer.peers[ack.peerId]
+      ?? Object.values(current.multiplayer.peers).find(presence => presence.playerId === ack.playerId);
+    const peerId = peerPresence?.peerId ?? ack.peerId;
     const expectedDeckHash = peerPresence?.playerId ? current.multiplayer.lobby?.submittedDecks[peerPresence.playerId]?.deckHash : undefined;
-    if (ack.ready && ack.playerId === peerPresence?.playerId && (!expectedDeckHash || ack.deckHash === expectedDeckHash)) acked.add(ack.peerId);
+    if (ack.ready && ack.playerId === peerPresence?.playerId && (!expectedDeckHash || ack.deckHash === expectedDeckHash)) acked.add(peerId);
     const missingPeerIds = handshake.requiredPeerIds.filter(peerId => !acked.has(peerId));
 
     set(s => ({
@@ -1759,7 +1923,10 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     let g = get().game;
     const card = g.cards[instanceId];
     if (!card) return;
-    if (!canLocalControlCard(get(), card)) return;
+    const canOfflineDirectMove = get().multiplayer.status === 'disconnected'
+      && toController != null
+      && findCardOwner(g, card) === toController;
+    if (!canLocalControlCard(get(), card) && !canOfflineDirectMove) return;
     if (isPrivateZone(toZone) && toController && !canLocalControlPlayer(get(), toController)) return;
     g = moveCard(g, instanceId, toZone, toController);
     const action = createAction(g, g.activePlayerId, 'MOVE_CARD',
@@ -1818,6 +1985,130 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     set({ game: { ...g, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
   },
 
+  setManaPool: (playerId, mana) => {
+    if (!canLocalControlPlayer(get(), playerId)) return;
+    let g = get().game;
+    const player = g.players.find(p => p.id === playerId);
+    if (!player) return;
+    g = setManaPool(g, playerId, mana);
+    const action = createAction(
+      g,
+      playerId,
+      'ADD_MANA',
+      `Set ${player.name}'s mana pool to ${formatManaPool(g.players.find(p => p.id === playerId)?.manaPool ?? {})}`
+    );
+    set({ game: { ...g, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
+  },
+
+  addManaToPool: (playerId, mana) => {
+    if (!canLocalControlPlayer(get(), playerId)) return;
+    let g = get().game;
+    const player = g.players.find(p => p.id === playerId);
+    if (!player) return;
+    g = addManaToPool(g, playerId, mana);
+    const action = createAction(
+      g,
+      playerId,
+      'ADD_MANA',
+      `Added ${formatManaPool(mana)} to ${player.name}'s mana pool`,
+      [],
+      { mana }
+    );
+    set({ game: { ...g, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
+  },
+
+  spendManaFromPool: (playerId, mana) => {
+    if (!canLocalControlPlayer(get(), playerId)) return;
+    let g = get().game;
+    const player = g.players.find(p => p.id === playerId);
+    if (!player) return;
+    const requested = {
+      W: Math.floor(Number(mana.W ?? 0)),
+      U: Math.floor(Number(mana.U ?? 0)),
+      B: Math.floor(Number(mana.B ?? 0)),
+      R: Math.floor(Number(mana.R ?? 0)),
+      G: Math.floor(Number(mana.G ?? 0)),
+      C: Math.floor(Number(mana.C ?? 0)),
+      generic: Math.floor(Number(mana.generic ?? 0)),
+    };
+    const nextMana = {
+      W: Math.max(0, player.manaPool.W - requested.W),
+      U: Math.max(0, player.manaPool.U - requested.U),
+      B: Math.max(0, player.manaPool.B - requested.B),
+      R: Math.max(0, player.manaPool.R - requested.R),
+      G: Math.max(0, player.manaPool.G - requested.G),
+      C: Math.max(0, player.manaPool.C - requested.C),
+      generic: Math.max(0, player.manaPool.generic - requested.generic),
+    };
+    g = setManaPool(g, playerId, nextMana);
+    const action = createAction(
+      g,
+      playerId,
+      'SPEND_MANA',
+      `Spent ${formatManaPool(requested)} from ${player.name}'s mana pool`,
+      [],
+      { mana: requested }
+    );
+    set({ game: { ...g, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
+  },
+
+  clearManaPool: (playerId) => {
+    if (!canLocalControlPlayer(get(), playerId)) return;
+    let g = get().game;
+    const player = g.players.find(p => p.id === playerId);
+    if (!player) return;
+    g = clearManaPool(g, playerId);
+    const action = createAction(g, playerId, 'CLEAR_MANA', `Cleared ${player.name}'s mana pool`);
+    set({ game: { ...g, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
+  },
+
+  takeMulligan: (playerId) => {
+    if (!canLocalControlPlayer(get(), playerId)) return;
+    const g = get().game;
+    const player = g.players.find(p => p.id === playerId);
+    if (!player) return;
+    const next = takeMulligan(g, playerId);
+    const action = createAction(next, playerId, 'MULLIGAN', `${player.name} took a mulligan`);
+    set({ game: { ...next, actionLog: [...next.actionLog, action], lastUpdatedAt: Date.now() } });
+  },
+
+  tutorCard: (playerId, instanceId, fromZone = 'library') => {
+    if (!canLocalControlPlayer(get(), playerId)) return;
+    const g = get().game;
+    const card = g.cards[instanceId];
+    if (!card) return;
+    const before = card.zone;
+    const next = tutorCardFromEngine(g, playerId, instanceId, fromZone);
+    if (!next.cards[instanceId] || next.cards[instanceId].zone !== 'hand') return;
+    const action = createAction(
+      next,
+      playerId,
+      'TUTOR',
+      `Tutored ${card.definition.name} from ${before} to hand`,
+      [instanceId],
+      { fromZone }
+    );
+    set({ game: { ...next, actionLog: [...next.actionLog, action], lastUpdatedAt: Date.now() } });
+  },
+
+  removeAllCountersFromCard: (instanceId, counterType) => {
+    let g = get().game;
+    const card = g.cards[instanceId];
+    if (!card || !canLocalControlCard(get(), card)) return;
+    if (!counterType && card.counters.length === 0) return;
+    if (counterType && !card.counters.some(counter => counter.type === counterType)) return;
+
+    g = removeAllCountersFromCard(g, instanceId, counterType);
+    const action = createAction(g, card.controllerId, 'REMOVE_ALL_COUNTERS',
+      counterType
+        ? `Removed all ${counterType} counters from ${card.definition.name}`
+        : `Removed all counters from ${card.definition.name}`,
+      [instanceId],
+      { counterType }
+    );
+    set({ game: { ...g, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
+  },
+
   tapAllLands: (playerId) => {
     if (!canLocalControlPlayer(get(), playerId)) return;
     let g = get().game;
@@ -1859,7 +2150,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     if (!card) return;
     g = removeCounter(g, instanceId, counterType, amount);
     const action = createAction(g, card.controllerId, 'REMOVE_COUNTER',
-      `Removed ${counterType} from ${card.definition.name}`, [instanceId]);
+      `Removed ${amount} ${counterType} counter(s) from ${card.definition.name}`, [instanceId]);
     set({ game: { ...g, actionLog: [...g.actionLog, action] } });
   },
 
@@ -2837,25 +3128,25 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   proliferate: (controllerId, choices) => {
-    const game = get().game;
-    const chosenCardIds = choices?.cardIds ?? Object.values(game.cards)
+    let updatedGame = get().game;
+    const chosenCardIds = choices?.cardIds ?? Object.values(updatedGame.cards)
       .filter(card => card.zone === 'battlefield' && cardHasCounters(card))
       .map(card => card.instanceId);
-    const chosenPlayerIds = choices?.playerIds ?? game.players
+    const chosenPlayerIds = choices?.playerIds ?? updatedGame.players
       .filter(playerHasCounters)
       .map(player => player.id);
     const cardSet = new Set(chosenCardIds);
     const playerSet = new Set(chosenPlayerIds);
-    const cards = { ...game.cards };
     for (const id of cardSet) {
-      const card = cards[id];
+      const card = updatedGame.cards[id];
       if (!card || card.zone !== 'battlefield' || !cardHasCounters(card)) continue;
-      cards[id] = {
-        ...card,
-        counters: card.counters.map(counter => counter.count > 0 ? { ...counter, count: counter.count + 1 } : counter),
-      };
+      for (const counter of card.counters) {
+        if (counter.count > 0) {
+          updatedGame = addCounter(updatedGame, id, counter.type, 1);
+        }
+      }
     }
-    const players = game.players.map(player => {
+    const players = updatedGame.players.map(player => {
       if (!playerSet.has(player.id) || !playerHasCounters(player)) return player;
       return {
         ...player,
@@ -2865,19 +3156,19 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       };
     });
     const affected = [
-      ...chosenCardIds.filter(id => cards[id] && cardHasCounters(cards[id])),
+      ...chosenCardIds.filter(id => updatedGame.cards[id] && cardHasCounters(updatedGame.cards[id])),
       ...chosenPlayerIds.filter(id => {
-        const player = game.players.find(p => p.id === id);
+        const player = updatedGame.players.find(p => p.id === id);
         return Boolean(player && playerHasCounters(player));
       }),
     ];
-    const action = createAction(game, controllerId, 'PROLIFERATE',
+    const action = createAction(updatedGame, controllerId, 'PROLIFERATE',
       `Proliferated ${affected.length} object${affected.length === 1 ? '' : 's'}`, affected, {
         cardIds: chosenCardIds,
         playerIds: chosenPlayerIds,
         ruleRef: 'CR 701.34a',
       });
-    set({ game: { ...game, cards, players, actionLog: [...game.actionLog, action], lastUpdatedAt: Date.now() } });
+    set({ game: { ...updatedGame, players, actionLog: [...updatedGame.actionLog, action], lastUpdatedAt: Date.now() } });
   },
 
   cycleCard: (playerId, instanceId) => {

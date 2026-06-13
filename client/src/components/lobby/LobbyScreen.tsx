@@ -173,6 +173,7 @@ export function LobbyScreen() {
       savedDecks,
       minimumPlayers: minimumTablePlayers,
       requireLoadedGameDecks: isTableHost,
+      requirePlayerReadiness: false,
       stabilizationMs: isTableHost ? TABLE_START_STABILIZATION_MS : 0,
       now: readinessNow,
       lastGameUpdateAt: store.game.lastUpdatedAt,
