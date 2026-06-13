@@ -32,6 +32,19 @@
 import Peer, { type DataConnection } from 'peerjs';
 import type { CardState, GameState, Player, PlayerAvatarImage } from '../types/game';
 import {
+  isFirebaseRecoveryConfigured,
+  listenFirebaseResyncRequests,
+  listenFirebaseRoomControl,
+  loadFirebaseRecoverySnapshot,
+  markFirebaseResyncHandled,
+  patchFirebaseRoomControl,
+  writeFirebasePresence,
+  writeFirebaseResyncRequest,
+  writeFirebaseRoomControl,
+  writeFirebaseStartSnapshot,
+} from './firebaseSync';
+import type { FirebasePresenceRole, FirebaseResyncReason, FirebaseRoomControl } from '../types/firebaseMultiplayer';
+import {
   MULTIPLAYER_PROTOCOL_VERSION,
   canHostStartFromLobby,
   createDeckSubmission,
@@ -237,6 +250,10 @@ let _firebaseLastPollAt = 0;
 let _firebaseLastSnapshotAt = 0;
 let _firebasePollDelayMs = FIREBASE_POLL_MS;
 let _firebasePollInFlight = false;
+let _firebaseRecoveryPresenceCleanup: (() => void) | null = null;
+let _firebaseControlUnsubscribe: (() => void) | null = null;
+let _firebaseResyncUnsubscribe: (() => void) | null = null;
+let _firebaseStartSeq = 0;
 
 // Host-side: map of peerId → DataConnection for each joiner
 const _connections: Map<string, DataConnection> = new Map();
@@ -534,6 +551,15 @@ function cleanupAllConnections(): void {
   _pendingStateMessages.clear();
   _bufferDrainHandlers.clear();
   _connectionHealthHandlers.clear();
+}
+
+function stopFirebaseRecoveryLayer(): void {
+  _firebaseRecoveryPresenceCleanup?.();
+  _firebaseRecoveryPresenceCleanup = null;
+  _firebaseControlUnsubscribe?.();
+  _firebaseControlUnsubscribe = null;
+  _firebaseResyncUnsubscribe?.();
+  _firebaseResyncUnsubscribe = null;
 }
 
 function getEnvValue(name: string): string | undefined {
@@ -892,6 +918,100 @@ async function writeFirebaseMessage(message: SyncMessage): Promise<void> {
     updatedAt: Date.now(),
     message: envelope,
   });
+}
+
+function firebasePresenceRole(presence: RoomPresence): FirebasePresenceRole {
+  if (presence.isHostPeer) return 'host';
+  return presence.isSpectator ? 'spectator' : 'player';
+}
+
+function startFirebasePresence(roomCode: string, presence: RoomPresence, connectionState: 'connected' | 'connecting' | 'reconnecting' = 'connected'): void {
+  if (!isFirebaseRecoveryConfigured()) return;
+  _firebaseRecoveryPresenceCleanup?.();
+  void writeFirebasePresence(roomCode, {
+    playerId: presence.playerId,
+    peerId: presence.peerId,
+    displayName: presence.name,
+    seatIndex: presence.seatIndex,
+    role: firebasePresenceRole(presence),
+    connectionState,
+  }).then(cleanup => {
+    _firebaseRecoveryPresenceCleanup = cleanup;
+  });
+}
+
+function writeFirebaseLobbyControl(status: FirebaseRoomControl['status']): void {
+  if (!isFirebaseRecoveryConfigured() || !_roomCode) return;
+  void writeFirebaseRoomControl({
+    roomCode: _roomCode,
+    roomId: _roomCode,
+    hostPeerId: [..._peers.values()].find(presence => presence.isHostPeer)?.peerId ?? _peerId ?? '',
+    status,
+    startSeq: _firebaseStartSeq,
+    gameId: _latestGame?.id,
+    latestSnapshotId: undefined,
+    updatedAt: Date.now(),
+  });
+}
+
+async function writeFirebasePlayingRecoverySnapshot(game: GameState): Promise<void> {
+  if (!isFirebaseRecoveryConfigured() || !_roomCode) return;
+  const hostPeerId = [..._peers.values()].find(presence => presence.isHostPeer)?.peerId ?? _peerId ?? '';
+  _firebaseStartSeq += 1;
+  const privateAliases = Object.fromEntries(
+    [..._peers.values()]
+      .filter(presence => !presence.isSpectator && presence.seatIndex >= 0 && game.players[presence.seatIndex])
+      .map(presence => [presence.playerId, game.players[presence.seatIndex].id]),
+  );
+  await writeFirebaseStartSnapshot(_roomCode, { ...game, status: 'playing' }, hostPeerId, _firebaseStartSeq, privateAliases);
+}
+
+function resolveFirebaseSnapshotPlayerId(): string | null {
+  if (!_peerId || !_playerId) return null;
+  return _playerId;
+}
+
+async function loadFirebasePlayingSnapshotForSelf(control: FirebaseRoomControl, reason: FirebaseResyncReason): Promise<void> {
+  if (_isHost || !_roomCode || !control.latestSnapshotId) return;
+  if (_latestGame?.status === 'playing') return;
+  const playerId = resolveFirebaseSnapshotPlayerId();
+  if (!playerId) {
+    requestFirebaseRecoveryResync(reason);
+    return;
+  }
+  const privateSnapshot = await loadFirebaseRecoverySnapshot(_roomCode, control.latestSnapshotId, playerId);
+  if (!privateSnapshot?.sanitizedGame) {
+    requestFirebaseRecoveryResync(reason);
+    return;
+  }
+  _latestGame = { ...privateSnapshot.sanitizedGame, status: 'playing' };
+  _onGameUpdate?.(_latestGame);
+}
+
+function startFirebaseControlListener(roomCode: string): void {
+  if (!isFirebaseRecoveryConfigured()) return;
+  _firebaseControlUnsubscribe?.();
+  _firebaseControlUnsubscribe = listenFirebaseRoomControl(roomCode, control => {
+    if (!control) return;
+    if (!_isHost && control.status === 'playing' && _latestGame?.status !== 'playing') {
+      void loadFirebasePlayingSnapshotForSelf(control, 'missed-peerjs-patch');
+    }
+  });
+}
+
+function startFirebaseHostResyncListener(roomCode: string): void {
+  if (!isFirebaseRecoveryConfigured() || !_isHost) return;
+  _firebaseResyncUnsubscribe?.();
+  _firebaseResyncUnsubscribe = listenFirebaseResyncRequests(roomCode, request => {
+    if (!_latestGame || _latestGame.status !== 'playing') return;
+    void writeFirebasePlayingRecoverySnapshot(_latestGame)
+      .then(() => markFirebaseResyncHandled(roomCode, request.requestId));
+  });
+}
+
+function requestFirebaseRecoveryResync(reason: FirebaseResyncReason): void {
+  if (!isFirebaseRecoveryConfigured() || !_roomCode || !_playerId || !_peerId || _isHost) return;
+  void writeFirebaseResyncRequest(_roomCode, _playerId, _peerId, reason);
 }
 
 function applyFirebasePeers(peers: Record<string, RoomPresence>): void {
@@ -1621,6 +1741,16 @@ function sendDeckSubmissionToHost(submission: DeckSubmission): void {
 
 export function requestGameStatePatch(reason = 'manual-resync'): boolean {
   if (_isHost || !_playerId || !_peerId) return false;
+  const firebaseReason: FirebaseResyncReason = reason === 'manual-sync' || reason === 'lobby-fallback-button'
+    ? 'manual-sync'
+    : reason === 'chunk-timeout'
+      ? 'chunk-timeout'
+      : reason === 'joined-late'
+        ? 'joined-late'
+        : reason === 'reconnect'
+          ? 'reconnect'
+          : 'missed-peerjs-patch';
+  requestFirebaseRecoveryResync(firebaseReason);
   const msg: SyncMessage = {
     type: 'GAME_STATE_PATCH_REQUEST',
     payload: { reason, sentAt: Date.now() },
@@ -2055,6 +2185,12 @@ export async function createRoom(
       setStatus('host');
       broadcastPresence();
       broadcastLobbyState();
+      const selfPresence = _peerId ? _peers.get(_peerId) : undefined;
+      if (selfPresence && _roomCode) {
+        startFirebasePresence(_roomCode, selfPresence);
+        writeFirebaseLobbyControl('lobby');
+        startFirebaseHostResyncListener(_roomCode);
+      }
       _startHeartbeat();
       resolve(code);
     });
@@ -2100,6 +2236,12 @@ export async function createRoom(
           upsertPresenceFromPeer(presence, assignment);
           broadcastPresence();
           broadcastLobbyState();
+          if (_roomCode) {
+            const assignedPresence = _peers.get(conn.peer);
+            if (assignedPresence && isFirebaseRecoveryConfigured()) {
+              void patchFirebaseRoomControl(_roomCode, { updatedAt: Date.now() });
+            }
+          }
           sendSanitizedGamePatch(conn);
         }
         if (msg.type === 'LEAVE_ROOM') {
@@ -2280,6 +2422,10 @@ export async function joinRoom(
           if ((conn as any)._joinResolved !== true) {
             (conn as any)._joinResolved = true;
             setStatus('joined');
+            if (_roomCode) {
+              startFirebasePresence(_roomCode, { ...myEntry, online: true, lastSeen: Date.now() });
+              startFirebaseControlListener(_roomCode);
+            }
             _startHeartbeat();
             resolve({
               game: receivedGame,
@@ -2484,7 +2630,10 @@ function receiveGameStatePatchChunk(payload: GameStatePatchChunkPayload): GameSt
 
   const now = Date.now();
   for (const [chunkId, entry] of _incomingPatchChunks) {
-    if (now - entry.receivedAt > 60_000) _incomingPatchChunks.delete(chunkId);
+    if (now - entry.receivedAt > 60_000) {
+      _incomingPatchChunks.delete(chunkId);
+      requestFirebaseRecoveryResync('chunk-timeout');
+    }
   }
 
   const entry = _incomingPatchChunks.get(payload.chunkId) ?? {
@@ -2549,6 +2698,7 @@ export function sendStartGameCommit(commit: StartGameCommit): void {
     game: playingGame,
   };
   _latestGame = playingGame;
+  if (_isHost) void writeFirebasePlayingRecoverySnapshot(playingGame);
   if (_transportMode === 'firebase') {
     if (_isHost) {
       broadcastLobbyState('playing');
@@ -2809,6 +2959,7 @@ export function requestHostMigrationBeforeLeave(): boolean {
 
 export function leaveRoom(notifyHost = true): void {
   _stopHeartbeat();
+  stopFirebaseRecoveryLayer();
   stopFirebasePolling();
   if (_migrationTimer) { clearTimeout(_migrationTimer); _migrationTimer = null; }
   clearDeckSubmissionFallback();
