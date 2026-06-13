@@ -26,7 +26,10 @@ export function ZoneDrawer() {
     ui.judgeMode,
   );
   const isScopedLibrary = zone === 'library' && mode !== 'normal' && typeof limit === 'number';
-  const canViewPrivate = (!privateView || !viewerId || viewerId === localPlayerId) && (!isPrivateZone(zone) || canControlZone);
+  const canViewPrivate = ui.judgeMode || (
+    (!privateView || !viewerId || viewerId === localPlayerId) &&
+    (!isPrivateZone(zone) || canControlZone)
+  );
 
   // Get cards for the zone
   const allZoneCardIds = zone === 'graveyard' ? player.graveyard

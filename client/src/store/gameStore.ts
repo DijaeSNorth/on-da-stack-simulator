@@ -259,6 +259,11 @@ function canLocalControlCard(state: GameStore, card: CardState | undefined): boo
   return canLocalControlPlayer(state, findCardOwner(state.game, card) ?? card.controllerId);
 }
 
+function canLocalAccessPrivateCardOwner(state: GameStore, card: CardState | undefined): boolean {
+  if (!card || !isPrivateZone(card.zone)) return true;
+  return canLocalControlPlayer(state, findCardOwner(state.game, card) ?? card.controllerId);
+}
+
 const DEFAULT_UI: UIState = {
   screen: 'lobby',
   selectedCardId: null,
@@ -833,14 +838,6 @@ function resolveSelfPresenceFromPeers(
     : undefined;
   if (exactIdentityMatch) {
     const [matchedPeerId, presence] = exactIdentityMatch;
-    return { peerId: matchedPeerId, presence };
-  }
-
-  const playerOnlyMatch = fallbackPlayerId
-    ? Object.entries(peers).find(([, presence]) => presence.playerId === fallbackPlayerId)
-    : undefined;
-  if (playerOnlyMatch) {
-    const [matchedPeerId, presence] = playerOnlyMatch;
     return { peerId: matchedPeerId, presence };
   }
 
@@ -1792,10 +1789,11 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   castCard: (castingPlayerId, cardInstanceId, targets) => {
     if (!canLocalControlPlayer(get(), castingPlayerId)) return;
     let g = get().game;
-    const check = checkCastLegality(g, castingPlayerId, cardInstanceId);
-    const flags = filterAssistantFlags(check.flags, get().ui);
     const card = g.cards[cardInstanceId];
     if (!card) return;
+    if (!canLocalAccessPrivateCardOwner(get(), card)) return;
+    const check = checkCastLegality(g, castingPlayerId, cardInstanceId);
+    const flags = filterAssistantFlags(check.flags, get().ui);
     if (!canLocalAccessCard(get(), card) || findCardOwner(g, card) !== castingPlayerId) return;
     const cardDef = getEffectiveCardDefinition(card);
     const spellNumberThisTurn = g.actionLog.filter(action =>
@@ -1911,6 +1909,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     let g = get().game;
     let card = g.cards[cardInstanceId];
     if (!card) return;
+    if (!canLocalAccessPrivateCardOwner(get(), card)) return;
     if (!canLocalAccessCard(get(), card) || findCardOwner(g, card) !== playerId) return;
     if (faceIndex !== undefined) {
       card = { ...card, transformed: faceIndex === 1 };
@@ -1930,11 +1929,14 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     let g = get().game;
     const card = g.cards[instanceId];
     if (!card) return;
+    if (!canLocalAccessPrivateCardOwner(get(), card)) return;
     const canOfflineDirectMove = get().multiplayer.status === 'disconnected'
       && toController != null
       && findCardOwner(g, card) === toController;
     if (!canLocalControlCard(get(), card) && !canOfflineDirectMove) return;
-    if (isPrivateZone(toZone) && toController && !canLocalControlPlayer(get(), toController)) return;
+    const ownerId = findCardOwner(g, card) ?? card.controllerId;
+    const targetController = toController ?? ownerId;
+    if (isPrivateZone(toZone) && !canLocalControlPlayer(get(), targetController)) return;
     g = moveCard(g, instanceId, toZone, toController);
     const action = createAction(g, g.activePlayerId, 'MOVE_CARD',
       `${card.definition.name} moved to ${toZone}`, [instanceId]);
@@ -3196,6 +3198,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     let g = get().game;
     const card = g.cards[instanceId];
     if (!card) return;
+    if (!canLocalAccessPrivateCardOwner(get(), card)) return;
     if (!canLocalAccessCard(get(), card)) return;
     if (!canLocalControlCard(get(), card)) return;
     if (isPrivateZone(card.zone) && findCardOwner(g, card) !== playerId) return;
@@ -3227,6 +3230,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     let g = get().game;
     const card = g.cards[instanceId];
     if (!card) return;
+    if (!canLocalAccessPrivateCardOwner(get(), card)) return;
     if (!canLocalAccessCard(get(), card)) return;
     if (!canLocalControlCard(get(), card)) return;
     g = { ...g, cards: { ...g.cards, [instanceId]: { ...g.cards[instanceId], controllerId: toControllerId } } };
