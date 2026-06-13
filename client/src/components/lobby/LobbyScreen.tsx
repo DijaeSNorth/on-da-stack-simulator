@@ -191,13 +191,12 @@ export function LobbyScreen() {
   const importInvalidReason = importPreparation && !importPreparation.valid
     ? importPreparation.errors.join(' ')
     : '';
-  const joinerCanEnterStartedGame = gameMode === 'table'
-    && isInTableRoom
+  const joinerIsInStartedRoom = ['joined', 'migrating'].includes(store.multiplayer.status);
+  const joinerCanEnterStartedGame = joinerIsInStartedRoom
     && !isTableHost
     && store.game.status === 'playing'
     && store.ui.screen === 'lobby';
-  const joinerNeedsGamePatch = gameMode === 'table'
-    && isInTableRoom
+  const joinerNeedsGamePatch = joinerIsInStartedRoom
     && !isTableHost
     && store.multiplayer.lobby?.status === 'playing'
     && store.game.status !== 'playing';
@@ -1268,7 +1267,7 @@ export function LobbyScreen() {
               <button
                 type="button"
                 data-testid="btn-sync-from-host"
-                onClick={() => store.requestMultiplayerGamePatch('lobby-playing-fallback-button')}
+                onClick={() => store.requestMultiplayerGamePatch('joiner-clicked-sync')}
                 style={{
                   width: '100%',
                   padding: '14px 0',
