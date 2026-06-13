@@ -6,6 +6,7 @@
 
 import { ensureGameHasSeatsForPresence, resolveLocalPlayerIdFromPresence, syncGamePlayerMetadataFromPresence, useGameStore } from '../client/src/store/gameStore';
 import { createCardState, createDefaultGameConfig, createEmptyGameState, createPlayer } from '../client/src/engine/gameEngine';
+import { canControlPlayer } from '../client/src/engine/playerPermissions';
 import type { CardDefinition, GameState } from '../client/src/types/game';
 import type { RoomPresence } from '../client/src/engine/multiplayerSync';
 
@@ -119,6 +120,11 @@ assert(
   'joiner deck loading must target the assigned seat 2 player before host has loaded a deck',
 );
 
+assert(canControlPlayer('p1', 'p2', 'host', true), 'judge mode should override player control checks');
+assert(!canControlPlayer('p1', 'p1', 'spectator', false), 'spectator should not control seated players');
+assert(canControlPlayer('p1', 'p1', 'host', false), 'player should control their own seat');
+assert(!canControlPlayer('p1', 'p2', 'host', false), 'player should not control another seat');
+
 const testDef: CardDefinition = {
   id: 'test-card',
   name: 'Test Creature',
@@ -134,6 +140,105 @@ const testDef: CardDefinition = {
   keywords: [],
   legalities: {},
 };
+
+function makePermissionGame(): GameState {
+  const game = makeGame();
+  const hostHand = createCardState(testDef, 'p1', 'hand');
+  const guestHand = createCardState(testDef, 'p2', 'hand');
+  const guestLibrary = createCardState(testDef, 'p2', 'library');
+  const guestPublic = createCardState(testDef, 'p2', 'graveyard');
+  return {
+    ...game,
+    status: 'playing',
+    cards: {
+      [hostHand.instanceId]: hostHand,
+      [guestHand.instanceId]: guestHand,
+      [guestLibrary.instanceId]: guestLibrary,
+      [guestPublic.instanceId]: guestPublic,
+    },
+    players: game.players.map(player => {
+      if (player.id === 'p1') return { ...player, hand: [hostHand.instanceId] };
+      if (player.id === 'p2') {
+        return {
+          ...player,
+          hand: [guestHand.instanceId],
+          library: [guestLibrary.instanceId],
+          graveyard: [guestPublic.instanceId],
+        };
+      }
+      return player;
+    }),
+  };
+}
+
+function setPermissionStore(localPlayerId: string, judgeMode = false): GameState {
+  const game = makePermissionGame();
+  useGameStore.setState(state => ({
+    ...state,
+    game,
+    localPlayerId,
+    multiplayer: {
+      ...state.multiplayer,
+      status: localPlayerId === 'p1' ? 'host' : 'joined',
+      roomCode: 'PERM01',
+      peerId: localPlayerId === 'p1' ? 'host' : 'peer-local',
+      isHost: localPlayerId === 'p1',
+      isSpectator: false,
+      peers: {
+        host: makePresence('host', 0),
+        'peer-local': makePresence('peer-local', 1),
+      },
+      configured: true,
+    },
+    ui: { ...state.ui, judgeMode, zoneDrawer: null, cardContextMenu: null },
+  }));
+  return game;
+}
+
+let permissionGame = setPermissionStore('p1');
+const guestHandId = permissionGame.players[1].hand[0];
+const guestLibraryId = permissionGame.players[1].library[0];
+const guestPublicId = permissionGame.players[1].graveyard[0];
+
+useGameStore.getState().openZoneDrawer('hand', 'p2');
+assert(useGameStore.getState().ui.zoneDrawer === null, 'host must not open non-host hand contents');
+useGameStore.getState().openZoneDrawer('library', 'p2');
+assert(useGameStore.getState().ui.zoneDrawer === null, 'host must not open non-host library contents');
+useGameStore.getState().openZoneDrawer('graveyard', 'p2');
+assert(useGameStore.getState().ui.zoneDrawer?.zone === 'graveyard', 'host can still view non-host public graveyard');
+
+useGameStore.getState().castCard('p2', guestHandId);
+let permissionState = useGameStore.getState();
+assert(permissionState.game.players[1].hand.includes(guestHandId), 'host must not cast non-host hand card');
+assert(permissionState.game.stack.length === 0, 'blocked non-host cast must not add stack objects');
+
+useGameStore.getState().moveCardToZone(guestLibraryId, 'battlefield', 'p1');
+permissionState = useGameStore.getState();
+assert(permissionState.game.players[1].library.includes(guestLibraryId), 'host must not move non-host library card');
+assert(!permissionState.game.players[0].battlefield.includes(guestLibraryId), 'host must not move non-host library card to host battlefield');
+
+permissionGame = setPermissionStore('p2');
+const ownHandId = permissionGame.players[1].hand[0];
+const ownLibraryId = permissionGame.players[1].library[0];
+useGameStore.getState().openZoneDrawer('library', 'p2');
+assert(useGameStore.getState().ui.zoneDrawer?.playerId === 'p2', 'non-host can open their own library');
+useGameStore.getState().drawCard('p2');
+permissionState = useGameStore.getState();
+assert(!permissionState.game.players[1].library.includes(ownLibraryId), 'non-host can draw from their own library');
+assert(permissionState.game.players[1].hand.includes(ownLibraryId), 'non-host draw moves own library card to hand');
+useGameStore.getState().castCard('p2', ownHandId);
+permissionState = useGameStore.getState();
+assert(!permissionState.game.players[1].hand.includes(ownHandId), 'non-host can cast their own hand card');
+assert(permissionState.game.stack.some(item => item.sourceInstanceId === ownHandId), 'non-host own cast adds stack object');
+
+permissionGame = setPermissionStore('p1', true);
+const judgeLibraryId = permissionGame.players[1].library[0];
+useGameStore.getState().openZoneDrawer('library', 'p2');
+assert(useGameStore.getState().ui.zoneDrawer?.playerId === 'p2', 'judge mode can open non-host library');
+useGameStore.getState().moveCardToZone(judgeLibraryId, 'battlefield', 'p1');
+permissionState = useGameStore.getState();
+assert(permissionState.game.players[0].battlefield.includes(judgeLibraryId), 'judge mode can move non-host private card for sandbox testing');
+
 const loadedGame = makeGame();
 const card = createCardState(testDef, 'p2', 'library');
 useGameStore.setState(state => ({

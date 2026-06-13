@@ -259,9 +259,32 @@ function canLocalControlCard(state: GameStore, card: CardState | undefined): boo
   return canLocalControlPlayer(state, findCardOwner(state.game, card) ?? card.controllerId);
 }
 
-function canLocalAccessPrivateCardOwner(state: GameStore, card: CardState | undefined): boolean {
-  if (!card || !isPrivateZone(card.zone)) return true;
-  return canLocalControlPlayer(state, findCardOwner(state.game, card) ?? card.controllerId);
+function warnBlockedPrivateZoneAction(
+  action: string,
+  data: { card?: CardState; ownerId?: string | null; targetPlayerId?: string | null; zone?: CardState['zone'] },
+): void {
+  if (import.meta.env?.DEV !== true) return;
+  console.warn('[permissions] blocked private-zone action', {
+    action,
+    zone: data.zone ?? data.card?.zone,
+    ownerId: data.ownerId ?? (data.card ? findCardOwner(useGameStore.getState().game, data.card) : null),
+    targetPlayerId: data.targetPlayerId,
+  });
+}
+
+function canLocalPerformPrivateCardAction(state: GameStore, action: string, card: CardState | undefined): boolean {
+  if (!card) return false;
+  if (!isPrivateZone(card.zone)) return true;
+  const ownerId = findCardOwner(state.game, card) ?? card.controllerId;
+  const allowed = canLocalControlPlayer(state, ownerId);
+  if (!allowed) warnBlockedPrivateZoneAction(action, { card, ownerId });
+  return allowed;
+}
+
+function canLocalPerformPrivatePlayerAction(state: GameStore, action: string, playerId: string, zone: CardState['zone']): boolean {
+  const allowed = canLocalControlPlayer(state, playerId);
+  if (!allowed) warnBlockedPrivateZoneAction(action, { ownerId: playerId, targetPlayerId: playerId, zone });
+  return allowed;
 }
 
 const DEFAULT_UI: UIState = {
@@ -1795,14 +1818,20 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   // ── Card Actions ──────────────────────────────────────────────────────────
 
   castCard: (castingPlayerId, cardInstanceId, targets) => {
-    if (!canLocalControlPlayer(get(), castingPlayerId)) return;
+    if (!canLocalControlPlayer(get(), castingPlayerId)) {
+      warnBlockedPrivateZoneAction('castCard', { targetPlayerId: castingPlayerId, zone: 'hand' });
+      return;
+    }
     let g = get().game;
     const card = g.cards[cardInstanceId];
     if (!card) return;
-    if (!canLocalAccessPrivateCardOwner(get(), card)) return;
+    if (!canLocalPerformPrivateCardAction(get(), 'castCard', card)) return;
     const check = checkCastLegality(g, castingPlayerId, cardInstanceId);
     const flags = filterAssistantFlags(check.flags, get().ui);
-    if (!canLocalAccessCard(get(), card) || findCardOwner(g, card) !== castingPlayerId) return;
+    if (!canLocalAccessCard(get(), card) || findCardOwner(g, card) !== castingPlayerId) {
+      warnBlockedPrivateZoneAction('castCard', { card, ownerId: findCardOwner(g, card), targetPlayerId: castingPlayerId });
+      return;
+    }
     const cardDef = getEffectiveCardDefinition(card);
     const spellNumberThisTurn = g.actionLog.filter(action =>
       action.turn === g.turn &&
@@ -1913,12 +1942,18 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   playLand: (playerId, cardInstanceId, faceIndex) => {
-    if (!canLocalControlPlayer(get(), playerId)) return;
+    if (!canLocalControlPlayer(get(), playerId)) {
+      warnBlockedPrivateZoneAction('playLand', { targetPlayerId: playerId, zone: 'hand' });
+      return;
+    }
     let g = get().game;
     let card = g.cards[cardInstanceId];
     if (!card) return;
-    if (!canLocalAccessPrivateCardOwner(get(), card)) return;
-    if (!canLocalAccessCard(get(), card) || findCardOwner(g, card) !== playerId) return;
+    if (!canLocalPerformPrivateCardAction(get(), 'playLand', card)) return;
+    if (!canLocalAccessCard(get(), card) || findCardOwner(g, card) !== playerId) {
+      warnBlockedPrivateZoneAction('playLand', { card, ownerId: findCardOwner(g, card), targetPlayerId: playerId });
+      return;
+    }
     if (faceIndex !== undefined) {
       card = { ...card, transformed: faceIndex === 1 };
       g = { ...g, cards: { ...g.cards, [cardInstanceId]: card } };
@@ -1937,14 +1972,20 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     let g = get().game;
     const card = g.cards[instanceId];
     if (!card) return;
-    if (!canLocalAccessPrivateCardOwner(get(), card)) return;
+    if (!canLocalPerformPrivateCardAction(get(), 'moveCardToZone', card)) return;
     const canOfflineDirectMove = get().multiplayer.status === 'disconnected'
       && toController != null
       && findCardOwner(g, card) === toController;
-    if (!canLocalControlCard(get(), card) && !canOfflineDirectMove) return;
+    if (!canLocalControlCard(get(), card) && !canOfflineDirectMove) {
+      if (isPrivateZone(card.zone)) warnBlockedPrivateZoneAction('moveCardToZone', { card });
+      return;
+    }
     const ownerId = findCardOwner(g, card) ?? card.controllerId;
     const targetController = toController ?? ownerId;
-    if (isPrivateZone(toZone) && !canLocalControlPlayer(get(), targetController)) return;
+    if (isPrivateZone(toZone) && !canLocalControlPlayer(get(), targetController)) {
+      warnBlockedPrivateZoneAction('moveCardToZone', { card, ownerId, targetPlayerId: targetController, zone: toZone });
+      return;
+    }
     g = moveCard(g, instanceId, toZone, toController);
     const action = createAction(g, g.activePlayerId, 'MOVE_CARD',
       `${card.definition.name} moved to ${toZone}`, [instanceId]);
@@ -2285,7 +2326,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   drawCard: (playerId, count = 1) => {
-    if (!canLocalControlPlayer(get(), playerId)) return;
+    if (!canLocalPerformPrivatePlayerAction(get(), 'drawCard', playerId, 'library')) return;
     let g = get().game;
     g = drawCards(g, playerId, count);
     const player = g.players.find(p => p.id === playerId);
@@ -2335,7 +2376,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   shuffleLibrary: (playerId) => {
-    if (!canLocalControlPlayer(get(), playerId)) return;
+    if (!canLocalPerformPrivatePlayerAction(get(), 'shuffleLibrary', playerId, 'library')) return;
     const g = get().game;
     const player = g.players.find(p => p.id === playerId);
     if (!player) return;
@@ -2981,7 +3022,10 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   toggleLeftPanel: () => set(s => ({ ui: { ...s.ui, leftPanelOpen: !s.ui.leftPanelOpen } })),
   toggleRightPanel: () => set(s => ({ ui: { ...s.ui, rightPanelOpen: !s.ui.rightPanelOpen } })),
   openZoneDrawer: (zone, playerId, options) => set(s => {
-    if (isPrivateZone(zone) && !canLocalControlPlayer(s as GameStore, playerId)) return s;
+    if (isPrivateZone(zone) && !canLocalControlPlayer(s as GameStore, playerId)) {
+      warnBlockedPrivateZoneAction('openZoneDrawer', { ownerId: playerId, targetPlayerId: playerId, zone });
+      return s;
+    }
     return { ui: { ...s.ui, zoneDrawer: { zone, playerId, ...options } } };
   }),
   closeZoneDrawer: () => set(s => ({ ui: { ...s.ui, zoneDrawer: null } })),
@@ -3202,14 +3246,23 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   castFromZone: (playerId, instanceId, fromZone) => {
-    if (!canLocalControlPlayer(get(), playerId)) return;
+    if (!canLocalControlPlayer(get(), playerId)) {
+      warnBlockedPrivateZoneAction('castFromZone', { targetPlayerId: playerId, zone: fromZone });
+      return;
+    }
     let g = get().game;
     const card = g.cards[instanceId];
     if (!card) return;
-    if (!canLocalAccessPrivateCardOwner(get(), card)) return;
+    if (!canLocalPerformPrivateCardAction(get(), 'castFromZone', card)) return;
     if (!canLocalAccessCard(get(), card)) return;
-    if (!canLocalControlCard(get(), card)) return;
-    if (isPrivateZone(card.zone) && findCardOwner(g, card) !== playerId) return;
+    if (!canLocalControlCard(get(), card)) {
+      if (isPrivateZone(card.zone)) warnBlockedPrivateZoneAction('castFromZone', { card });
+      return;
+    }
+    if (isPrivateZone(card.zone) && findCardOwner(g, card) !== playerId) {
+      warnBlockedPrivateZoneAction('castFromZone', { card, ownerId: findCardOwner(g, card), targetPlayerId: playerId });
+      return;
+    }
     const zoneName = fromZone === 'graveyard' ? 'graveyard'
       : fromZone === 'exile' ? 'exile'
       : fromZone === 'command' ? 'command zone' : fromZone;
@@ -3234,13 +3287,19 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   reanimateCard: (instanceId, toControllerId) => {
-    if (!canLocalControlPlayer(get(), toControllerId)) return;
+    if (!canLocalControlPlayer(get(), toControllerId)) {
+      warnBlockedPrivateZoneAction('reanimateCard', { targetPlayerId: toControllerId, zone: 'battlefield' });
+      return;
+    }
     let g = get().game;
     const card = g.cards[instanceId];
     if (!card) return;
-    if (!canLocalAccessPrivateCardOwner(get(), card)) return;
+    if (!canLocalPerformPrivateCardAction(get(), 'reanimateCard', card)) return;
     if (!canLocalAccessCard(get(), card)) return;
-    if (!canLocalControlCard(get(), card)) return;
+    if (!canLocalControlCard(get(), card)) {
+      if (isPrivateZone(card.zone)) warnBlockedPrivateZoneAction('reanimateCard', { card });
+      return;
+    }
     g = { ...g, cards: { ...g.cards, [instanceId]: { ...g.cards[instanceId], controllerId: toControllerId } } };
     g = moveCard(g, instanceId, 'battlefield');
     const player = g.players.find(p => p.id === toControllerId);
