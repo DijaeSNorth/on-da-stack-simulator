@@ -161,6 +161,7 @@ export function canStartCommanderTable({
   savedDecks,
   minimumPlayers = 2,
   requireLoadedGameDecks = false,
+  requirePlayerReadiness = true,
   stabilizationMs = 0,
   now = Date.now(),
   lastGameUpdateAt = 0,
@@ -173,6 +174,7 @@ export function canStartCommanderTable({
   savedDecks: Deck[];
   minimumPlayers?: number;
   requireLoadedGameDecks?: boolean;
+  requirePlayerReadiness?: boolean;
   stabilizationMs?: number;
   now?: number;
   lastGameUpdateAt?: number;
@@ -187,9 +189,11 @@ export function canStartCommanderTable({
   const missingDeckPlayers = statuses
     .filter(status => !status.ready)
     .map(status => status.peer.name);
-  const notReadyPlayers = statuses
-    .filter(status => status.ready && !status.playerReady)
-    .map(status => status.peer.name);
+  const notReadyPlayers = requirePlayerReadiness
+    ? statuses
+      .filter(status => status.ready && !status.playerReady)
+      .map(status => status.peer.name)
+    : [];
   const occupiedCount = statuses.length;
   const latestPeerSeenAt = statuses.reduce(
     (latest, status) => Math.max(latest, status.peer.lastSeen || 0),

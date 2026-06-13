@@ -40,8 +40,22 @@ Use this file as a compact handoff ledger so we can continue multiplayer debuggi
   - store-flow: pass (32 passed, 0 failed)
 - Environment note:
   - Installed deps with `npm install --cache .\tmp-npm-cache` due local PowerShell `ExecutionPolicy` blocking `npx/npm` and cache cleanup permission issues.
-- Current session status:
+  - Current session status:
   - Multiplayer handoff logging and deck-health UI changes are now documented and ready to hand off after push.
+
+## 2026-06-12 -- Explicit joiner start-vote workflow
+
+- Added a staged start flow so the host still triggers game initialization, but each non-host player must explicitly vote to start during the `START_GAME_PREPARE` window.
+  - File: `client/src/store/gameStore.ts`
+    - `handleMultiplayerStartPrepare` now sets joiners to a pre-start prepare state without auto-acking.
+    - New action `voteToStartMultiplayerGame` sends `START_GAME_ACK` when a joiner clicks vote.
+  - File: `client/src/components/multiplayer/MultiplayerPanel.tsx`
+    - Added a joiner-only "Vote to Start" control and vote progress status.
+- Existing ready checks remain in place (`load/validate deck`, `local ready`, host readiness gates), so start requires both deck readiness and explicit vote.
+- Added a regression test for manual start-vote requirement.
+  - File: `tests/store-flow.test.ts` (replaced auto-ack start prepare expectation with vote flow)
+- Planned follow-up:
+  - Add a small timeout/alert UI cue if no player votes before host fallback commit triggers.
 
 ## 2026-06-12 (verification #2)
 - Re-ran tests: multiplayer-protocol, multiplayer-sync, store-flow all passed.
@@ -59,3 +73,20 @@ Use this file as a compact handoff ledger so we can continue multiplayer debuggi
 - Why: prevents the non-host joiner from being treated as host or replacing host presence in same-browser/same-profile workflows.
 - Additional follow-up: add a regression for same-session identity collision in multiplayer tests after this pass.
 
+
+## 2026-06-13 -- Non-host lobby join + vote-to-start pass (finalized)
+- Switched host start readiness from hard player-ready blocking to a staged start handshake:
+  - client/src/engine/multiplayerProtocol.ts (canHostStartFromLobby) now accepts equirePlayerReady and defaults true.
+  - client/src/engine/lobbyReadiness.ts (canStartCommanderTable) now accepts equirePlayerReadiness and can bypass playerReady checks when needed.
+- Applied to the flow that is now used for room start:
+  - client/src/components/lobby/LobbyScreen.tsx calls start-readiness with equirePlayerReadiness: false.
+  - client/src/store/gameStore.ts uses the same relaxed host start eligibility and adds oteToStartMultiplayerGame.
+  - Non-hosts are moved to explicit vote behavior during START_GAME_PREPARE instead of auto-acking as ready.
+- Updated joiner UI:
+  - client/src/components/multiplayer/MultiplayerPanel.tsx now reserves ready controls for host and exposes joiner-side Vote to Start with remaining-vote status, so non-hosts load deck/identity first and then vote.
+- Verification before push:
+  - cmd /c npx tsx tests/multiplayer-protocol.test.ts`r
+  - cmd /c npx tsx tests/multiplayer-sync.test.ts`r
+  - cmd /c npx tsx tests/store-flow.test.ts`r
+  - cmd /c npx tsx tests/command-rules.test.ts`r
+  - Result: all passing (store-flow 32 passed).

@@ -72,6 +72,16 @@ export interface PublicPlayerState {
   color: string;
   seatIndex: number;
   life: number;
+  mulliganCount: number;
+  manaPool: {
+    W: number;
+    U: number;
+    B: number;
+    R: number;
+    G: number;
+    C: number;
+    generic: number;
+  };
   poisonCounters: number;
   energyCounters: number;
   experienceCounters: number;
@@ -350,7 +360,11 @@ export function publicDeckSummary(submission: DeckSubmission, status: DeckStatus
   };
 }
 
-export function canHostStartFromLobby(lobby: LobbyState): { canStart: boolean; reason?: string; seatedPlayers: LobbyPlayer[] } {
+export function canHostStartFromLobby(
+  lobby: LobbyState,
+  options: { requirePlayerReady?: boolean } = {},
+): { canStart: boolean; reason?: string; seatedPlayers: LobbyPlayer[] } {
+  const { requirePlayerReady = true } = options;
   const seatedPlayers = Object.values(lobby.players)
     .filter(player => player.connected && !player.isSpectator && player.seatIndex >= 0)
     .sort((a, b) => a.seatIndex - b.seatIndex);
@@ -359,7 +373,9 @@ export function canHostStartFromLobby(lobby: LobbyState): { canStart: boolean; r
   if (seatedPlayers.length > lobby.maxPlayers) return { canStart: false, reason: 'Too many seated players.', seatedPlayers };
   const missingDeck = seatedPlayers.find(player => lobby.submittedDecks[player.playerId]?.status !== 'valid');
   if (missingDeck) return { canStart: false, reason: `${missingDeck.name} needs a valid deck.`, seatedPlayers };
-  const notReady = seatedPlayers.find(player => !player.ready);
+  const notReady = requirePlayerReady
+    ? seatedPlayers.find(player => !player.ready)
+    : undefined;
   if (notReady) return { canStart: false, reason: `${notReady.name} is not ready.`, seatedPlayers };
   return { canStart: true, seatedPlayers };
 }
@@ -448,6 +464,8 @@ function publicPlayerState(player: Player): PublicPlayerState {
     color: player.color,
     seatIndex: player.seatIndex,
     life: player.life,
+    mulliganCount: player.mulliganCount,
+    manaPool: player.manaPool,
     poisonCounters: player.poisonCounters,
     energyCounters: player.energyCounters,
     experienceCounters: player.experienceCounters,

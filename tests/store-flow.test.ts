@@ -245,7 +245,7 @@ test('multiplayer start waits for joiner ack before committing', () => {
   assert(state.game.players.every(player => player.hand.length === 7), 'expected committed game to draw opening hands for all players');
 });
 
-test('joiner auto-acks start prepare from authoritative lobby deck status', () => {
+test('joiner requires an explicit start vote before the host can proceed', () => {
   let game = makeGame(2);
   game = addLibrary(addLibrary(game, 'p1', 'host-auth'), 'p2', 'guest-auth');
   resetStore({ ...game, status: 'lobby' });
@@ -319,8 +319,13 @@ test('joiner auto-acks start prepare from authoritative lobby deck status', () =
   };
   useGameStore.getState().handleMultiplayerStartPrepare(prepare);
   const state = useGameStore.getState();
-  assert(state.multiplayer.startHandshake?.ackedPeerIds.includes('guest-peer'), 'expected joiner to auto-ack from authoritative valid lobby deck');
-  assert(state.multiplayer.startHandshake?.missingPeerIds.length === 0, 'expected joiner prepare to have no missing ack after auto-ack');
+  assert(state.multiplayer.startHandshake?.ackedPeerIds.length === 0, 'expected no joiner auto-vote after receiving start prepare');
+  assert(state.multiplayer.startHandshake?.missingPeerIds.length === 1, 'expected start handshake to still wait for at least one player vote');
+
+  useGameStore.getState().voteToStartMultiplayerGame();
+  const votedState = useGameStore.getState();
+  assert(votedState.multiplayer.startHandshake?.ackedPeerIds.includes('guest-peer'), 'expected joiner vote to register locally');
+  assert(votedState.multiplayer.startHandshake?.missingPeerIds.length === 0, 'expected joiner vote to clear missing joiner acknowledgements');
 });
 
 test('multiplayer start fallback commits if a joiner ack is missing', () => {
