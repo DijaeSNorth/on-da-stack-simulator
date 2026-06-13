@@ -201,14 +201,18 @@ export async function cleanupFirebaseRecoveryRooms(force = false): Promise<numbe
   const currentTime = now();
   if (!force && currentTime - lastFirebaseCleanupAt < FIREBASE_CLEANUP_INTERVAL_MS) return 0;
   lastFirebaseCleanupAt = currentTime;
-  const snapshot = await get(child(ref(db), 'rooms'));
-  const rooms = (snapshot.val() ?? {}) as Record<string, FirebaseCleanupRoomValue | null>;
-  const updates = buildFirebaseCleanupUpdates(rooms, currentTime);
-  const updateKeys = Object.keys(updates);
-  if (updateKeys.length > 0) {
-    await update(ref(db), updates);
+  try {
+    const snapshot = await get(child(ref(db), 'rooms'));
+    const rooms = (snapshot.val() ?? {}) as Record<string, FirebaseCleanupRoomValue | null>;
+    const updates = buildFirebaseCleanupUpdates(rooms, currentTime);
+    const updateKeys = Object.keys(updates);
+    if (updateKeys.length > 0) {
+      await update(ref(db), updates);
+    }
+    return updateKeys.length;
+  } catch {
+    return 0;
   }
-  return updateKeys.length;
 }
 
 export async function writeFirebaseRoomControl(control: FirebaseRoomControl): Promise<void> {
