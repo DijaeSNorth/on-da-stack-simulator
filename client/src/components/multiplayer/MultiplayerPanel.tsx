@@ -44,6 +44,7 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
+  const [startVoteNow, setStartVoteNow] = useState(Date.now());
 
   const connected = multiplayer.status === 'host' || multiplayer.status === 'joined' || multiplayer.status === 'migrating';
   const isHost = multiplayer.status === 'host';
@@ -139,6 +140,14 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
   const canToggleReady = !isSpectator && localDeckStatus === 'valid';
   const startHandshake = multiplayer.startHandshake;
   const startVoteRequired = startHandshake?.status === 'preparing' || startHandshake?.status === 'waiting';
+
+  useEffect(() => {
+    if (!startHandshake) return;
+    setStartVoteNow(Date.now());
+    const timer = window.setInterval(() => setStartVoteNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [startHandshake?.id, startHandshake?.deadlineAt, startHandshake?.status]);
+
   const canCastStartVote = Boolean(
     !isSpectator &&
     !isHost &&
@@ -147,14 +156,26 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
     !localPeer.isSpectator &&
     localPeer.seatIndex >= 0 &&
     startHandshake.requiredPeerIds?.includes(localPeer.peerId) &&
-    (localPeer.deckStatus === 'valid' || localPeer.deck?.status === 'valid')
+    localDeckStatus === 'valid'
   );
   const hasCastStartVote = localPeer ? startHandshake?.ackedPeerIds.includes(localPeer.peerId) : false;
   const remainingStartVotes = startHandshake?.missingPeerIds.length ?? 0;
+  const startVoteSecondsRemaining = startHandshake
+    ? Math.max(0, Math.ceil((startHandshake.deadlineAt - startVoteNow) / 1000))
+    : 0;
   const takenSeats = new Set(
     peers
       .filter(p => p.peerId !== multiplayer.peerId && p.online && !p.isSpectator && p.seatIndex >= 0)
       .map(p => p.seatIndex),
+  );
+  const missingStartVoteNames = startHandshake
+    ? startHandshake.missingPeerIds
+      .map(peerId => multiplayer.peers[peerId]?.name ?? 'Unknown player')
+      .filter(Boolean)
+    : [];
+  const startVoteStatusVisible = Boolean(
+    startHandshake &&
+    (isHost || startVoteRequired || hasCastStartVote)
   );
   const seatCount = configuredSeatCount ?? game.config.playerCount ?? game.players.length ?? 4;
   const seats = configuredSeats ?? Array.from({ length: seatCount }, (_, i) => ({
@@ -457,6 +478,34 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
               {localDeckStatus === 'submitted' && ' - Checking deck against Commander rules...'}
               {localDeckStatus === 'rejected' && localDeckReason ? ` - ${localDeckReason}` : ''}
               {localDeckStatus === 'valid' && ' - Deck loaded. Host controls start time; vote to begin when start phase is ready.'}
+            </div>
+          )}
+
+          {startVoteStatusVisible && (
+            <div
+              data-testid="start-vote-status"
+              style={{
+                marginTop: 10,
+                padding: '8px 10px',
+                borderRadius: 6,
+                border: '1px solid #334155',
+                background: '#0f172a',
+                color: '#cbd5e1',
+                fontSize: 10,
+                lineHeight: 1.45,
+              }}
+            >
+              <div style={{ fontWeight: 800, color: '#e2e8f0', marginBottom: 3 }}>
+                Start vote: {startHandshake?.ackedPeerIds.length ?? 0} / {startHandshake?.requiredPeerIds.length ?? 0}
+              </div>
+              {remainingStartVotes > 0 ? (
+                <div>
+                  Waiting on {missingStartVoteNames.join(', ') || `${remainingStartVotes} player${remainingStartVotes === 1 ? '' : 's'}`}.
+                  {' '}Fallback in {startVoteSecondsRemaining}s.
+                </div>
+              ) : (
+                <div>All start votes received. Committing game start.</div>
+              )}
             </div>
           )}
 

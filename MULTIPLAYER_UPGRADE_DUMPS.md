@@ -2,6 +2,17 @@
 
 Use this file as a compact handoff ledger so we can continue multiplayer debugging without depending on chat history.
 
+## 2026-06-13 -- Multiplayer branch start-vote visibility pass
+
+- Branch workflow established:
+  - Created and pushed `multiplayer` from the verified multiplayer head.
+  - Future multiplayer commits should land on `multiplayer`, then merge to `main` after tests pass.
+- UI improvement:
+  - `client/src/components/multiplayer/MultiplayerPanel.tsx` now shows a visible start-vote status block during the host/joiner start handshake.
+  - The block shows received votes, missing player names, and fallback countdown so the table can see who still needs to vote before auto-start fallback.
+- Verification before merge:
+  - Run targeted multiplayer/store/command tests before committing this pass.
+
 ## 2026-06-12 -- Multiplayer context checkpoint
 
 - Added: Deck health visibility into lobby deck import flow.
