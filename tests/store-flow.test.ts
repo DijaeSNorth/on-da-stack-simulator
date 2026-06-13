@@ -462,6 +462,37 @@ test('advancing turn clears attacker and blocker assignments', () => {
   assertCombatAssignmentsCleared(attackerId, blockerId);
 });
 
+test('moving an attacking creature off the battlefield clears stale combat assignments', () => {
+  const { attackerId, blockerId } = resetCombatScenario();
+
+  useGameStore.getState().moveCardToZone(attackerId, 'graveyard', 'p1');
+
+  const state = useGameStore.getState();
+  assert(state.game.cards[attackerId].zone === 'graveyard', 'expected attacker to move to graveyard');
+  assert(state.game.cards[attackerId].combatRole === 'none', 'expected moved attacker role to clear');
+  assert(state.game.cards[attackerId].attackTarget === undefined, 'expected moved attacker target to clear');
+  assert(state.game.cards[blockerId].combatRole === 'none', 'expected blocker role to clear when blocked attacker leaves');
+  assert((state.game.cards[blockerId].blockTarget ?? []).length === 0, 'expected blocker target to clear when blocked attacker leaves');
+  assert(state.game.combat.attackers.length === 0, 'expected removed attacker to leave combat attackers');
+  assert(state.game.combat.blockers.length === 0, 'expected blockers tied to removed attacker to leave combat blockers');
+});
+
+test('moving a blocking creature off the battlefield clears only that blocker assignment', () => {
+  const { attackerId, blockerId } = resetCombatScenario();
+
+  useGameStore.setState(state => ({ ...state, localPlayerId: 'p2' }));
+  useGameStore.getState().moveCardToZone(blockerId, 'graveyard', 'p2');
+
+  const state = useGameStore.getState();
+  assert(state.game.cards[blockerId].zone === 'graveyard', 'expected blocker to move to graveyard');
+  assert(state.game.cards[blockerId].combatRole === 'none', 'expected moved blocker role to clear');
+  assert((state.game.cards[blockerId].blockTarget ?? []).length === 0, 'expected moved blocker target to clear');
+  assert(state.game.cards[attackerId].combatRole === 'attacker', 'expected attacker to remain attacking after blocker leaves');
+  assert(state.game.cards[attackerId].attackTarget === 'p2', 'expected attacker target to remain after blocker leaves');
+  assert(state.game.combat.attackers.length === 1, 'expected attacker assignment to remain');
+  assert(state.game.combat.blockers.length === 0, 'expected removed blocker assignment to clear');
+});
+
 test('screen and lobbyOpen stay synchronized', () => {
   const game = makeGame(2);
   resetStore(game);

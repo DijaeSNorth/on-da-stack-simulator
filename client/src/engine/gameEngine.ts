@@ -248,17 +248,15 @@ export function moveCard(
   }
 
   // Remove attachments when leaving battlefield
+  let detachedParent: CardState | undefined;
   if (fromZone === 'battlefield' && toZone !== 'battlefield') {
     newCard.attachments = [];
     newCard.attachedTo = undefined;
     // Detach from parent
     if (card.attachedTo && state.cards[card.attachedTo]) {
-      const parent = { ...state.cards[card.attachedTo] };
-      parent.attachments = parent.attachments.filter(id => id !== instanceId);
-      return {
-        ...state,
-        cards: { ...state.cards, [instanceId]: newCard, [card.attachedTo]: parent },
-        lastUpdatedAt: Date.now(),
+      detachedParent = {
+        ...state.cards[card.attachedTo],
+        attachments: state.cards[card.attachedTo].attachments.filter(id => id !== instanceId),
       };
     }
   }
@@ -302,10 +300,58 @@ export function moveCard(
     return updated;
   });
 
+  let nextCards = { ...state.cards, [instanceId]: newCard };
+  if (detachedParent) {
+    nextCards = { ...nextCards, [detachedParent.instanceId]: detachedParent };
+  }
+
+  let nextCombat = state.combat;
+  if (fromZone === 'battlefield' && toZone !== 'battlefield') {
+    const removedAsAttacker = state.combat.attackers.some(a => a.instanceId === instanceId);
+    const removedAsBlocker = state.combat.blockers.some(b => b.instanceId === instanceId);
+    const blockersOnRemovedAttacker = removedAsAttacker
+      ? state.combat.blockers.filter(b => b.blockedAttacker === instanceId).map(b => b.instanceId)
+      : [];
+
+    nextCards = {
+      ...nextCards,
+      [instanceId]: {
+        ...nextCards[instanceId],
+        combatRole: 'none',
+        attackTarget: undefined,
+        blockTarget: [],
+      },
+    };
+
+    if (blockersOnRemovedAttacker.length > 0) {
+      for (const blockerId of blockersOnRemovedAttacker) {
+        const blocker = nextCards[blockerId];
+        if (!blocker) continue;
+        nextCards = {
+          ...nextCards,
+          [blockerId]: {
+            ...blocker,
+            combatRole: 'none',
+            blockTarget: [],
+          },
+        };
+      }
+    }
+
+    if (removedAsAttacker || removedAsBlocker || blockersOnRemovedAttacker.length > 0) {
+      nextCombat = {
+        ...state.combat,
+        attackers: state.combat.attackers.filter(a => a.instanceId !== instanceId),
+        blockers: state.combat.blockers.filter(b => b.instanceId !== instanceId && b.blockedAttacker !== instanceId),
+      };
+    }
+  }
+
   return {
     ...state,
-    cards: { ...state.cards, [instanceId]: newCard },
+    cards: nextCards,
     players: newPlayers,
+    combat: nextCombat,
     lastUpdatedAt: Date.now(),
   };
 }

@@ -32,3 +32,7 @@
   - `client/src/engine/nlpParser.ts`: added explicit declaration phrases such as `declare attackers with X`, `declare X attacking player N`, `declare X blocking Y`, and `declare blockers with A, B on X`.
   - `client/src/engine/nlpParser.ts`: block command resolution now converts the blocked attacker name into an attacker instance ID before `declareBlock`.
   - `tests/command-rules.test.ts`: added regression coverage for explicit attack/block declaration command parsing.
+- 2026-06-13: Combat metadata cleanup tightened.
+  - `client/src/engine/gameEngine.ts`: `moveCard` now removes a permanent from combat when it leaves the battlefield, clearing its `combatRole`, `attackTarget`, and `blockTarget`.
+  - If an attacking creature leaves the battlefield, blockers assigned to that attacker also have stale block metadata cleared so arrows/badges do not point at missing attackers.
+  - `tests/store-flow.test.ts`: added regressions for attacking and blocking creatures moving off the battlefield during combat.
