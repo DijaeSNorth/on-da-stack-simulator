@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import { PlayerBattlefield } from './PlayerBattlefield';
+import { TableStatusDock } from './TableStatusDock';
 import { DragCombatProvider, useDragCombatContext } from '../../hooks/DragCombatContext';
 import { TriggerQueuePanel } from '../triggers/TriggerQueuePanel';
 import { CardImage } from '../cards/CardImage';
@@ -456,12 +457,26 @@ function CommanderTableInner() {
   const rightPlayers  = getPlayers(layout.right);
   const bottomPlayers = getPlayers(layout.bottom);
   const localPlayerId = store.localPlayerId;
+  const hasSidePlayers = leftPlayers.length > 0 || rightPlayers.length > 0;
 
   const sectionStyle = (side: 'top' | 'bottom' | 'left' | 'right'): React.CSSProperties => {
     const base: React.CSSProperties = { display: 'flex', gap: 2, flex: 1, overflow: 'hidden', minHeight: 0, minWidth: 0 };
     return (side === 'top' || side === 'bottom')
       ? { ...base, flexDirection: 'row' }
       : { ...base, flexDirection: 'column', maxWidth: '18%', minWidth: 120 };
+  };
+
+  const centerSurfaceStyle: React.CSSProperties = {
+    flex: 1,
+    background: 'rgba(255,255,255,0.01)',
+    borderRadius: 8,
+    border: '1px solid rgba(255,255,255,0.04)',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    padding: 10,
   };
 
   function wrapPlayerSlot(player: Player, isLocal: boolean, compact: boolean) {
@@ -573,8 +588,14 @@ function CommanderTableInner() {
         </div>
       )}
 
+      {!hasSidePlayers && (
+        <div style={{ ...centerSurfaceStyle, flex: 0.7, minHeight: 150 }}>
+          <TableStatusDock />
+        </div>
+      )}
+
       {/* Middle row */}
-      {(leftPlayers.length > 0 || rightPlayers.length > 0) && (
+      {hasSidePlayers && (
         <div style={{ display: 'flex', flex: 1, gap: 2, overflow: 'hidden', minHeight: 0 }}>
           {leftPlayers.length > 0 && (
             <div style={sectionStyle('left')}>

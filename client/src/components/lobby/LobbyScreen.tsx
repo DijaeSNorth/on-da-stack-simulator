@@ -24,6 +24,7 @@ import {
   resolveSeatPlayerId,
 } from '../../engine/lobbyReadiness';
 import type { Deck, PlayerAvatarImage } from '../../types/game';
+import { DeckHealthPanel } from './DeckHealthPanel';
 
 interface PlayerSetup {
   id: string;
@@ -1116,6 +1117,7 @@ export function LobbyScreen() {
                 <div style={{ fontSize: 11, fontWeight: 700, color: '#e2e8f0', marginBottom: 6 }}>
                   {importResult.deck.name} — {importPreparation?.totalCommanderCount ?? importResult.deck.cards.reduce((s, c) => s + c.count, 0)} cards
                 </div>
+                <DeckHealthPanel deck={importResult.deck} compact />
 
                 <div style={{
                   fontSize: 10,
