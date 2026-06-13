@@ -39,6 +39,12 @@ const GlobalHelpTooltip = lazy(() =>
 
 let multiplayerListenersInitialized = false;
 
+const BUILD_STAMP = {
+  version: import.meta.env.VITE_APP_VERSION ?? 'dev-unknown',
+  commit: import.meta.env.VITE_COMMIT_SHA ?? 'dev-unknown',
+  builtAt: import.meta.env.VITE_BUILD_TIME ?? 'dev-unknown',
+};
+
 export default function App() {
   const ui = useGameStore(s => s.ui);
   const game = useGameStore(s => s.game);
@@ -55,6 +61,7 @@ export default function App() {
   useEffect(() => {
     if (multiplayerListenersInitialized) return;
     multiplayerListenersInitialized = true;
+    console.info('[build]', BUILD_STAMP);
     initMultiplayerListeners();
   }, [initMultiplayerListeners]);
 
@@ -85,6 +92,18 @@ export default function App() {
         fontFamily: '"Inter", "SF Pro Display", system-ui, sans-serif',
       }}>
         <LobbyScreen />
+        <div style={{
+          position: 'fixed',
+          left: 8,
+          bottom: 6,
+          zIndex: 30000,
+          color: '#334155',
+          fontSize: 10,
+          fontFamily: '"SFMono-Regular", Consolas, monospace',
+          pointerEvents: 'none',
+        }}>
+          Build: {BUILD_STAMP.commit} · {BUILD_STAMP.builtAt}
+        </div>
         <Suspense fallback={null}>
           <ProfilePanel />
           <TutorialOverlay />

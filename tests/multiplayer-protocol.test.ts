@@ -183,6 +183,94 @@ assert(!validateMultiplayerMessage({ ...validMessage, playerId: '' }, 'ROOM12').
 assert(!validateMultiplayerMessage({ ...validMessage, roomId: 'OTHER' }, 'ROOM12').ok, 'expected wrong roomId to be rejected');
 assert(!validateMultiplayerMessage({ ...validMessage, type: 'NOPE' }, 'ROOM12').ok, 'expected unknown message type to be rejected');
 assert(!validateMultiplayerMessage({ ...validMessage, protocolVersion: 99 }, 'ROOM12').ok, 'expected unsupported protocol version to be rejected');
+const { sentAt: _removedSentAt, ...missingSentAtMessage } = validMessage;
+assert(!validateMultiplayerMessage(missingSentAtMessage, 'ROOM12').ok, 'expected missing sentAt to stay rejected');
+
+const protocolGame = { ...gameWithPrivateZones(), status: 'playing' as const };
+const protocolMessages = [
+  makeMultiplayerMessage({
+    roomId: 'ROOM12',
+    playerId: 'player-one',
+    peerId: 'peer-one',
+    sessionId: 'session-one',
+    type: 'START_GAME_PREPARE',
+    payload: {
+      id: 'prepare-one',
+      hostPeerId: 'peer-one',
+      gameId: protocolGame.id,
+      playerList: [],
+      deckHashes: {},
+      turnOrder: ['p1', 'p2'],
+      requiredPeerIds: ['peer-two'],
+      createdAt: Date.now(),
+      deadline: Date.now() + 5000,
+      deadlineAt: Date.now() + 5000,
+    },
+    seq: 2,
+  }),
+  makeMultiplayerMessage({
+    roomId: 'ROOM12',
+    playerId: 'player-one',
+    peerId: 'peer-one',
+    sessionId: 'session-one',
+    type: 'START_GAME_COMMIT',
+    payload: {
+      id: 'commit-one',
+      gameId: protocolGame.id,
+      game: protocolGame,
+      publicGameState: createPublicGameState(protocolGame),
+      fallback: false,
+      missingPeerIds: [],
+      committedAt: Date.now(),
+    },
+    seq: 3,
+  }),
+  makeMultiplayerMessage({
+    roomId: 'ROOM12',
+    playerId: 'player-one',
+    peerId: 'peer-one',
+    sessionId: 'session-one',
+    type: 'GAME_STATE_PATCH',
+    payload: {
+      seq: 1,
+      publicGameState: createPublicGameState(protocolGame),
+      privatePlayerState: createPrivatePlayerState(protocolGame, 'p1'),
+      sanitizedGame: sanitizeGameStateForPlayer(protocolGame, 'p1'),
+    },
+    seq: 4,
+  }),
+  makeMultiplayerMessage({
+    roomId: 'ROOM12',
+    playerId: 'player-one',
+    peerId: 'peer-one',
+    sessionId: 'session-one',
+    type: 'LOBBY_STATE',
+    payload: makeLobby(true),
+    seq: 5,
+  }),
+  makeMultiplayerMessage({
+    roomId: 'ROOM12',
+    playerId: 'player-one',
+    peerId: 'peer-one',
+    sessionId: 'session-one',
+    type: 'DECK_SUBMITTED',
+    payload: createDeckSubmission(deck('player-one'), 'player-one'),
+    seq: 6,
+  }),
+  makeMultiplayerMessage({
+    roomId: 'ROOM12',
+    playerId: 'player-one',
+    peerId: 'peer-one',
+    sessionId: 'session-one',
+    type: 'PLAYER_READY_CHANGED',
+    payload: { playerId: 'player-one', ready: true },
+    seq: 7,
+  }),
+];
+for (const message of protocolMessages) {
+  assert(Number.isFinite(message.sentAt), `expected ${message.type} to include sentAt after enveloping`);
+  assert(validateMultiplayerMessage(message, 'ROOM12').ok, `expected enveloped ${message.type} to validate`);
+}
 
 const submission = createDeckSubmission(deck('player-one'), 'player-one');
 assert(validateDeckSubmission(submission).valid, 'expected a valid 100-card commander submission to pass');

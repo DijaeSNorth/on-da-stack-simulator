@@ -1055,6 +1055,13 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       },
       (lobby: LobbyState) => {
         set(s => ({ multiplayer: { ...s.multiplayer, lobby } }));
+        const applied = useGameStore.getState();
+        console.debug('[multiplayer] joiner lobby state after apply', {
+          lobbyStatus: applied.multiplayer.lobby?.status ?? 'none',
+          screen: applied.ui.screen,
+          gameStatus: applied.game.status,
+          multiplayerStatus: applied.multiplayer.status,
+        });
       },
       (submission: DeckSubmission, presence: RoomPresence) => {
         void (async () => {
