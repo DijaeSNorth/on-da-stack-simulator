@@ -125,16 +125,30 @@ export function buildFirebaseActionRelayPlaceholder(entry: FirebaseActionRelayEn
   return entry;
 }
 
+export function stripFirebaseUndefined<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map(item => stripFirebaseUndefined(item)) as T;
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, entryValue]) => entryValue !== undefined)
+        .map(([key, entryValue]) => [key, stripFirebaseUndefined(entryValue)]),
+    ) as T;
+  }
+  return value;
+}
+
 export async function writeFirebaseRoomControl(control: FirebaseRoomControl): Promise<void> {
   const db = getFirebaseDatabase();
   if (!db) return;
-  await set(ref(db, `${roomPath(control.roomCode)}/control`), control);
+  await set(ref(db, `${roomPath(control.roomCode)}/control`), stripFirebaseUndefined(control));
 }
 
 export async function patchFirebaseRoomControl(roomCode: string, patch: Partial<FirebaseRoomControl>): Promise<void> {
   const db = getFirebaseDatabase();
   if (!db) return;
-  await update(ref(db, `${roomPath(roomCode)}/control`), { ...patch, updatedAt: now() });
+  await update(ref(db, `${roomPath(roomCode)}/control`), stripFirebaseUndefined({ ...patch, updatedAt: now() }));
 }
 
 export async function writeFirebasePresence(

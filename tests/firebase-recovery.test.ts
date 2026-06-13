@@ -4,7 +4,12 @@
  * Run with: npx tsx tests/firebase-recovery.test.ts
  */
 
-import { buildFirebasePrivateStartSnapshots, buildFirebasePublicStartSnapshot, isFirebaseRecoveryConfigured } from '../client/src/engine/firebaseSync';
+import {
+  buildFirebasePrivateStartSnapshots,
+  buildFirebasePublicStartSnapshot,
+  isFirebaseRecoveryConfigured,
+  stripFirebaseUndefined,
+} from '../client/src/engine/firebaseSync';
 import { createCardState, createDefaultGameConfig, createEmptyGameState, createPlayer } from '../client/src/engine/gameEngine';
 import type { CardDefinition, GameState } from '../client/src/types/game';
 
@@ -95,5 +100,20 @@ assert(joinerPrivateJson.includes('Joiner Library Card'), 'joiner private recove
 assert(!joinerPrivateJson.includes('Host Hidden Card'), 'joiner private recovery snapshot must not include host hand card data');
 assert(!joinerPrivateJson.includes('Host Library Card'), 'joiner private recovery snapshot must not include host library card data');
 assert(privateSnapshots.p2.sanitizedGame?.status === 'playing', 'private recovery snapshot should carry a playing sanitized game');
+
+const sanitizedControl = stripFirebaseUndefined({
+  roomCode: 'ABC123',
+  roomId: 'ABC123',
+  hostPeerId: 'host-peer',
+  status: 'lobby',
+  startSeq: 0,
+  latestSnapshotId: undefined,
+  nested: { keep: true, drop: undefined },
+});
+const sanitizedControlJson = JSON.stringify(sanitizedControl);
+assert(!('latestSnapshotId' in sanitizedControl), 'Firebase control sanitizer should omit undefined optional fields');
+assert(sanitizedControl.nested.keep === true, 'Firebase control sanitizer should preserve defined nested fields');
+assert(!('drop' in sanitizedControl.nested), 'Firebase control sanitizer should omit undefined nested fields');
+assert(!sanitizedControlJson.includes('undefined'), 'Firebase writes must not contain undefined values');
 
 console.log('PASS Firebase recovery snapshots split public and private multiplayer data');
