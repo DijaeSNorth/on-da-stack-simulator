@@ -3,7 +3,6 @@
     ".read": false,
     ".write": false,
     "rooms": {
-      ".read": "auth != null",
       "$roomCode": {
         "control": {
           ".read": "auth != null",
