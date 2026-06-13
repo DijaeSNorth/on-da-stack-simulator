@@ -2503,7 +2503,6 @@ function sendStartGameCommitToConnection(
     const payload: StartGameCommit = {
       ...commit,
       gameId: commit.gameId ?? playingGame.id,
-      publicGameState: createPublicGameState(playingGame),
       game: sanitizeGameStateForPlayer(playingGame, viewerGamePlayerId),
     };
     const commitSent = sendMessage(conn, { type: 'START_GAME_COMMIT', payload });
@@ -2527,9 +2526,18 @@ function sendStartGameCommitToConnection(
 function createGamePatchForPlayer(game: GameState, playerId: string): GameStatePatchPayload {
   return {
     seq: ++_gamePatchSeq,
-    publicGameState: createPublicGameState(game),
+    publicGameState: createLeanPublicGameState(game),
     privatePlayerState: createPrivatePlayerState(game, playerId),
     sanitizedGame: sanitizeGameStateForPlayer(game, playerId),
+  };
+}
+
+function createLeanPublicGameState(game: GameState): PublicGameState {
+  const publicGameState = createPublicGameState(game);
+  return {
+    ...publicGameState,
+    cards: {},
+    definitions: {},
   };
 }
 
