@@ -160,6 +160,7 @@ const actions: ActionRecord[] = [
   action('a2', 1, 'p2', 'DECLARE_ATTACKER', 'Player B attacked Player A with 10 Goblins.'),
   action('a3', 2, 'p1', 'OTHER', 'Firebending added {R}{R}.'),
   action('a4', 2, 'p1', 'DRAW_CARD', 'Player A cracked Clue and drew a card.'),
+  action('a5', 2, 'p1', 'MOVE_CARD', 'Player A moved Sol Ring to graveyard.', ['c1']),
 ];
 
 function view(filter: ActionLogFilter = 'all', query = '', groupByTurn = false) {
@@ -181,7 +182,7 @@ test('mechanic action appears under mechanic filter', () => {
 test('search finds card and player text', () => {
   const byCard = view('all', 'Sol Ring');
   const byPlayer = view('all', 'Player B');
-  assert(byCard.visibleCount === 1 && byCard.rows[0].action.id === 'a1', 'expected Sol Ring search to find cast action');
+  assert(byCard.visibleCount >= 1 && byCard.rows.some(row => row.action.id === 'a1'), 'expected Sol Ring search to include cast action');
   assert(byPlayer.visibleCount === 1 && byPlayer.rows[0].action.id === 'a2', 'expected Player B search to find attack action');
 });
 
@@ -189,12 +190,24 @@ test('group by turn works', () => {
   const result = view('all', '', true);
   assert(result.groups.length === 2, `expected 2 turn groups, got ${result.groups.length}`);
   assert(result.groups[0].label === 'Current Turn (2)', `expected current turn first, got ${result.groups[0].label}`);
-  assert(result.groups[0].actions.length === 2, 'expected two current-turn actions');
+  assert(result.groups[0].actions.length === 3, 'expected three current-turn actions');
 });
 
 test('draw filter isolates draw actions', () => {
   const result = view('draws');
   assert(result.visibleCount === 1 && result.rows[0].action.id === 'a4', 'expected draw filter to isolate clue draw');
+});
+
+test('filtering combat actions preserves original actionIndex', () => {
+  const result = view('combat');
+  assert(result.rows[0].action.id === 'a2', 'expected combat row');
+  assert(result.rows[0].actionIndex === 1, `expected original action index 1, got ${result.rows[0].actionIndex}`);
+});
+
+test('clicking filtered action can jump to original action index', () => {
+  const result = view('zone-changes');
+  const jumpedIndex = result.rows[0].actionIndex;
+  assert(jumpedIndex === 4, `expected zone-change row to jump to original index 4, got ${jumpedIndex}`);
 });
 
 console.log(`\nAction log UI tests: ${passed} passed, ${failed} failed`);

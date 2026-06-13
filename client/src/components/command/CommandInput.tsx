@@ -20,7 +20,7 @@ const CombatPanel = lazy(() =>
 
 export function CommandInput() {
   // Hide command bar entirely for spectators — hook called before guard
-  const { multiplayer } = useGameStore();
+  const { multiplayer, ui } = useGameStore();
 
   const [value, setValue] = useState('');
   const [history, setHistory] = useState<string[]>([]);
@@ -187,7 +187,7 @@ export function CommandInput() {
 
 
   // Spectators get read-only mode — no command bar
-  if (multiplayer.isSpectator) return null;
+  if (multiplayer.isSpectator || ui.screen === 'replay') return null;
 
   return (
     <>

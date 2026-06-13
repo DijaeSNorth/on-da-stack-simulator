@@ -1,6 +1,7 @@
-import type { CardDefinition, CustomCardDefinition, CustomTrigger, Deck, DeckLogic, ReplacementEffect } from '../types/game';
+import type { CardDefinition, CustomCardDefinition, CustomTrigger, Deck, DeckLogic, ManaColor, ReplacementEffect } from '../types/game';
 
 export type DeckBuilderSection = 'commander' | 'main' | 'sideboard' | 'maybeboard';
+export type DeckBuilderGroupBy = 'type' | 'manaValue' | 'color' | 'none';
 
 export interface DeckBuilderRow {
   section: DeckBuilderSection;
@@ -8,6 +9,15 @@ export interface DeckBuilderRow {
   count: number;
   primaryType: DeckBuilderTypeGroup;
   typeLine?: string;
+  manaValue?: number;
+  colorIdentity?: ManaColor[];
+}
+
+export interface DeckBuilderGroup {
+  key: string;
+  label: string;
+  rows: DeckBuilderRow[];
+  count: number;
 }
 
 export type DeckBuilderTypeGroup =
@@ -42,6 +52,14 @@ export interface DeckBuilderStats {
   typeCounts: Record<string, number>;
 }
 
+export interface SoloCommanderValidationResult {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+  cardCount: number;
+  commanders: string[];
+}
+
 export function createBlankDeck(name = 'Untitled Solo Deck'): Deck {
   return {
     id: crypto.randomUUID(),
@@ -74,7 +92,7 @@ export function setDeckEntryCount(deck: Deck, section: DeckBuilderSection, rawNa
 
   if (section === 'commander') {
     const commanders = count > 0
-      ? [...new Set([...deck.commanders, name])].slice(0, 2)
+      ? [...new Set([...deck.commanders, name])]
       : deck.commanders.filter(card => card !== name);
     return {
       ...deck,
@@ -96,6 +114,30 @@ export function adjustDeckEntry(deck: Deck, section: DeckBuilderSection, name: s
   return setDeckEntryCount(deck, section, name, getDeckEntryCount(deck, section, name) + delta);
 }
 
+export function markDeckCommander(deck: Deck, rawName: string): Deck {
+  const name = cleanName(rawName);
+  if (!name) return deck;
+  const existingCount = getDeckEntryCount(deck, 'main', name);
+  return {
+    ...deck,
+    commanders: [...new Set([...deck.commanders, name])],
+    cards: setEntry(deck.cards, name, Math.max(1, existingCount || 1)),
+    importedAt: Date.now(),
+  };
+}
+
+export function unmarkDeckCommander(deck: Deck, rawName: string): Deck {
+  const name = cleanName(rawName);
+  if (!name) return deck;
+  const existingCount = getDeckEntryCount(deck, 'main', name);
+  return {
+    ...deck,
+    commanders: deck.commanders.filter(card => card.toLowerCase() !== name.toLowerCase()),
+    cards: setEntry(deck.cards, name, Math.max(1, existingCount || 1)),
+    importedAt: Date.now(),
+  };
+}
+
 export function getDeckEntryCount(deck: Deck, section: DeckBuilderSection, rawName: string): number {
   const name = cleanName(rawName).toLowerCase();
   if (!name) return 0;
@@ -115,6 +157,8 @@ export function getDeckBuilderRows(deck: Deck): DeckBuilderRow[] {
       count,
       primaryType: section === 'commander' ? 'Commander' : getPrimaryTypeGroup(metadata),
       typeLine: metadata?.typeLine,
+      manaValue: getManaValue(metadata),
+      colorIdentity: getColorIdentity(metadata),
     };
   };
   return [
@@ -131,6 +175,86 @@ export function getDeckBuilderRows(deck: Deck): DeckBuilderRow[] {
     if (sectionDelta !== 0) return sectionDelta;
     return a.name.localeCompare(b.name);
   });
+}
+
+export function filterDeckBuilderRows(rows: DeckBuilderRow[], query: string): DeckBuilderRow[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return rows;
+  return rows.filter(row => [
+    row.name,
+    row.section,
+    row.primaryType,
+    row.typeLine,
+    row.colorIdentity?.join(''),
+    row.manaValue?.toString(),
+  ].filter(Boolean).some(value => String(value).toLowerCase().includes(q)));
+}
+
+export function getGroupedDeckBuilderRows(deck: Deck, groupBy: DeckBuilderGroupBy = 'type', query = ''): DeckBuilderGroup[] {
+  const rows = filterDeckBuilderRows(getDeckBuilderRows(deck), query);
+  if (groupBy === 'none') {
+    return [{ key: 'all', label: 'All cards', rows, count: rows.reduce((sum, row) => sum + row.count, 0) }];
+  }
+
+  const groups = new Map<string, DeckBuilderGroup>();
+  for (const row of rows) {
+    const [key, label] = getGroupKey(row, groupBy);
+    const group = groups.get(key) ?? { key, label, rows: [], count: 0 };
+    group.rows.push(row);
+    group.count += row.count;
+    groups.set(key, group);
+  }
+
+  return [...groups.values()].sort((a, b) => compareGroupKeys(a.key, b.key, groupBy) || a.label.localeCompare(b.label));
+}
+
+export function validateCommanderDraft(deck: Deck): SoloCommanderValidationResult {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const commanders = [...new Set(deck.commanders.map(cleanName).filter(Boolean))];
+  const cardIndex = getDeckCardMetadataIndex(deck);
+  const totalCards = getCommanderDeckCardCount(deck);
+
+  if (totalCards !== 100) errors.push(`Card count must be exactly 100 including commanders; currently ${totalCards}.`);
+  if (commanders.length === 0) errors.push('Commander deck needs exactly one commander or an allowed partner pair.');
+  if (commanders.length > 2) errors.push(`Too many commanders; found ${commanders.length}.`);
+  if (commanders.length === 2 && !isAllowedCommanderPair(commanders, cardIndex)) {
+    errors.push('Two commanders are only valid when both are an allowed partner/background-style pair.');
+  }
+
+  for (const entry of deck.cards) {
+    if (entry.count > 1 && !isBasicLand(entry.name, cardIndex.get(entry.name.toLowerCase()))) {
+      errors.push(`${entry.name} has ${entry.count} copies. Commander is singleton except basic lands.`);
+    }
+  }
+
+  const commanderIdentityKnown = hasKnownCommanderIdentity(deck, commanders, cardIndex);
+  const commanderIdentity = getCommanderColorIdentity(deck, commanders, cardIndex);
+  if (!commanderIdentityKnown && commanders.length > 0) {
+    warnings.push('Commander color identity is unknown; color identity validation is limited until card data is available.');
+  }
+  if (commanderIdentityKnown) {
+    for (const entry of deck.cards) {
+      const card = cardIndex.get(entry.name.toLowerCase());
+      const identity = getColorIdentity(card);
+      if (identity.length === 0) continue;
+      const illegalColors = identity.filter(color => !commanderIdentity.includes(color));
+      if (illegalColors.length > 0) {
+        errors.push(`${entry.name} has color identity ${identity.join('')} outside commander identity ${commanderIdentity.join('') || 'colorless'}.`);
+      }
+    }
+  }
+
+  const unknownRows = getDeckBuilderRows(deck).filter(row => row.primaryType === 'Unknown');
+  if (unknownRows.length > 0) warnings.push(`${unknownRows.length} card(s) need card data for type/color validation.`);
+
+  return {
+    valid: errors.length === 0,
+    errors,
+    warnings,
+    cardCount: totalCards,
+    commanders,
+  };
 }
 
 export function setCardNote(deck: Deck, cardName: string, note: string): Deck {
@@ -368,6 +492,12 @@ function getTypeGroupRank(type: DeckBuilderTypeGroup): number {
   return index === -1 ? order.length : index;
 }
 
+function getCommanderDeckCardCount(deck: Deck): number {
+  const cardNames = new Set(deck.cards.map(card => card.name.toLowerCase()));
+  const commanderOnlyCount = deck.commanders.filter(name => !cardNames.has(name.toLowerCase())).length;
+  return deck.cards.reduce((sum, card) => sum + card.count, 0) + commanderOnlyCount;
+}
+
 function getSectionRank(section: DeckBuilderSection): number {
   return { commander: 0, main: 1, sideboard: 2, maybeboard: 3 }[section];
 }
@@ -416,6 +546,31 @@ function getPrimaryTypeGroup(card?: DeckCardMetadata): DeckBuilderTypeGroup {
   return priority.find(type => types.includes(type)) ?? (types.length ? 'Other' : 'Unknown');
 }
 
+function getGroupKey(row: DeckBuilderRow, groupBy: DeckBuilderGroupBy): [string, string] {
+  if (row.section === 'commander') return ['00-commander', 'Commander'];
+  if (groupBy === 'manaValue') {
+    if (typeof row.manaValue !== 'number') return ['mv-unknown', 'Unknown mana value'];
+    const mv = Math.max(0, Math.floor(row.manaValue));
+    return [`mv-${String(mv).padStart(2, '0')}`, mv >= 7 ? 'Mana value 7+' : `Mana value ${mv}`];
+  }
+  if (groupBy === 'color') {
+    const colors = formatColorIdentity(row.colorIdentity ?? []);
+    return [`color-${colors}`, colors];
+  }
+  return [`type-${String(getTypeGroupRank(row.primaryType)).padStart(2, '0')}-${row.primaryType}`, row.primaryType];
+}
+
+function compareGroupKeys(a: string, b: string, groupBy: DeckBuilderGroupBy): number {
+  if (groupBy === 'color') return getColorGroupRank(a) - getColorGroupRank(b);
+  return a.localeCompare(b);
+}
+
+function getColorGroupRank(key: string): number {
+  const order = ['color-W', 'color-U', 'color-B', 'color-R', 'color-G', 'color-Multicolor', 'color-Colorless', 'color-Unknown'];
+  const index = order.indexOf(key);
+  return index === -1 ? order.length : index;
+}
+
 function getCardTypes(card?: DeckCardMetadata): string[] {
   const candidates = ['Creature', 'Land', 'Artifact', 'Enchantment', 'Planeswalker', 'Instant', 'Sorcery', 'Battle'];
   const explicitTypes = Array.isArray(card?.cardTypes) ? card.cardTypes : [];
@@ -433,4 +588,78 @@ function getCardTypes(card?: DeckCardMetadata): string[] {
 function getCardTypesFromTypeLine(typeLine: string | undefined): string[] {
   const candidates = ['Creature', 'Land', 'Artifact', 'Enchantment', 'Planeswalker', 'Instant', 'Sorcery', 'Battle'];
   return candidates.filter(type => new RegExp(`\\b${type}\\b`, 'i').test(typeLine ?? ''));
+}
+
+function getManaValue(card?: DeckCardMetadata): number | undefined {
+  if (typeof card?.cmc === 'number') return card.cmc;
+  const faceValues = (card?.faces ?? [])
+    .map(face => face.cmc)
+    .filter((value): value is number => typeof value === 'number');
+  return faceValues[0];
+}
+
+function getColorIdentity(card?: DeckCardMetadata): ManaColor[] {
+  const colors = card?.colorIdentity ?? card?.colors ?? [];
+  const valid = new Set<ManaColor>(['W', 'U', 'B', 'R', 'G', 'C']);
+  return [...new Set(colors.filter((color): color is ManaColor => valid.has(color as ManaColor)))]
+    .filter(color => color !== 'C')
+    .sort(colorSort);
+}
+
+function colorSort(a: ManaColor, b: ManaColor): number {
+  return ['W', 'U', 'B', 'R', 'G'].indexOf(a) - ['W', 'U', 'B', 'R', 'G'].indexOf(b);
+}
+
+function formatColorIdentity(colors: ManaColor[]): string {
+  const clean = colors.filter(color => color !== 'C');
+  if (clean.length === 0) return 'Colorless';
+  if (clean.length > 1) return 'Multicolor';
+  return clean[0];
+}
+
+function isBasicLand(name: string, card?: DeckCardMetadata): boolean {
+  const basicNames = new Set(['plains', 'island', 'swamp', 'mountain', 'forest', 'wastes']);
+  const lower = name.trim().toLowerCase();
+  if (basicNames.has(lower)) return true;
+  const typeLine = `${card?.typeLine ?? ''} ${card?.type_line ?? ''} ${card?.type ?? ''}`;
+  return /\bbasic\b/i.test(typeLine) && /\bland\b/i.test(typeLine);
+}
+
+function getCommanderColorIdentity(deck: Deck, commanders: string[], cardIndex: Map<string, DeckCardMetadata>): ManaColor[] {
+  const colors = new Set<ManaColor>();
+  for (const commander of commanders) {
+    for (const color of getColorIdentity(cardIndex.get(commander.toLowerCase()))) colors.add(color);
+  }
+  if (colors.size === 0) {
+    for (const color of deck.colorIdentity) if (color !== 'C') colors.add(color);
+  }
+  return [...colors].sort(colorSort);
+}
+
+function hasKnownCommanderIdentity(deck: Deck, commanders: string[], cardIndex: Map<string, DeckCardMetadata>): boolean {
+  if (deck.colorIdentity.length > 0) return true;
+  if (commanders.length === 0) return false;
+  return commanders.every(name => hasKnownColorIdentity(cardIndex.get(name.toLowerCase())));
+}
+
+function hasKnownColorIdentity(card?: DeckCardMetadata): boolean {
+  return Boolean(card && (Array.isArray(card.colorIdentity) || Array.isArray(card.colors)));
+}
+
+function isAllowedCommanderPair(commanders: string[], cardIndex: Map<string, DeckCardMetadata>): boolean {
+  if (commanders.length !== 2) return false;
+  return commanders.every(name => hasPartnerLikePermission(cardIndex.get(name.toLowerCase())));
+}
+
+function hasPartnerLikePermission(card?: DeckCardMetadata): boolean {
+  const text = [
+    card?.oracleText,
+    card?.keywords?.join(' '),
+    card?.typeLine,
+    ...(card?.faces ?? []).map(face => `${face.oracleText ?? ''} ${face.typeLine ?? ''}`),
+  ].filter(Boolean).join(' ').toLowerCase();
+  return /\bpartner\b/.test(text) ||
+    text.includes('friends forever') ||
+    text.includes('choose a background') ||
+    text.includes("doctor's companion");
 }

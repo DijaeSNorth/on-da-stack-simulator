@@ -1,6 +1,7 @@
 import type { ActionRecord, CardState, Player } from '../../types/game';
 
 export type ActionLogCategory =
+  | 'turn'
   | 'combat'
   | 'spell'
   | 'ability'
@@ -17,18 +18,35 @@ export type ActionLogCategory =
 
 export type ActionLogFilter =
   | 'all'
+  | 'turns'
   | 'combat'
   | 'spells-abilities'
+  | 'abilities'
   | 'zone-changes'
   | 'draws'
+  | 'damage'
   | 'damage-life'
   | 'manual-judge'
   | 'multiplayer-sync'
   | 'warnings'
   | 'mechanic';
 
+export const ACTION_LOG_FILTERS: { id: ActionLogFilter; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'turns', label: 'Turns' },
+  { id: 'combat', label: 'Combat' },
+  { id: 'spells-abilities', label: 'Spells' },
+  { id: 'abilities', label: 'Abilities' },
+  { id: 'damage-life', label: 'Damage' },
+  { id: 'zone-changes', label: 'Zone Changes' },
+  { id: 'mechanic', label: 'Mechanics' },
+  { id: 'manual-judge', label: 'Manual/Judge' },
+  { id: 'warnings', label: 'Warnings' },
+];
+
 export interface ActionLogRow {
   action: ActionRecord;
+  actionIndex: number;
   category: ActionLogCategory;
   playerName: string;
   text: string;
@@ -68,6 +86,7 @@ export function inferActionCategory(action: ActionRecord): ActionLogCategory {
     Array.isArray(action.data?.reviewTypes);
 
   if (hasWarnings || type === 'FLAG') return 'warning';
+  if (type === 'CHANGE_PHASE' || type === 'PASS_PRIORITY' || type === 'GAME_START' || type === 'GAME_END') return 'turn';
   if (type === 'DECLARE_ATTACKER' || type === 'DECLARE_BLOCKER' || text.includes('combat') || text.includes('attack') || text.includes('block')) return 'combat';
   if (type === 'CAST_SPELL' || type === 'CAST' || type === 'PUT_ON_STACK' || type === 'RESOLVE_STACK' || type === 'COUNTER_SPELL') return 'spell';
   if (type === 'ACTIVATE_ABILITY' || type === 'CHOOSE_MODE') return 'ability';
@@ -84,10 +103,13 @@ export function inferActionCategory(action: ActionRecord): ActionLogCategory {
 
 export function actionMatchesFilter(category: ActionLogCategory, filter: ActionLogFilter = 'all'): boolean {
   if (filter === 'all') return true;
+  if (filter === 'turns') return category === 'turn';
   if (filter === 'combat') return category === 'combat';
   if (filter === 'spells-abilities') return category === 'spell' || category === 'ability';
+  if (filter === 'abilities') return category === 'ability';
   if (filter === 'zone-changes') return category === 'zone-change';
   if (filter === 'draws') return category === 'draw';
+  if (filter === 'damage') return category === 'life';
   if (filter === 'damage-life') return category === 'life' || category === 'combat';
   if (filter === 'manual-judge') return category === 'manual' || category === 'warning';
   if (filter === 'multiplayer-sync') return category === 'multiplayer';
@@ -141,11 +163,12 @@ export function buildActionLogRows(
   players: Player[] = [],
   cards: Record<string, CardState> = {},
 ): ActionLogRow[] {
-  return actions.map(action => {
+  return actions.map((action, actionIndex) => {
     const player = players.find(p => p.id === action.playerId);
     const category = inferActionCategory(action);
     return {
       action,
+      actionIndex,
       category,
       playerName: player?.name ?? action.playerId,
       text: compactActionText(action, player?.name),
