@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { CardState } from '../../types/game';
 import { getCardPlaceholderStyle } from '../../data/cardDatabase';
 import { getActiveProfile, getArtOverride } from '../../engine/profileStorage';
+import { getMechanicBadgesForCard } from '../../rules/mechanicsRegistry';
 
 interface CardImageProps {
   card: CardState;
@@ -29,6 +30,7 @@ export function CardImage({ card, size = 'normal', showArt = true, className = '
   const artOverride = getArtOverride(activeProfile, def.name);
   const imageUrl = artOverride?.imageUrl ?? (card.transformed ? def.imageUrlBack : def.imageUrl);
   const placeholder = getCardPlaceholderStyle(def);
+  const mechanicBadges = size === 'tiny' ? [] : getMechanicBadgesForCard(card).slice(0, size === 'compact' ? 2 : 3);
 
   const containerStyle: React.CSSProperties = {
     width: dims.width,
@@ -128,6 +130,35 @@ export function CardImage({ card, size = 'normal', showArt = true, className = '
             fontSize: 7, fontWeight: 700,
             borderRadius: 2, padding: '1px 3px',
           }}>T</div>
+        )}
+
+        {/* Mechanic metadata badges */}
+        {mechanicBadges.length > 0 && (
+          <div style={{
+            position: 'absolute',
+            top: 2,
+            left: card.summoningSick && card.definition.cardTypes.includes('Creature') ? 10 : 2,
+            display: 'flex',
+            gap: 2,
+            maxWidth: '72%',
+            overflow: 'hidden',
+          }}>
+            {mechanicBadges.map(badge => (
+              <span key={badge.id} title={badge.title} style={{
+                background: badge.manual ? 'rgba(245, 158, 11, 0.88)' : 'rgba(14, 165, 233, 0.88)',
+                color: '#fff',
+                fontSize: size === 'compact' ? 6 : 7,
+                fontWeight: 800,
+                borderRadius: 2,
+                padding: '1px 3px',
+                lineHeight: 1,
+                textTransform: 'uppercase',
+                whiteSpace: 'nowrap',
+              }}>
+                {badge.label}
+              </span>
+            ))}
+          </div>
         )}
       </div>
     </div>

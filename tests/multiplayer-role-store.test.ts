@@ -4,7 +4,7 @@
  * Run with: npx tsx tests/multiplayer-role-store.test.ts
  */
 
-import { ensureGameHasSeatsForPresence, resolveLocalPlayerIdFromPresence, syncGamePlayerMetadataFromPresence, useGameStore } from '../client/src/store/gameStore';
+import { applyHostAuthoritativeGameActionRequest, ensureGameHasSeatsForPresence, resolveLocalPlayerIdFromPresence, syncGamePlayerMetadataFromPresence, useGameStore } from '../client/src/store/gameStore';
 import { createCardState, createDefaultGameConfig, createEmptyGameState, createPlayer } from '../client/src/engine/gameEngine';
 import { canControlPlayer } from '../client/src/engine/playerPermissions';
 import type { CardDefinition, GameState } from '../client/src/types/game';
@@ -171,6 +171,50 @@ function makePermissionGame(): GameState {
   };
 }
 
+const clueDef: CardDefinition = {
+  ...testDef,
+  id: 'sync-clue',
+  name: 'Sync Clue',
+  typeLine: 'Token Artifact - Clue',
+  cardTypes: ['Artifact'],
+  subTypes: ['Clue'],
+  oracleText: '{2}, Sacrifice this artifact: Draw a card.',
+  colors: [],
+  colorIdentity: [],
+  power: undefined,
+  toughness: undefined,
+};
+
+function makeMechanicSyncGame(): { game: GameState; clueId: string; drawId: string; hostHandId: string } {
+  const game = makeGame();
+  const clue = { ...createCardState(clueDef, 'p2', 'library', false, true), zone: 'battlefield' as const, summoningSick: false };
+  const drawCard = createCardState(testDef, 'p2', 'library');
+  const hostHand = createCardState(testDef, 'p1', 'hand');
+  return {
+    clueId: clue.instanceId,
+    drawId: drawCard.instanceId,
+    hostHandId: hostHand.instanceId,
+    game: {
+      ...game,
+      status: 'playing',
+      cards: {
+        [clue.instanceId]: clue,
+        [drawCard.instanceId]: drawCard,
+        [hostHand.instanceId]: hostHand,
+      },
+      definitions: {
+        [clueDef.id]: clueDef,
+        [testDef.id]: testDef,
+      },
+      players: game.players.map(player => {
+        if (player.id === 'p1') return { ...player, hand: [hostHand.instanceId] };
+        if (player.id === 'p2') return { ...player, battlefield: [clue.instanceId], library: [drawCard.instanceId] };
+        return player;
+      }),
+    },
+  };
+}
+
 function setPermissionStore(localPlayerId: string, judgeMode = false): GameState {
   const game = makePermissionGame();
   useGameStore.setState(state => ({
@@ -230,6 +274,91 @@ useGameStore.getState().castCard('p2', ownHandId);
 permissionState = useGameStore.getState();
 assert(!permissionState.game.players[1].hand.includes(ownHandId), 'non-host can cast their own hand card');
 assert(permissionState.game.stack.some(item => item.sourceInstanceId === ownHandId), 'non-host own cast adds stack object');
+
+let syncFixture = makeMechanicSyncGame();
+useGameStore.setState(state => ({
+  ...state,
+  game: syncFixture.game,
+  localPlayerId: 'p2',
+  multiplayer: {
+    ...state.multiplayer,
+    status: 'joined',
+    roomCode: 'SYNC01',
+    peerId: 'peer-local',
+    isHost: false,
+    isSpectator: false,
+    peers: {
+      host: makePresence('host', 0),
+      'peer-local': makePresence('peer-local', 1),
+    },
+    configured: true,
+  },
+  ui: { ...state.ui, judgeMode: false },
+}));
+assert(!useGameStore.getState().activateClue(syncFixture.clueId), 'offline joiner should not apply mechanic action locally without host transport');
+permissionState = useGameStore.getState();
+assert(permissionState.game.cards[syncFixture.clueId].zone === 'battlefield', 'joiner mechanic request must not mutate local host-authoritative state directly');
+assert(permissionState.game.players[1].library.includes(syncFixture.drawId), 'joiner mechanic request must not draw locally before host patch');
+assert(permissionState.game.actionLog.length === syncFixture.game.actionLog.length, 'joiner mechanic request must not append local action log');
+
+syncFixture = makeMechanicSyncGame();
+useGameStore.setState(state => ({
+  ...state,
+  game: syncFixture.game,
+  localPlayerId: 'p1',
+  multiplayer: {
+    ...state.multiplayer,
+    status: 'host',
+    roomCode: 'SYNC01',
+    peerId: 'host',
+    isHost: true,
+    isSpectator: false,
+    peers: {
+      host: makePresence('host', 0),
+      'peer-local': makePresence('peer-local', 1),
+    },
+    configured: true,
+  },
+  ui: { ...state.ui, judgeMode: false },
+}));
+assert(
+  applyHostAuthoritativeGameActionRequest(
+    { actionSeq: 1, actionType: 'activateClue', params: { instanceId: syncFixture.clueId } },
+    makePresence('peer-local', 1),
+  ),
+  'host should replay joined player mechanic action authoritatively',
+);
+permissionState = useGameStore.getState();
+assert(permissionState.game.cards[syncFixture.clueId].zone === 'graveyard', 'host authoritative Clue activation should move Clue to graveyard');
+assert(permissionState.game.players[1].hand.includes(syncFixture.drawId), 'host authoritative Clue activation should draw for joined player');
+assert(permissionState.game.actionLog.at(-1)?.data.mechanicId === 'clue', 'host authoritative mechanic action should log mechanic id');
+
+syncFixture = makeMechanicSyncGame();
+useGameStore.setState(state => ({
+  ...state,
+  game: syncFixture.game,
+  localPlayerId: 'p2',
+  multiplayer: {
+    ...state.multiplayer,
+    status: 'joined',
+    roomCode: 'SYNC01',
+    peerId: 'peer-local',
+    isHost: false,
+    isSpectator: false,
+    peers: {
+      host: makePresence('host', 0),
+      'peer-local': makePresence('peer-local', 1),
+    },
+    configured: true,
+  },
+  ui: { ...state.ui, judgeMode: false },
+}));
+assert(
+  !useGameStore.getState().setPowerToughnessOverride([syncFixture.hostHandId], '5', '5', 'manual', 'blocked private-zone test'),
+  'joined player must not request or apply private-zone override on another player card',
+);
+permissionState = useGameStore.getState();
+assert(!permissionState.game.cards[syncFixture.hostHandId].powerToughnessOverride, 'private-zone override must remain unset');
 
 permissionGame = setPermissionStore('p1', true);
 const judgeLibraryId = permissionGame.players[1].library[0];

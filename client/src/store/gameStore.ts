@@ -3,7 +3,8 @@ import { create } from 'zustand';
 import { v4 as uuid } from 'uuid';
 import type {
   GameState, Player, CardState, Phase, StackObject, TriggerItem, ManaPool,
-  AssistantFlag, Deck, GameConfig, ActionRecord, PlayerAvatarImage, CardDefinition
+  AssistantFlag, Deck, GameConfig, ActionRecord, PlayerAvatarImage, CardDefinition, TokenStackAttackInput, CombatDamagePreview,
+  PowerToughnessOverrideExpiration
 } from '../types/game';
 import {
   createEmptyGameState, createPlayer, createAction, moveCard, tapCard,
@@ -14,7 +15,29 @@ import {
   loadDeckIntoPlayer, createDefaultGameConfig, createCardState,
   triggerMyriad, clearCombatAssignments, setManaPool, addManaToPool, clearManaPool,
   takeMulligan, tutorCard as tutorCardFromEngine, removeAllCountersFromCard,
+  addCombatManaToPool, clearCombatMana, markExhaustUsedOnCard, resetExhaustUsedOnCard,
+  applyAirbend as applyAirbendInEngine, markCastForWarp as markCastForWarpInEngine,
+  getWaterbendEligiblePermanents as getWaterbendEligiblePermanentsFromEngine,
+  payWaterbendCost as payWaterbendCostInEngine,
+  applyEarthbend as applyEarthbendInEngine,
+  declareTokenStackAttack as declareTokenStackAttackInEngine,
+  getSneakReturnCandidates as getSneakReturnCandidatesFromEngine,
+  canCastWithSneak as canCastWithSneakInEngine,
+  castWithSneak as castWithSneakInEngine,
+  generateCombatDamagePreview,
+  getEffectivePowerToughness,
+  setPowerToughnessOverride as setPowerToughnessOverrideInEngine,
+  clearPowerToughnessOverride as clearPowerToughnessOverrideInEngine,
+  clearExpiredPowerToughnessOverrides,
+  getStationEligibleCreatures as getStationEligibleCreaturesFromEngine,
+  stationSpacecraft as stationSpacecraftInEngine,
+  applyBlight as applyBlightInEngine,
+  getVividColorCount as getVividColorCountFromEngine,
+  levelUpClass as levelUpClassInEngine,
+  setClassLevel as setClassLevelInEngine,
 } from '../engine/gameEngine';
+import { DEFAULT_RULESET_VERSION } from '../rules/defaultRuleset';
+import { getFirebendingAmount, getMechanicsForCard } from '../rules/mechanicsRegistry';
 import {
   checkCastLegality, checkTapLegality, checkAttackLegality, checkBlockLegality,
   detectAttackTriggers, detectCastTriggers, detectCombatDamageTriggers, detectETBTriggers, detectUpkeepTriggers, getActiveModifiers,
@@ -149,6 +172,7 @@ const MAX_TOKEN_BATCH = 250;
 const START_GAME_ACK_TIMEOUT_MS = 5000;
 let startGameHandshakeTimer: ReturnType<typeof setTimeout> | null = null;
 let applyingRemoteMultiplayerGame = false;
+let hostAuthoritativeActionActorId: string | null = null;
 
 function clearStartGameHandshakeTimer(): void {
   if (startGameHandshakeTimer) {
@@ -213,6 +237,7 @@ export function buildStartedGame(game: GameState, now = Date.now()): GameState {
   const action = createAction(next, next.activePlayerId, 'GAME_START', 'Game started.');
   return {
     ...next,
+    rulesetVersion: next.rulesetVersion || DEFAULT_RULESET_VERSION,
     status: 'playing',
     phase: 'main1',
     actionLog: [...next.actionLog, action],
@@ -237,7 +262,7 @@ export function getRequiredStartAckPeerIds(
 
 function canLocalControlPlayer(state: GameStore, playerId: string): boolean {
   return canControlPlayer(
-    state.localPlayerId,
+    hostAuthoritativeActionActorId ?? state.localPlayerId,
     playerId,
     state.multiplayer.isSpectator ? 'spectator' : state.multiplayer.status,
     state.ui.judgeMode,
@@ -287,6 +312,13 @@ function canLocalPerformPrivatePlayerAction(state: GameStore, action: string, pl
   return allowed;
 }
 
+function debugStoreMultiplayer(event: string, data?: Record<string, unknown>): void {
+  const debugEnabled = import.meta.env?.DEV === true ||
+    (typeof localStorage !== 'undefined' && localStorage.getItem('on-da-stack-debug') === '1');
+  if (!debugEnabled) return;
+  console.debug(`[multiplayer] ${event}`, data ?? {});
+}
+
 const DEFAULT_UI: UIState = {
   screen: 'lobby',
   selectedCardId: null,
@@ -313,6 +345,122 @@ const DEFAULT_UI: UIState = {
   actionFilter: '',
   panelSizes: loadPanelSizes(),
 };
+
+function shouldRouteToHostAuthoritativeAction(state: GameStore): boolean {
+  return state.multiplayer.status === 'joined' && !applyingRemoteMultiplayerGame;
+}
+
+function routeHostAuthoritativeAction(actionType: string, params: Record<string, unknown>): boolean {
+  return sendGameActionRequest(actionType, params);
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function asStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+export function applyHostAuthoritativeGameActionRequest(
+  request: GameActionRequestPayload,
+  presence: RoomPresence,
+): boolean {
+  const state = useGameStore.getState();
+  if (state.multiplayer.status !== 'host' || presence.isSpectator || presence.seatIndex < 0) return false;
+  const actor = state.game.players[presence.seatIndex];
+  if (!actor) return false;
+
+  const params = request.params ?? {};
+  const requestedPlayerId = asString(params.playerId);
+  if (requestedPlayerId && requestedPlayerId !== actor.id) return false;
+
+  const previousActor = hostAuthoritativeActionActorId;
+  hostAuthoritativeActionActorId = actor.id;
+  try {
+    const store = useGameStore.getState();
+    switch (request.actionType) {
+      case 'activateClue':
+        return store.activateClue(asString(params.instanceId) ?? '', params.options as { confirmPayment?: boolean } | undefined);
+      case 'markExhaustUsed':
+        return store.markExhaustUsed(asString(params.instanceId) ?? '', asString(params.exhaustId));
+      case 'resetExhaust':
+        return store.resetExhaust(asString(params.instanceId) ?? '', asString(params.exhaustId));
+      case 'applyAirbend':
+        return store.applyAirbend(asString(params.targetId) ?? '', asString(params.sourceId));
+      case 'markCastForWarp':
+        return store.markCastForWarp(asString(params.cardId) ?? '', asString(params.warpCost));
+      case 'castExiledWithPermission':
+        return store.castExiledWithPermission(actor.id, asString(params.instanceId) ?? '');
+      case 'payWaterbendCost':
+        return store.payWaterbendCost(actor.id, asNumber(params.amount) ?? 0, asStringArray(params.permanentIds), asString(params.sourceId));
+      case 'applyEarthbend':
+        return store.applyEarthbend(actor.id, asString(params.landId) ?? '', asNumber(params.amount) ?? 0, asString(params.sourceId));
+      case 'stationSpacecraft':
+        return store.stationSpacecraft(actor.id, asString(params.spacecraftId) ?? '', asString(params.creatureId) ?? '');
+      case 'applyBlight':
+        return store.applyBlight(actor.id, asString(params.creatureId) ?? '', asNumber(params.amount) ?? 0, asString(params.sourceId));
+      case 'levelUpClass':
+        return store.levelUpClass(actor.id, asString(params.cardId) ?? '');
+      case 'setClassLevel':
+        return store.setClassLevel(actor.id, asString(params.cardId) ?? '', asNumber(params.level) ?? 1, false);
+      case 'declareTokenStackAttack':
+        return store.declareTokenStackAttack(
+          actor.id,
+          asString(params.sourceGroupId) ?? '',
+          asStringArray(params.attackerIds),
+          Array.isArray(params.assignments) ? params.assignments as Parameters<GameStore['declareTokenStackAttack']>[3] : [],
+        );
+      case 'castWithSneak':
+        return store.castWithSneak(actor.id, asString(params.cardId) ?? '', asString(params.returnedAttackerId));
+      case 'generateCombatPreview':
+        store.generateCombatPreview();
+        return true;
+      case 'clearCombatPreview':
+        store.clearCombatPreview();
+        return true;
+      case 'confirmCombatDamage':
+        store.confirmCombatDamage();
+        return true;
+      case 'setPowerToughnessOverride':
+        return store.setPowerToughnessOverride(
+          asStringArray(params.instanceIds),
+          asString(params.power),
+          asString(params.toughness),
+          asString(params.expires) as PowerToughnessOverrideExpiration | undefined,
+          asString(params.reason),
+        );
+      case 'clearPowerToughnessOverride':
+        return store.clearPowerToughnessOverride(asStringArray(params.instanceIds));
+      case 'addCounterToCard':
+        store.addCounterToCard(asString(params.instanceId) ?? '', asString(params.counterType) ?? '', asNumber(params.amount) ?? 1);
+        return true;
+      case 'removeCounterFromCard':
+        store.removeCounterFromCard(asString(params.instanceId) ?? '', asString(params.counterType) ?? '', asNumber(params.amount) ?? 1);
+        return true;
+      case 'setCardTemporaryNote':
+        return store.setCardTemporaryNote(asString(params.instanceId) ?? '', asString(params.note) ?? '');
+      case 'setMarkedDamage':
+        return store.setMarkedDamage(asString(params.instanceId) ?? '', asNumber(params.amount) ?? 0);
+      case 'clearMarkedDamage':
+        return store.clearMarkedDamage(asString(params.instanceId) ?? '');
+      case 'setManualCombatRole':
+        return store.setManualCombatRole(asString(params.instanceId) ?? '', asString(params.role) as CardState['combatRole']);
+      case 'setCardController':
+        return store.setCardController(asString(params.instanceId) ?? '', actor.id);
+      case 'addManualTriggerForCard':
+        return store.addManualTriggerForCard(asString(params.instanceId) ?? '', asString(params.text) ?? '');
+      default:
+        return false;
+    }
+  } finally {
+    hostAuthoritativeActionActorId = previousActor;
+  }
+}
 
 // ─── Store Interface ──────────────────────────────────────────────────────────
 
@@ -394,11 +542,44 @@ export interface GameStore {
   removeAllCountersFromCard: (instanceId: string, counterType?: string) => void;
   addCounterToCard: (instanceId: string, counterType: string, amount?: number) => void;
   removeCounterFromCard: (instanceId: string, counterType: string, amount?: number) => void;
+  setCardTemporaryNote: (instanceId: string, note: string) => boolean;
+  setMarkedDamage: (instanceId: string, amount: number) => boolean;
+  clearMarkedDamage: (instanceId: string) => boolean;
+  setManualCombatRole: (instanceId: string, role: CardState['combatRole']) => boolean;
+  setCardController: (instanceId: string, controllerId: string) => boolean;
+  setCardOwner: (instanceId: string, ownerId: string) => boolean;
+  addManualTriggerForCard: (instanceId: string, text: string) => boolean;
   attachCard: (attachmentId: string, targetId: string) => void;
   detachCard: (attachmentId: string) => void;
   transformCard: (instanceId: string) => void;
   createTokenCard: (controllerId: string, tokenDef: Parameters<typeof createToken>[2]) => void;
   createTokenCards: (controllerId: string, tokenDef: Parameters<typeof createToken>[2], count?: number) => string[];
+  activateClue: (instanceId: string, options?: { confirmPayment?: boolean }) => boolean;
+  markExhaustUsed: (instanceId: string, exhaustId?: string) => boolean;
+  resetExhaust: (instanceId: string, exhaustId?: string) => boolean;
+  applyAirbend: (targetId: string, sourceId?: string) => boolean;
+  markCastForWarp: (cardId: string, warpCost?: string) => boolean;
+  castExiledWithPermission: (playerId: string, instanceId: string) => boolean;
+  getWaterbendEligiblePermanents: (playerId: string) => CardState[];
+  payWaterbendCost: (playerId: string, amount: number, permanentIds: string[], sourceId?: string) => boolean;
+  applyEarthbend: (playerId: string, landId: string, amount: number, sourceId?: string) => boolean;
+  getStationEligibleCreatures: (playerId: string, spacecraftId: string) => CardState[];
+  stationSpacecraft: (playerId: string, spacecraftId: string, creatureId: string) => boolean;
+  applyBlight: (playerId: string, creatureId: string, amount: number, sourceId?: string) => boolean;
+  getVividColorCount: (playerId: string) => number;
+  levelUpClass: (playerId: string, cardId: string) => boolean;
+  setClassLevel: (playerId: string, cardId: string, level: number, judgeOverride?: boolean) => boolean;
+  getSneakReturnCandidates: (playerId: string) => { attackerId: string; assignmentId: string; sourceName: string }[];
+  canCastWithSneak: (playerId: string, cardId: string) => boolean;
+  castWithSneak: (playerId: string, cardId: string, returnedAttackerId?: string) => boolean;
+  setPowerToughnessOverride: (
+    instanceIds: string[],
+    power?: string,
+    toughness?: string,
+    expires?: PowerToughnessOverrideExpiration,
+    reason?: string,
+  ) => boolean;
+  clearPowerToughnessOverride: (instanceIds: string[]) => boolean;
 
   modifyPlayerLife: (playerId: string, delta: number) => void;
   addCommanderDmg: (receivingPlayerId: string, commanderInstanceId: string, damage: number) => void;
@@ -432,6 +613,12 @@ export interface GameStore {
 
   enterCombat: () => void;
   declareAttack: (attackerInstanceId: string, targetPlayerId: string) => void;
+  declareTokenStackAttack: (
+    playerId: string,
+    sourceGroupId: string,
+    attackerIds: string[],
+    assignments: TokenStackAttackInput[],
+  ) => boolean;
   /** Trigger Myriad for an attacker: create token copies attacking each OTHER opponent. */
   declareMyriadAttack: (
     attackerInstanceId: string,
@@ -439,6 +626,9 @@ export interface GameStore {
     copiesPerOpponent: number,
   ) => { copyInstanceId: string; targetPlayerId: string }[];
   declareBlock: (blockerInstanceId: string, attackerInstanceId: string) => void;
+  generateCombatPreview: () => CombatDamagePreview;
+  clearCombatPreview: () => void;
+  confirmCombatDamage: () => void;
   resolveCombatDamage: () => void;
   endCombat: () => void;
 
@@ -955,7 +1145,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
             multiplayer.sessionId ?? '',
           );
           if (syncedGame.status === 'playing') {
-            console.debug('[multiplayer] joiner received GAME_STATE_PATCH with status playing', {
+            debugStoreMultiplayer('joiner received GAME_STATE_PATCH with status playing', {
               gameId: syncedGame.id,
               localPlayerId,
             });
@@ -978,7 +1168,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
           applyingRemoteMultiplayerGame = false;
           if (syncedGame.status === 'playing') {
             const applied = useGameStore.getState();
-            console.debug('[multiplayer] joiner state after apply', {
+            debugStoreMultiplayer('joiner state after apply', {
               screen: applied.ui.screen,
               lobbyOpen: applied.ui.lobbyOpen,
               gameStatus: applied.game.status,
@@ -1049,7 +1239,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
           get().multiplayer.playerId ?? '',
           get().multiplayer.sessionId ?? '',
         );
-        console.debug('[multiplayer] joiner applying game screen', {
+        debugStoreMultiplayer('joiner applying game screen', {
           commitId: commit.id,
           gameId: commit.gameId ?? syncedGame.id,
           status: syncedGame.status,
@@ -1070,7 +1260,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         get().enterGameScreen();
         applyingRemoteMultiplayerGame = false;
         const applied = useGameStore.getState();
-        console.debug('[multiplayer] joiner state after apply', {
+        debugStoreMultiplayer('joiner state after apply', {
           screen: applied.ui.screen,
           lobbyOpen: applied.ui.lobbyOpen,
           gameStatus: applied.game.status,
@@ -1080,7 +1270,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       (lobby: LobbyState) => {
         set(s => ({ multiplayer: { ...s.multiplayer, lobby } }));
         const applied = useGameStore.getState();
-        console.debug('[multiplayer] joiner lobby state after apply', {
+        debugStoreMultiplayer('joiner lobby state after apply', {
           lobbyStatus: applied.multiplayer.lobby?.status ?? 'none',
           screen: applied.ui.screen,
           gameStatus: applied.game.status,
@@ -1111,10 +1301,18 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         })();
       },
       (request: GameActionRequestPayload, presence: RoomPresence) => {
+        if (applyHostAuthoritativeGameActionRequest(request, presence)) return;
         const state = useGameStore.getState();
         if (state.multiplayer.status !== 'host') return;
         const actor = state.game.players[presence.seatIndex];
-        const action = createAction(state.game, actor?.id ?? state.game.activePlayerId, 'OTHER', `Requested action: ${request.actionType}`, [], request.params);
+        const action = createAction(
+          state.game,
+          actor?.id ?? state.game.activePlayerId,
+          'OTHER',
+          `Rejected or manual-only multiplayer action request: ${request.actionType}`,
+          [],
+          { ...request.params, multiplayerSync: 'manual_or_unsupported' },
+        );
         set({ game: { ...state.game, actionLog: [...state.game.actionLog, action], lastUpdatedAt: Date.now() } });
       },
     );
@@ -1645,13 +1843,13 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     }));
 
     if (canVote) {
-      console.debug('[multiplayer] joiner ready to vote start', {
+      debugStoreMultiplayer('joiner ready to vote start', {
         id: prepare.id,
         playerId: self?.playerId,
         peerId: resolvedPeerId,
       });
     } else {
-      console.debug('[multiplayer] joiner waiting for start vote', {
+      debugStoreMultiplayer('joiner waiting for start vote', {
         id: prepare.id,
         playerId: self?.playerId,
         deckStatus: authoritativeDeck?.status ?? self?.deckStatus,
@@ -1780,7 +1978,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       status: 'playing' as const,
       lastUpdatedAt: committedAt,
     };
-    console.debug('[multiplayer] host committed game', {
+    debugStoreMultiplayer('host committed game', {
       gameId: game.id,
       fallback,
       missingPeerIds,
@@ -2195,21 +2393,156 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   addCounterToCard: (instanceId, counterType, amount = 1) => {
     let g = get().game;
     const card = g.cards[instanceId];
-    if (!card) return;
+    if (!card || !counterType || !canLocalControlCard(get(), card)) return;
+    if (!canLocalPerformPrivateCardAction(get(), 'addCounterToCard', card)) return;
+    if (shouldRouteToHostAuthoritativeAction(get())) {
+      routeHostAuthoritativeAction('addCounterToCard', { instanceId, counterType, amount });
+      return;
+    }
     g = addCounter(g, instanceId, counterType, amount);
     const action = createAction(g, card.controllerId, 'ADD_COUNTER',
       `Added ${amount} ${counterType} to ${card.definition.name}`, [instanceId]);
-    set({ game: { ...g, actionLog: [...g.actionLog, action] } });
+    set({ game: { ...g, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
   },
 
   removeCounterFromCard: (instanceId, counterType, amount = 1) => {
     let g = get().game;
     const card = g.cards[instanceId];
-    if (!card) return;
+    if (!card || !counterType || !canLocalControlCard(get(), card)) return;
+    if (!canLocalPerformPrivateCardAction(get(), 'removeCounterFromCard', card)) return;
+    if (shouldRouteToHostAuthoritativeAction(get())) {
+      routeHostAuthoritativeAction('removeCounterFromCard', { instanceId, counterType, amount });
+      return;
+    }
     g = removeCounter(g, instanceId, counterType, amount);
     const action = createAction(g, card.controllerId, 'REMOVE_COUNTER',
       `Removed ${amount} ${counterType} counter(s) from ${card.definition.name}`, [instanceId]);
-    set({ game: { ...g, actionLog: [...g.actionLog, action] } });
+    set({ game: { ...g, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
+  },
+
+  setCardTemporaryNote: (instanceId, note) => {
+    const state = get();
+    const card = state.game.cards[instanceId];
+    const trimmed = note.trim();
+    if (!card || !trimmed || !canLocalControlCard(state, card)) return false;
+    if (!canLocalPerformPrivateCardAction(state, 'setCardTemporaryNote', card)) return false;
+    if (shouldRouteToHostAuthoritativeAction(state)) {
+      return routeHostAuthoritativeAction('setCardTemporaryNote', { instanceId, note: trimmed });
+    }
+    const next = {
+      ...state.game,
+      cards: { ...state.game.cards, [instanceId]: { ...card, notes: trimmed } },
+      lastUpdatedAt: Date.now(),
+    };
+    const action = createAction(next, card.controllerId, 'NOTE', `Manual note on ${card.definition.name}: ${trimmed}`, [instanceId], { manualTool: 'note' });
+    set({ game: { ...next, actionLog: [...next.actionLog, action] } });
+    return true;
+  },
+
+  setMarkedDamage: (instanceId, amount) => {
+    const state = get();
+    const card = state.game.cards[instanceId];
+    const safeAmount = Math.max(0, Math.floor(amount));
+    if (!card || !canLocalControlCard(state, card)) return false;
+    if (!canLocalPerformPrivateCardAction(state, 'setMarkedDamage', card)) return false;
+    if (shouldRouteToHostAuthoritativeAction(state)) {
+      return routeHostAuthoritativeAction('setMarkedDamage', { instanceId, amount: safeAmount });
+    }
+    const next = {
+      ...state.game,
+      cards: { ...state.game.cards, [instanceId]: { ...card, markedForDamage: safeAmount } },
+      lastUpdatedAt: Date.now(),
+    };
+    const action = createAction(next, card.controllerId, 'OTHER', `Set ${card.definition.name} marked damage to ${safeAmount}.`, [instanceId], { manualTool: 'markedDamage', amount: safeAmount });
+    set({ game: { ...next, actionLog: [...next.actionLog, action] } });
+    return true;
+  },
+
+  clearMarkedDamage: (instanceId) => {
+    return get().setMarkedDamage(instanceId, 0);
+  },
+
+  setManualCombatRole: (instanceId, role) => {
+    const state = get();
+    const card = state.game.cards[instanceId];
+    if (!card || !canLocalControlCard(state, card)) return false;
+    if (!canLocalPerformPrivateCardAction(state, 'setManualCombatRole', card)) return false;
+    const safeRole: CardState['combatRole'] = role === 'attacker' || role === 'blocker' ? role : 'none';
+    if (shouldRouteToHostAuthoritativeAction(state)) {
+      return routeHostAuthoritativeAction('setManualCombatRole', { instanceId, role: safeRole });
+    }
+    const next = {
+      ...state.game,
+      cards: { ...state.game.cards, [instanceId]: { ...card, combatRole: safeRole } },
+      lastUpdatedAt: Date.now(),
+    };
+    const action = createAction(next, card.controllerId, 'OTHER', `${card.definition.name} manually marked as ${safeRole}.`, [instanceId], { manualTool: 'combatRole', role: safeRole });
+    set({ game: { ...next, actionLog: [...next.actionLog, action] } });
+    return true;
+  },
+
+  setCardController: (instanceId, controllerId) => {
+    const state = get();
+    const card = state.game.cards[instanceId];
+    const player = state.game.players.find(p => p.id === controllerId);
+    if (!card || !player || !canLocalControlCard(state, card)) return false;
+    if (!canLocalPerformPrivateCardAction(state, 'setCardController', card)) return false;
+    if (shouldRouteToHostAuthoritativeAction(state)) {
+      return routeHostAuthoritativeAction('setCardController', { instanceId, controllerId });
+    }
+    const next = {
+      ...state.game,
+      cards: { ...state.game.cards, [instanceId]: { ...card, controllerId } },
+      lastUpdatedAt: Date.now(),
+    };
+    const action = createAction(next, controllerId, 'OTHER', `${card.definition.name} controller set to ${player.name}.`, [instanceId], { manualTool: 'controller', controllerId });
+    set({ game: { ...next, actionLog: [...next.actionLog, action] } });
+    return true;
+  },
+
+  setCardOwner: (instanceId, ownerId) => {
+    const state = get();
+    const card = state.game.cards[instanceId];
+    const player = state.game.players.find(p => p.id === ownerId);
+    if (!card || !player || !state.ui.judgeMode) return false;
+    if (shouldRouteToHostAuthoritativeAction(state)) {
+      return routeHostAuthoritativeAction('setCardOwner', { instanceId, ownerId });
+    }
+    const next = {
+      ...state.game,
+      cards: { ...state.game.cards, [instanceId]: { ...card, ownerId } },
+      lastUpdatedAt: Date.now(),
+    };
+    const action = createAction(next, ownerId, 'OTHER', `${card.definition.name} owner set to ${player.name}.`, [instanceId], { manualTool: 'owner', ownerId, judgeOnly: true });
+    set({ game: { ...next, actionLog: [...next.actionLog, action] } });
+    return true;
+  },
+
+  addManualTriggerForCard: (instanceId, text) => {
+    const state = get();
+    const card = state.game.cards[instanceId];
+    const trimmed = text.trim();
+    if (!card || !trimmed || !canLocalControlCard(state, card)) return false;
+    if (!canLocalPerformPrivateCardAction(state, 'addManualTriggerForCard', card)) return false;
+    if (shouldRouteToHostAuthoritativeAction(state)) {
+      return routeHostAuthoritativeAction('addManualTriggerForCard', { instanceId, text: trimmed });
+    }
+    const trigger: TriggerItem = {
+      id: uuid(),
+      sourceInstanceId: instanceId,
+      sourceName: card.definition.name,
+      controllerId: card.controllerId,
+      text: trimmed,
+      triggerType: 'other',
+      acknowledged: false,
+      missed: false,
+      timestamp: Date.now(),
+      data: { manualTool: true },
+    };
+    const next = addTrigger(state.game, trigger);
+    const action = createAction(next, card.controllerId, 'OTHER', `Manual trigger added for ${card.definition.name}: ${trimmed}`, [instanceId], { triggerId: trigger.id, manualTool: 'trigger' });
+    set({ game: { ...next, actionLog: [...next.actionLog, action], lastUpdatedAt: Date.now() } });
+    return true;
   },
 
   attachCard: (attachmentId, targetId) => {
@@ -2292,6 +2625,430 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     );
     set({ game: { ...g, actionLog: [...g.actionLog, action] } });
     return result.tokenIds;
+  },
+
+  activateClue: (instanceId, options = {}) => {
+    let g = get().game;
+    const card = g.cards[instanceId];
+    if (!card || !canLocalControlCard(get(), card)) return false;
+    const hasClue = getMechanicsForCard(card).some(mechanic => mechanic.id === 'clue') ||
+      card.definition.subTypes.some(subtype => subtype.toLowerCase() === 'clue') ||
+      /\bclue\b/i.test(card.definition.typeLine);
+    if (!hasClue || card.zone !== 'battlefield') return false;
+    const controller = g.players.find(player => player.id === card.controllerId);
+    if (!controller) return false;
+
+    const paymentConfirmed = options.confirmPayment !== false;
+    if (!paymentConfirmed) return false;
+    if (shouldRouteToHostAuthoritativeAction(get())) {
+      return routeHostAuthoritativeAction('activateClue', { instanceId, options });
+    }
+
+    g = moveCard(g, instanceId, 'graveyard', card.controllerId);
+    g = drawCards(g, card.controllerId, 1);
+    const action = createAction(
+      g,
+      card.controllerId,
+      'ACTIVATE_ABILITY',
+      `${controller.name} cracked ${card.definition.name}: paid {2}, sacrificed it, and drew a card.`,
+      [instanceId],
+      { mechanicId: 'clue', paymentConfirmed: true, genericCost: 2, draws: 1 },
+    );
+    set({ game: { ...g, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
+    return true;
+  },
+
+  markExhaustUsed: (instanceId, exhaustId = 'default') => {
+    let g = get().game;
+    const card = g.cards[instanceId];
+    if (!card || !canLocalControlCard(get(), card)) return false;
+    if (card.exhaustUsed?.[exhaustId]) return false;
+    if (shouldRouteToHostAuthoritativeAction(get())) {
+      return routeHostAuthoritativeAction('markExhaustUsed', { instanceId, exhaustId });
+    }
+    g = markExhaustUsedOnCard(g, instanceId, exhaustId);
+    const action = createAction(
+      g,
+      card.controllerId,
+      'ACTIVATE_ABILITY',
+      `${card.definition.name} exhaust marked used.`,
+      [instanceId],
+      { mechanicId: 'exhaust', exhaustId },
+    );
+    set({ game: { ...g, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
+    return true;
+  },
+
+  resetExhaust: (instanceId, exhaustId) => {
+    let g = get().game;
+    const card = g.cards[instanceId];
+    if (!card || !canLocalControlCard(get(), card)) return false;
+    if (shouldRouteToHostAuthoritativeAction(get())) {
+      return routeHostAuthoritativeAction('resetExhaust', { instanceId, exhaustId });
+    }
+    g = resetExhaustUsedOnCard(g, instanceId, exhaustId);
+    const action = createAction(
+      g,
+      card.controllerId,
+      'OTHER',
+      `${card.definition.name} exhaust ${exhaustId ? exhaustId : 'tracking'} reset.`,
+      [instanceId],
+      { mechanicId: 'exhaust', exhaustId, reset: true },
+    );
+    set({ game: { ...g, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
+    return true;
+  },
+  applyAirbend: (targetId, sourceId) => {
+    let g = get().game;
+    const card = g.cards[targetId];
+    if (!card || !canLocalControlCard(get(), card)) return false;
+    if (shouldRouteToHostAuthoritativeAction(get())) {
+      return routeHostAuthoritativeAction('applyAirbend', { targetId, sourceId });
+    }
+    const wasToken = card.token;
+    g = applyAirbendInEngine(g, targetId, sourceId);
+    const action = createAction(
+      g,
+      card.controllerId,
+      'MOVE_CARD',
+      wasToken
+        ? `${card.definition.name} was airbended and ceased to exist as a token.`
+        : `${card.definition.name} was airbended. Owner may cast it from exile for {2}.`,
+      [targetId],
+      { mechanicId: 'airbend', sourceId, tokenRemoved: wasToken },
+    );
+    set({ game: { ...g, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
+    return true;
+  },
+
+  markCastForWarp: (cardId, warpCost) => {
+    let g = get().game;
+    const card = g.cards[cardId];
+    if (!card || !canLocalControlCard(get(), card)) return false;
+    if (shouldRouteToHostAuthoritativeAction(get())) {
+      return routeHostAuthoritativeAction('markCastForWarp', { cardId, warpCost });
+    }
+    g = markCastForWarpInEngine(g, cardId, warpCost);
+    const action = createAction(
+      g,
+      card.controllerId,
+      'CAST',
+      `${card.definition.name} marked as cast for warp${warpCost ? ` (${warpCost})` : ''}.`,
+      [cardId],
+      { mechanicId: 'warp', warpCost },
+    );
+    set({ game: { ...g, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
+    return true;
+  },
+
+  castExiledWithPermission: (playerId, instanceId) => {
+    if (!canLocalControlPlayer(get(), playerId)) return false;
+    let g = get().game;
+    const card = g.cards[instanceId];
+    if (!card || card.zone !== 'exile' || !card.exilePermission) return false;
+    if (card.exilePermission.ownerId !== playerId && !get().ui.judgeMode) return false;
+    if (shouldRouteToHostAuthoritativeAction(get())) {
+      return routeHostAuthoritativeAction('castExiledWithPermission', { playerId, instanceId });
+    }
+    const isPermanent = ['Creature', 'Artifact', 'Enchantment', 'Planeswalker', 'Land', 'Battle']
+      .some(t => card.definition.cardTypes.includes(t as typeof card.definition.cardTypes[number]));
+    g = { ...g, cards: { ...g.cards, [instanceId]: { ...card, controllerId: playerId } } };
+    g = moveCard(g, instanceId, isPermanent ? 'battlefield' : 'graveyard', playerId);
+    const movedCard = g.cards[instanceId];
+    if (movedCard) {
+      g = {
+        ...g,
+        cards: {
+          ...g.cards,
+          [instanceId]: {
+            ...movedCard,
+            exilePermission: undefined,
+            warpedThisTurn: false,
+          },
+        },
+      };
+    }
+    const action = createAction(
+      g,
+      playerId,
+      'CAST',
+      `Cast ${card.definition.name} from exile${card.exilePermission.alternativeCost ? ` for ${card.exilePermission.alternativeCost}` : ''}.`,
+      [instanceId],
+      { mechanicId: card.exilePermission.sourceMechanic, exilePermission: card.exilePermission },
+    );
+    set({ game: { ...g, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
+    return true;
+  },
+  getWaterbendEligiblePermanents: (playerId) => {
+    if (!canLocalControlPlayer(get(), playerId)) return [];
+    return getWaterbendEligiblePermanentsFromEngine(get().game, playerId);
+  },
+
+  payWaterbendCost: (playerId, amount, permanentIds, sourceId) => {
+    if (!canLocalControlPlayer(get(), playerId)) return false;
+    const g = get().game;
+    for (const id of permanentIds) {
+      const card = g.cards[id];
+      if (!card || !canLocalControlCard(get(), card)) return false;
+    }
+    if (shouldRouteToHostAuthoritativeAction(get())) {
+      return routeHostAuthoritativeAction('payWaterbendCost', { playerId, amount, permanentIds, sourceId });
+    }
+    const result = payWaterbendCostInEngine(g, playerId, amount, permanentIds, sourceId);
+    if (!result.valid) return false;
+    const names = permanentIds.map(id => g.cards[id]?.definition.name).filter(Boolean).join(', ');
+    const action = createAction(
+      result.state,
+      playerId,
+      'TAP',
+      `Waterbend paid ${result.paid} generic cost by tapping ${names || 'no permanents'}.`,
+      permanentIds,
+      { mechanicId: 'waterbend', amount, paid: result.paid, sourceId, notManaAbility: true },
+    );
+    set({ game: { ...result.state, actionLog: [...result.state.actionLog, action], lastUpdatedAt: Date.now() } });
+    return true;
+  },
+
+  applyEarthbend: (playerId, landId, amount, sourceId) => {
+    if (!canLocalControlPlayer(get(), playerId)) return false;
+    const g = get().game;
+    const card = g.cards[landId];
+    if (!card || !canLocalControlCard(get(), card)) return false;
+    if (shouldRouteToHostAuthoritativeAction(get())) {
+      return routeHostAuthoritativeAction('applyEarthbend', { playerId, landId, amount, sourceId });
+    }
+    const result = applyEarthbendInEngine(g, playerId, landId, amount, sourceId);
+    if (!result.valid) return false;
+    const safeAmount = Math.floor(amount);
+    const action = createAction(
+      result.state,
+      playerId,
+      'ADD_COUNTER',
+      `${card.definition.name} was earthbended ${safeAmount}: it is a 0/0 land creature with haste and ${safeAmount} +1/+1 counter(s).`,
+      [landId],
+      { mechanicId: 'earthbend', amount: safeAmount, sourceId },
+    );
+    set({ game: { ...result.state, actionLog: [...result.state.actionLog, action], lastUpdatedAt: Date.now() } });
+    return true;
+  },
+
+  getStationEligibleCreatures: (playerId, spacecraftId) => {
+    if (!canLocalControlPlayer(get(), playerId)) return [];
+    const spacecraft = get().game.cards[spacecraftId];
+    if (!spacecraft || !canLocalControlCard(get(), spacecraft)) return [];
+    return getStationEligibleCreaturesFromEngine(get().game, playerId, spacecraftId);
+  },
+
+  stationSpacecraft: (playerId, spacecraftId, creatureId) => {
+    if (!canLocalControlPlayer(get(), playerId)) return false;
+    const g = get().game;
+    const spacecraft = g.cards[spacecraftId];
+    const creature = g.cards[creatureId];
+    if (!spacecraft || !creature) return false;
+    if (!canLocalControlCard(get(), spacecraft) || !canLocalControlCard(get(), creature)) return false;
+    if (shouldRouteToHostAuthoritativeAction(get())) {
+      return routeHostAuthoritativeAction('stationSpacecraft', { playerId, spacecraftId, creatureId });
+    }
+    const result = stationSpacecraftInEngine(g, playerId, spacecraftId, creatureId);
+    if (!result.valid) return false;
+    const action = createAction(
+      result.state,
+      playerId,
+      'ADD_COUNTER',
+      `${creature.definition.name} stationed ${spacecraft.definition.name}: add ${result.countersAdded ?? 0} charge counter${result.countersAdded === 1 ? '' : 's'}${result.stationed ? ' and unlock it' : ''}.`,
+      [spacecraftId, creatureId],
+      {
+        mechanicId: 'station',
+        spacecraftId,
+        creatureId,
+        countersAdded: result.countersAdded,
+        threshold: result.threshold,
+        stationed: result.stationed,
+        notManaAbility: true,
+      },
+    );
+    set({ game: { ...result.state, actionLog: [...result.state.actionLog, action], lastUpdatedAt: Date.now() } });
+    return true;
+  },
+
+  applyBlight: (playerId, creatureId, amount, sourceId) => {
+    if (!canLocalControlPlayer(get(), playerId)) return false;
+    const g = get().game;
+    const card = g.cards[creatureId];
+    if (!card || !canLocalControlCard(get(), card)) return false;
+    if (shouldRouteToHostAuthoritativeAction(get())) {
+      return routeHostAuthoritativeAction('applyBlight', { playerId, creatureId, amount, sourceId });
+    }
+    const result = applyBlightInEngine(g, playerId, creatureId, amount, sourceId);
+    if (!result.valid) return false;
+    const action = createAction(
+      result.state,
+      playerId,
+      'ADD_COUNTER',
+      `${card.definition.name} was blighted ${result.amount ?? amount}: add ${result.amount ?? amount} -1/-1 counter${(result.amount ?? amount) === 1 ? '' : 's'}.`,
+      [creatureId],
+      { mechanicId: 'blight', amount: result.amount ?? amount, sourceId },
+    );
+    set({ game: { ...result.state, actionLog: [...result.state.actionLog, action], lastUpdatedAt: Date.now() } });
+    return true;
+  },
+
+  getVividColorCount: (playerId) => {
+    return getVividColorCountFromEngine(get().game, playerId);
+  },
+
+  levelUpClass: (playerId, cardId) => {
+    if (!canLocalControlPlayer(get(), playerId)) return false;
+    const g = get().game;
+    const card = g.cards[cardId];
+    if (!card || !canLocalControlCard(get(), card)) return false;
+    if (shouldRouteToHostAuthoritativeAction(get())) {
+      return routeHostAuthoritativeAction('levelUpClass', { playerId, cardId });
+    }
+    const result = levelUpClassInEngine(g, playerId, cardId);
+    if (!result.valid) return false;
+    const action = createAction(
+      result.state,
+      playerId,
+      'OTHER',
+      `${card.definition.name} advanced to Class level ${result.level}.`,
+      [cardId],
+      { mechanicId: 'classes', level: result.level },
+    );
+    set({ game: { ...result.state, actionLog: [...result.state.actionLog, action], lastUpdatedAt: Date.now() } });
+    return true;
+  },
+
+  setClassLevel: (playerId, cardId, level, judgeOverride = false) => {
+    const state = get();
+    const effectiveJudgeOverride = judgeOverride || state.ui.judgeMode;
+    if (!effectiveJudgeOverride && !canLocalControlPlayer(state, playerId)) return false;
+    const card = state.game.cards[cardId];
+    if (!card || (!effectiveJudgeOverride && !canLocalControlCard(state, card))) return false;
+    if (shouldRouteToHostAuthoritativeAction(state)) {
+      return routeHostAuthoritativeAction('setClassLevel', { playerId, cardId, level });
+    }
+    const result = setClassLevelInEngine(state.game, playerId, cardId, level, effectiveJudgeOverride);
+    if (!result.valid) return false;
+    const action = createAction(
+      result.state,
+      playerId,
+      'OTHER',
+      `${card.definition.name} set to Class level ${result.level}.`,
+      [cardId],
+      { mechanicId: 'classes', level: result.level, judgeOverride: effectiveJudgeOverride },
+    );
+    set({ game: { ...result.state, actionLog: [...result.state.actionLog, action], lastUpdatedAt: Date.now() } });
+    return true;
+  },
+
+  getSneakReturnCandidates: (playerId) => {
+    return getSneakReturnCandidatesFromEngine(get().game, playerId).map(candidate => ({
+      attackerId: candidate.attackerId,
+      assignmentId: candidate.assignment.assignmentId,
+      sourceName: candidate.assignment.sourceName,
+    }));
+  },
+
+  canCastWithSneak: (playerId, cardId) => {
+    const state = get();
+    const card = state.game.cards[cardId];
+    if (!canLocalControlPlayer(state, playerId)) return false;
+    if (!canLocalPerformPrivateCardAction(state, 'castWithSneak', card)) return false;
+    if (!canLocalAccessCard(state, card)) return false;
+    return canCastWithSneakInEngine(state.game, playerId, cardId);
+  },
+
+  castWithSneak: (playerId, cardId, returnedAttackerId) => {
+    const state = get();
+    const card = state.game.cards[cardId];
+    if (!canLocalControlPlayer(state, playerId)) return false;
+    if (!canLocalPerformPrivateCardAction(state, 'castWithSneak', card)) return false;
+    if (!canLocalAccessCard(state, card)) return false;
+
+    const candidates = getSneakReturnCandidatesFromEngine(state.game, playerId);
+    const selectedReturnedId = returnedAttackerId ?? (candidates.length === 1 ? candidates[0].attackerId : undefined);
+    if (!selectedReturnedId) return false;
+    if (shouldRouteToHostAuthoritativeAction(state)) {
+      return routeHostAuthoritativeAction('castWithSneak', { playerId, cardId, returnedAttackerId: selectedReturnedId });
+    }
+
+    const result = castWithSneakInEngine(state.game, playerId, cardId, selectedReturnedId);
+    if (!result.valid) return false;
+    const returned = state.game.cards[selectedReturnedId];
+    const target = result.attackTarget;
+    const targetLabel = target?.type === 'player'
+      ? result.state.players.find(player => player.id === target.playerId)?.name ?? target.playerId
+      : target?.type === 'planeswalker'
+        ? result.state.cards[target.permanentId]?.definition.name ?? 'planeswalker'
+        : target?.type === 'battle'
+          ? result.state.cards[target.permanentId]?.definition.name ?? 'battle'
+          : 'the same target';
+    const action = createAction(
+      result.state,
+      playerId,
+      'CAST',
+      `${card?.definition.name ?? 'Sneak spell'} entered tapped and attacking ${targetLabel} via Sneak.`,
+      [cardId, selectedReturnedId],
+      {
+        mechanicId: 'sneak',
+        returnedAttackerId: selectedReturnedId,
+        returnedAttackerName: returned?.definition.name,
+        attackTarget: target,
+        shortcut: 'immediate_battlefield',
+        todo: 'Replace with full stack/resolve flow when alternative-cost casting is generalized.',
+      },
+    );
+    set({ game: { ...result.state, actionLog: [...result.state.actionLog, action], lastUpdatedAt: Date.now() } });
+    return true;
+  },
+
+  setPowerToughnessOverride: (instanceIds, power, toughness, expires = 'manual', reason) => {
+    const state = get();
+    const ids = [...new Set(instanceIds)].filter(Boolean);
+    if (ids.length === 0) return false;
+    const cards = ids.map(id => state.game.cards[id]);
+    if (cards.some(card => !card || !canLocalControlCard(state, card))) return false;
+    if (cards.some(card => !canLocalPerformPrivateCardAction(state, 'setPowerToughnessOverride', card))) return false;
+    if (!power?.trim() && !toughness?.trim()) return false;
+    if (shouldRouteToHostAuthoritativeAction(state)) {
+      return routeHostAuthoritativeAction('setPowerToughnessOverride', { instanceIds: ids, power, toughness, expires, reason });
+    }
+    const next = setPowerToughnessOverrideInEngine(state.game, ids, power, toughness, expires, reason);
+    const first = cards[0];
+    const action = createAction(
+      next,
+      first?.controllerId ?? state.game.activePlayerId,
+      'NOTE',
+      `${ids.length === 1 ? first?.definition.name ?? 'Card' : `${ids.length} cards`} P/T override set to ${power?.trim() || '?'}/${toughness?.trim() || '?'} (${expires}).`,
+      ids,
+      { power, toughness, expires, reason },
+    );
+    set({ game: { ...next, actionLog: [...next.actionLog, action], lastUpdatedAt: Date.now() } });
+    return true;
+  },
+
+  clearPowerToughnessOverride: (instanceIds) => {
+    const state = get();
+    const ids = [...new Set(instanceIds)].filter(Boolean);
+    if (ids.length === 0) return false;
+    const cards = ids.map(id => state.game.cards[id]);
+    if (cards.some(card => !card || !canLocalControlCard(state, card))) return false;
+    if (cards.some(card => !canLocalPerformPrivateCardAction(state, 'clearPowerToughnessOverride', card))) return false;
+    if (shouldRouteToHostAuthoritativeAction(state)) {
+      return routeHostAuthoritativeAction('clearPowerToughnessOverride', { instanceIds: ids });
+    }
+    const next = clearPowerToughnessOverrideInEngine(state.game, ids);
+    const first = cards[0];
+    const action = createAction(
+      next,
+      first?.controllerId ?? state.game.activePlayerId,
+      'NOTE',
+      `${ids.length === 1 ? first?.definition.name ?? 'Card' : `${ids.length} cards`} P/T override cleared.`,
+      ids,
+    );
+    set({ game: { ...next, actionLog: [...next.actionLog, action], lastUpdatedAt: Date.now() } });
+    return true;
   },
 
   // ── Player ────────────────────────────────────────────────────────────────
@@ -2411,6 +3168,9 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     }
     const prev = g.phase;
     g = nextPhase(g);
+    if (g.phase === 'cleanup') {
+      g = clearExpiredPowerToughnessOverrides(g, 'endOfTurn');
+    }
     const phaseFlags = filterAssistantFlags(reviewFlags, get().ui);
     const action = createAction(
       g,
@@ -2433,12 +3193,16 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   goToPhase: (phase) => {
     let g = get().game;
     g = setPhase(g, phase);
+    if (phase === 'cleanup') {
+      g = clearExpiredPowerToughnessOverrides(g, 'endOfTurn');
+    }
     const action = createAction(g, g.activePlayerId, 'CHANGE_PHASE', `Jump to: ${phase}`);
     set({ game: { ...g, actionLog: [...g.actionLog, action] }, ui: { ...get().ui, combatMode: g.combat.active } });
   },
 
   advanceTurn: () => {
     let g = get().game;
+    g = clearExpiredPowerToughnessOverrides(g, 'endOfTurn');
     g = nextTurn(g);
     const active = g.players.find(p => p.id === g.activePlayerId);
     const action = createAction(g, g.activePlayerId, 'CHANGE_PHASE', `Turn ${g.turn} — ${active?.name || '?'}`);
@@ -2734,6 +3498,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   enterCombat: () => {
     let g = get().game;
     g = clearCombatAssignments(g);
+    g = clearCombatMana(g);
     g = {
       ...g,
       combat: { ...g.combat, active: true, attackingPlayerId: g.activePlayerId, attackers: [], blockers: [] },
@@ -2749,6 +3514,10 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const flags = filterAssistantFlags(check.flags, get().ui);
     g = declareAttacker(g, attackerInstanceId, targetPlayerId);
     const card = g.cards[attackerInstanceId];
+    const firebendingAmount = card ? getFirebendingAmount(card) : 0;
+    if (card && firebendingAmount > 0) {
+      g = addCombatManaToPool(g, card.controllerId, { R: firebendingAmount });
+    }
     const triggers = card ? detectAttackTriggers(g, card) : [];
     const newTriggers: TriggerItem[] = triggers.map(t => ({
       id: uuid(), sourceInstanceId: t.sourceCard.instanceId,
@@ -2758,8 +3527,55 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     }));
     const action = createAction(g, g.activePlayerId, 'DECLARE_ATTACKER',
       `${card?.definition.name} attacks ${targetPlayerId}`, [attackerInstanceId], addReviewData({}, flags), flags);
-    g = { ...g, actionLog: [...g.actionLog, action], triggerQueue: [...g.triggerQueue, ...newTriggers] };
+    const actions = [action];
+    if (card && firebendingAmount > 0) {
+      actions.push(createAction(
+        g,
+        card.controllerId,
+        'ADD_MANA',
+        `${card.definition.name} firebends ${firebendingAmount}: add ${firebendingAmount} red combat mana.`,
+        [attackerInstanceId],
+        { mechanicId: 'firebending', combatMana: { R: firebendingAmount } },
+      ));
+    }
+    g = { ...g, actionLog: [...g.actionLog, ...actions], triggerQueue: [...g.triggerQueue, ...newTriggers] };
     set({ game: g, ui: withAssistantMessages(get().ui, g, flags) });
+  },
+
+  declareTokenStackAttack: (playerId, sourceGroupId, attackerIds, assignments) => {
+    if (!canLocalControlPlayer(get(), playerId)) return false;
+    if (shouldRouteToHostAuthoritativeAction(get())) {
+      return routeHostAuthoritativeAction('declareTokenStackAttack', { playerId, sourceGroupId, attackerIds, assignments });
+    }
+    let g = get().game;
+    if (!g.combat.active) {
+      g = clearCombatAssignments(g);
+      g = {
+        ...g,
+        combat: { ...g.combat, active: true, attackingPlayerId: playerId, attackers: [], blockers: [], attackAssignments: [], blockAssignments: [] },
+      };
+      g = setPhase(g, 'declareAttackers');
+    }
+
+    const result = declareTokenStackAttackInEngine(g, playerId, sourceGroupId, attackerIds, assignments);
+    if (!result.valid) return false;
+
+    const player = result.state.players.find(p => p.id === playerId);
+    const assignmentSummary = result.state.combat.attackAssignments
+      .filter(assignment => result.assignmentIds.includes(assignment.assignmentId))
+      .map(assignment => `${assignment.count} ${assignment.sourceName}`)
+      .join(', ');
+    const action = createAction(
+      result.state,
+      playerId,
+      'DECLARE_ATTACKER',
+      `${player?.name ?? playerId} attacks with token stack: ${assignmentSummary}`,
+      result.selectedAttackerIds,
+      { sourceGroupId, assignmentIds: result.assignmentIds },
+    );
+    const nextGame = { ...result.state, actionLog: [...result.state.actionLog, action] };
+    set({ game: nextGame, ui: { ...get().ui, combatMode: true } });
+    return true;
   },
 
   declareMyriadAttack: (attackerInstanceId, declaredDefenderId, copiesPerOpponent) => {
@@ -2815,6 +3631,69 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     set({ game: g, ui: withAssistantMessages(get().ui, g, flags) });
   },
 
+  generateCombatPreview: () => {
+    const g = get().game;
+    if (shouldRouteToHostAuthoritativeAction(get())) {
+      routeHostAuthoritativeAction('generateCombatPreview', {});
+      return generateCombatDamagePreview(g);
+    }
+    const preview = generateCombatDamagePreview(g);
+    const action = createAction(
+      g,
+      g.activePlayerId,
+      'NOTE',
+      'Combat damage preview generated.',
+      [],
+      { mechanicId: 'combat-damage-preview', previewId: preview.previewId },
+    );
+    const next = {
+      ...g,
+      combat: {
+        ...g.combat,
+        damagePreview: preview,
+      },
+      actionLog: [...g.actionLog, action],
+      lastUpdatedAt: Date.now(),
+    };
+    set({ game: next });
+    return preview;
+  },
+
+  clearCombatPreview: () => {
+    const g = get().game;
+    if (shouldRouteToHostAuthoritativeAction(get())) {
+      return void routeHostAuthoritativeAction('clearCombatPreview', {});
+    }
+    set({
+      game: {
+        ...g,
+        combat: {
+          ...g.combat,
+          damagePreview: undefined,
+        },
+        lastUpdatedAt: Date.now(),
+      },
+    });
+  },
+
+  confirmCombatDamage: () => {
+    if (shouldRouteToHostAuthoritativeAction(get())) {
+      return void routeHostAuthoritativeAction('confirmCombatDamage', {});
+    }
+    const g = get().game;
+    set({
+      game: {
+        ...g,
+        combat: {
+          ...g.combat,
+          damagePreview: undefined,
+        },
+        lastUpdatedAt: Date.now(),
+      },
+    });
+    get().resolveCombatDamage();
+  },
+
   resolveCombatDamage: () => {
     let g = get().game;
 
@@ -2850,7 +3729,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         if (blockers.length === 0) {
           if (!attackerDealsNow) continue;
           // Unblocked — deal damage to target player
-          const power = parseInt(getEffectiveCardDefinition(attackerCard).power || '0', 10) || 0;
+          const power = getEffectivePowerToughness(attackerCard, g)?.power ?? 0;
           const hasInfect = hasKw(attackerCard, 'Infect');
           const hasPoison = hasKw(attackerCard, 'Poisonous');
           const hasLifelink = hasKw(attackerCard, 'Lifelink');
@@ -2882,7 +3761,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
           // Blocked — assign damage to/from blockers
           // CR 510: Attacker and blocker damage is INDEPENDENT.
           // A blocker without FS deals in the normal step even if its attacker has FS.
-          const attackerPower = parseInt(getEffectiveCardDefinition(attackerCard).power || '0', 10) || 0;
+          const attackerPower = getEffectivePowerToughness(attackerCard, g)?.power ?? 0;
           const hasDeathtouch = hasKw(attackerCard, 'Deathtouch');
           const hasLifelink = hasKw(attackerCard, 'Lifelink');
           let totalDamageDealt = 0;
@@ -2906,7 +3785,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
             // Blocker marks damage on attacker (independently per CR 510)
             if (blockerDealsNow) {
-              const blockerPower = parseInt(getEffectiveCardDefinition(blocker).power || '0', 10) || 0;
+              const blockerPower = getEffectivePowerToughness(blocker, g)?.power ?? 0;
               const blockerDeathtouch = hasKw(blocker, 'Deathtouch');
               const dmgToAttacker = blockerDeathtouch ? 1 : blockerPower;
               g = { ...g, cards: { ...g.cards,
@@ -2991,7 +3870,9 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       g = { ...g, actionLog: [...g.actionLog, myriadLog] };
     }
 
+    g = clearExpiredPowerToughnessOverrides(g, 'endOfCombat');
     g = clearCombatAssignments(g);
+    g = clearCombatMana(g);
     g = setPhase(g, 'main2');
     set({ game: g, ui: { ...get().ui, combatMode: false } });
   },
@@ -3349,3 +4230,6 @@ useGameStore.subscribe(
     }
   },
 );
+
+
+

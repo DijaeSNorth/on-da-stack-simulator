@@ -1,38 +1,42 @@
-﻿# Magic: The Gathering Simulator — Game Logic Notes
+2026-06-13 - Token stack attack assignment UI
+- Added serializable token-stack attack inputs and an engine helper for grouped attackers.
+- Token stack attacks now validate controller, untapped status, creature status, defender, and summoning sickness/haste before assignment.
+- Token stack assignments create CombatAttackAssignment records with precise player/planeswalker/battle targets and still mirror selected token IDs into legacy combat.attackers.
+- Added TokenStackAttackModal for Attack All, Attack Some, and Split Attack flows from grouped battlefield token clouds.
+- CombatPanel now shows compact grouped token-stack attack summaries without refactoring the full combat UI.
 
-## Session Notes Log
-- Created: 2026-06-12
-- Purpose: Track major game-logic decisions, pending rules clarifications, and implementation references for this chat.
+2026-06-13 - Sneak semi-automation
+- Added Sneak card state metadata and sneakCastsThisTurn tracking.
+- Added Sneak eligibility helpers for active-player declare-blockers timing and unblocked attack assignments.
+- Added a semi-automated castWithSneak shortcut that returns an unblocked attacker to hand and puts a Sneak creature onto the battlefield tapped and attacking the same target.
+- Hand/context menu UI now exposes Sneak when eligible, with a return-candidate picker in the card context menu.
+- CombatPanel shows a small declare-blockers reminder when Sneak cards and unblocked return candidates are available.
 
-### Reference notes
-- Focus area for this chat: core MTG gameplay logic and simulation behavior.
-- Source of truth for future changes should be updated here as each major change is made.
+2026-06-13 - Combat damage preview
+- Added serializable CombatDamagePreview and CombatDamagePreviewAssignment models on combat state.
+- Added getEffectivePowerToughness for printed/override/counter/Earthbend/token P/T calculations.
+- Added generateCombatDamagePreview for attack assignments, token stacks, Sneak attackers, player/planeswalker/battle damage, blocked status, likely deaths, and manual warnings.
+- CombatPanel now pauses on a Damage Preview step before resolving combat damage.
+- Store actions added: generateCombatPreview, confirmCombatDamage, and clearCombatPreview.
 
-### Format
-- Date
-- Area touched
-- Rationale / decision
-- Files/functions affected
-- Follow-up questions / risks
+2026-06-13 - Power/Toughness override pass: standardized card.powerToughnessOverride with expiration/reason metadata; added engine/store helpers for batch set/clear; damage preview and combat damage now use getEffectivePowerToughness; endOfCombat/endOfTurn override cleanup added; card context menu, card preview, and token cloud stack controls expose manual P/T adjustment. Design: override is treated as base effective P/T, then +1/+1 and -1/-1 counters apply.
 
-### Entries
-- 2026-06-12: Notes file initialized to track future game logic updates.
-- 2026-06-13: Battlefield token cloud UX updated to support grouped attack counts and splits.
-  - `renderTokenCloud` now supports split mode by cloud ID and uses `cloudSplits` state.
-  - Unsplitted clusters show `renderTokenCloudCluster` actions including Attack and Split.
-  - Split clusters show two independent stacks plus Unsplit button.
-- 2026-06-13: Command parser/UI bugfixes for continuity pass.
-  - `client/src/engine/nlpParser.ts`: added support for `clear player N mana` in addition to existing clear-mana patterns.
-  - `client/src/components/battlefield/PlayerBattlefield.tsx`:
-    - removed unused `parseAttackCount`.
-    - fixed `attackTokenBatch` signature to avoid stale cluster-name arg usage.
-    - fixed token cloud segment expand/collapse to use `segmentKey` rather than `cloud.key` so split branches toggle independently.
-- 2026-06-13: Combat declaration quality-of-life pass.
-  - `client/src/components/battlefield/CommanderTable.tsx`: added a compact combat declaration dock with explicit attacker/target and blocker/attacker selects plus Declare Attack, Blockers Step, and Declare Block buttons.
-  - `client/src/engine/nlpParser.ts`: added explicit declaration phrases such as `declare attackers with X`, `declare X attacking player N`, `declare X blocking Y`, and `declare blockers with A, B on X`.
-  - `client/src/engine/nlpParser.ts`: block command resolution now converts the blocked attacker name into an attacker instance ID before `declareBlock`.
-  - `tests/command-rules.test.ts`: added regression coverage for explicit attack/block declaration command parsing.
-- 2026-06-13: Combat metadata cleanup tightened.
-  - `client/src/engine/gameEngine.ts`: `moveCard` now removes a permanent from combat when it leaves the battlefield, clearing its `combatRole`, `attackTarget`, and `blockTarget`.
-  - If an attacking creature leaves the battlefield, blockers assigned to that attacker also have stale block metadata cleared so arrows/badges do not point at missing attackers.
-  - `tests/store-flow.test.ts`: added regressions for attacking and blocking creatures moving off the battlefield during combat.
+2026-06-13 - Combat damage preview first/double strike pass: added firstStrikeAssignments, normalDamageAssignments, hasFirstStrikeDamageStep, hasNormalDamageStep, and likelyDestroyedAfterFirstStrike to preview metadata. Preview now separates first strike and normal damage steps, treats double strike as damage in both steps, and carries likely first-strike deaths into normal-step notes/eligibility while keeping aggregate damage fields for existing UI/tests.
+
+2026-06-13 - Combat damage preview trample/deathtouch pass: blocked preview now computes trample overflow, normal lethal damage as remaining toughness, deathtouch lethal as 1, and trample+deathtouch overflow after one lethal damage. Multiple blockers with trample still warn for manual assignment order. Protection/prevention/indestructible remain warning-only caveats.
+
+2026-06-13 - Station/Spacecraft semi-automation: added card.spacecraft state, station threshold parsing from Station N text, getStationEligibleCreatures, and stationSpacecraft. Station is sorcery-speed, taps another untapped controlled creature even if summoning sick, adds charge counters equal to effective power, marks Spacecraft stationed at threshold, and animates printed-P/T Spacecraft into artifact creatures when unlocked. UI exposes Station from card context menu and CardPreview shows station counters/threshold.
+
+2026-06-13 - Vivid/Blight/counter cleanup pass: added creature-only +1/+1/-1/-1 counter annihilation helper and state-based cleanup; addCounter now normalizes paired counters. Added Blight helper/store action to put -1/-1 counters on controlled creatures with annihilation and judge-mode override. Added Vivid color-count query over controlled battlefield permanents; multicolor permanents count each color, colorless count none.
+
+2026-06-13 - Changeling/Kindred/type-query pass: added Kindred to CardType and engine helpers for hasCardType, hasSubtype, getCreatureTypes, hasCreatureType, isChangeling, and getEffectiveCreatureTypes. Helpers merge metadata with parsed typeLine, treat Changeling as every creature type in all zones, allow Kindred/Tribal noncreatures to expose creature subtypes, and safely handle unknown/custom type lines.
+
+2026-06-13 - Class enchantment pass: added classLevel card state initialized to 1 for Class cards, engine helpers getClassLevel/levelUpClass/setClassLevel with Class-only validation, controller checks, ordered leveling, judge override, and sorcery-speed enforcement. Added store actions plus context-menu Level Up/Set Level controls and preview display showing Class Level as state, not counters.
+
+2026-06-13 - Multiplayer mechanic sync audit/hardening: mutable mechanic/combat actions are now routed host-authoritatively when the client is joined instead of mutating local state first. Host replay allowlist covers activateClue, markExhaustUsed, resetExhaust, applyAirbend, markCastForWarp, castExiledWithPermission, payWaterbendCost, applyEarthbend, stationSpacecraft, applyBlight, levelUpClass, setClassLevel, declareTokenStackAttack, castWithSneak, generateCombatPreview, clearCombatPreview, confirmCombatDamage, setPowerToughnessOverride, and clearPowerToughnessOverride. Host replay uses the requesting seat as the temporary control context, preserving private-zone/player-control guards. Query-only helpers remain local/manual-only: getWaterbendEligiblePermanents, getStationEligibleCreatures, getSneakReturnCandidates, canCastWithSneak, getVividColorCount, and type-query helpers. Follow-up guardrail: future nonlisted manual actions should be added to the host replay allowlist before exposing multiplayer UI controls.
+
+2026-06-13 - Judge/manual tools pass: added guarded store helpers for temporary card notes, marked damage, manual combat role, controller changes, judge-only owner changes, and manual trigger queue entries. Hardened manual add/remove counter actions with control/private-zone guards and host-authoritative routing. Card context menu now includes a compact Judge / Manual Tools section for counters, P/T override, tap/untap, attacking/blocking role, zone movement via existing actions, token creation, exhaust controls via existing mechanics, notes, triggers, damage, controller, and judge-only owner correction. Store-flow tests cover own tap, opponent private-zone move rejection, judge private move, counter-to-P/T impact, and preview-visible notes.
+
+
+
+2026-06-13 - Cleanup/guardrail pass: ignored dist-server-test output, removed duplicate generated vite.config.js in favor of vite.config.ts, gated multiplayer/Firebase/drag debug logs behind DEV or localStorage on-da-stack-debug=1, kept the single build stamp log visible, confirmed Firebase config references are VITE env names only, and found no tracked giant logs/traces/build output in git status.

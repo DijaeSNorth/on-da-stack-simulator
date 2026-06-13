@@ -332,7 +332,9 @@ export function useDragCombat() {
         const { legal, reason } = blockerLegal(blocker, attacker);
         if (!legal && reason) {
           // The engine still allows it (judge mode) but fires an assistant flag
-          console.warn('[DragCombat] Illegal block:', reason);
+          if (import.meta.env.DEV === true || localStorage.getItem('on-da-stack-debug') === '1') {
+            console.warn('[DragCombat] Illegal block:', reason);
+          }
         }
 
         store.declareBlock(ds.instanceId, attackerInstanceId);

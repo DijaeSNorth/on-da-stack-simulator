@@ -74,10 +74,12 @@ export default function App() {
 
   useEffect(() => {
     if (game.status === 'playing' && ui.screen !== 'game') {
-      console.debug('[multiplayer] App safety switching playing game to game screen', {
-        gameId: game.id,
-        currentScreen: ui.screen,
-      });
+      if (import.meta.env.DEV === true || localStorage.getItem('on-da-stack-debug') === '1') {
+        console.debug('[multiplayer] App safety switching playing game to game screen', {
+          gameId: game.id,
+          currentScreen: ui.screen,
+        });
+      }
       enterGameScreen();
     }
   }, [enterGameScreen, game.id, game.status, ui.screen]);

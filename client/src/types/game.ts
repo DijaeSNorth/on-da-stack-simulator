@@ -1,7 +1,7 @@
 // ─── Core MTG Types ───────────────────────────────────────────────────────────
 
 export type ManaColor = 'W' | 'U' | 'B' | 'R' | 'G' | 'C';
-export type CardType = 'Creature' | 'Instant' | 'Sorcery' | 'Artifact' | 'Enchantment' | 'Planeswalker' | 'Land' | 'Battle' | 'Tribal';
+export type CardType = 'Creature' | 'Instant' | 'Sorcery' | 'Artifact' | 'Enchantment' | 'Planeswalker' | 'Land' | 'Battle' | 'Tribal' | 'Kindred';
 export type SuperType = 'Legendary' | 'Basic' | 'Snow' | 'World' | 'Historic';
 export type Zone = 'library' | 'hand' | 'battlefield' | 'graveyard' | 'exile' | 'command' | 'stack' | 'sideboard' | 'maybeboard';
 
@@ -84,6 +84,16 @@ export interface ManaPool {
   generic: number;
 }
 
+export type PowerToughnessOverrideExpiration = 'manual' | 'endOfTurn' | 'endOfCombat' | 'whileAttached';
+
+export interface PowerToughnessOverride {
+  power?: string;
+  toughness?: string;
+  reason?: string;
+  expires: PowerToughnessOverrideExpiration;
+  createdAtTurn?: number;
+}
+
 export interface CardState {
   instanceId: string;       // unique per-game instance
   definitionId: string;     // links to CardDefinition
@@ -116,9 +126,50 @@ export interface CardState {
   attackTarget?: string;    // player or planeswalker being attacked
   blockTarget?: string[];   // what this is blocking
   combatDamageAssigned: number;
+  powerToughnessOverride?: PowerToughnessOverride;
   visualX?: number;         // battlefield position (%)
   visualY?: number;
   visualGroup?: string;     // group key for token clouds
+  exhaustUsed?: Record<string, boolean>;
+  exilePermission?: ExileCastPermission;
+  warpedThisTurn?: boolean;
+  earthbend?: EarthbendState;
+  sneak?: SneakState;
+  spacecraft?: SpacecraftState;
+  classLevel?: number;
+}
+
+export interface ExileCastPermission {
+  ownerId: string;
+  sourceMechanic: 'airbend' | 'warp' | 'manual';
+  alternativeCost?: string;
+  timing: 'normal' | 'anytime';
+  expires: 'never' | 'endOfTurn' | 'nextEndStep';
+  createdAtTurn: number;
+  sourceInstanceId?: string;
+}
+
+export interface EarthbendState {
+  amount: number;
+  controllerOfEffect: string;
+  basePower: 0;
+  baseToughness: 0;
+  hasHaste: true;
+  returnTappedIfDiesOrExiled: true;
+  sourceInstanceId?: string;
+}
+
+export interface SneakState {
+  cost?: string;
+  castWithSneak?: boolean;
+  returnedAttackerId?: string;
+  attackTarget?: AttackDefenderTarget;
+}
+
+export interface SpacecraftState {
+  stationThreshold?: number;
+  stationed?: boolean;
+  chargeCountersAddedByStation?: number;
 }
 
 export interface StackObject {
@@ -190,6 +241,7 @@ export interface Player {
   life: number;
   mulliganCount: number;
   manaPool: ManaPool;
+  combatMana?: ManaPool;
   commanderDamage: Record<string, number>; // commanderId -> damage received
   poisonCounters: number;
   energyCounters: number;
@@ -369,15 +421,92 @@ export interface GameConfig {
 export interface CombatState {
   active: boolean;
   attackingPlayerId: string;
-  attackers: { instanceId: string; targetPlayerId: string; targets: string[] }[];
+  attackers: { instanceId: string; targetPlayerId: string; targets: string[]; attackTarget?: AttackDefenderTarget }[];
   blockers: { instanceId: string; blockedAttacker: string }[];
+  attackAssignments: CombatAttackAssignment[];
+  blockAssignments: CombatBlockAssignment[];
+  damagePreview?: CombatDamagePreview;
   combatPhase: 'none' | 'declareAttackers' | 'declareBlockers' | 'firstStrikeDamage' | 'combatDamage' | 'endOfCombat';
   hasMyriad: boolean;
   myriadCopies: { originalId: string; copyId: string; targetId: string }[];
 }
 
+export type AttackDefenderTarget =
+  | { type: 'player'; playerId: string }
+  | { type: 'planeswalker'; permanentId: string; controllerId: string }
+  | { type: 'battle'; permanentId: string; protectorId: string };
+
+export interface TokenStackAttackInput {
+  count: number;
+  attackTarget: AttackDefenderTarget;
+  attackerIds?: string[];
+}
+
+export interface CombatAttackAssignment {
+  assignmentId: string;
+  controllerId: string;
+  attackerIds: string[];
+  sourceGroupId?: string;
+  sourceName: string;
+  count: number;
+  isTokenStack: boolean;
+  powerDisplay?: string;
+  toughnessDisplay?: string;
+  totalPowerPreview?: number;
+  attackTarget: AttackDefenderTarget;
+  tappedOnDeclare: boolean;
+  legal: boolean;
+  legalityWarnings: string[];
+}
+
+export interface CombatBlockAssignment {
+  assignmentId: string;
+  blockerId: string;
+  blockerControllerId: string;
+  blockedAttackAssignmentId: string;
+  blockedAttackerIds: string[];
+  legal: boolean;
+  legalityWarnings: string[];
+}
+
+export interface CombatDamagePreview {
+  previewId: string;
+  generatedAt: number;
+  attackingPlayerId: string;
+  assignments: CombatDamagePreviewAssignment[];
+  firstStrikeAssignments: CombatDamagePreviewAssignment[];
+  normalDamageAssignments: CombatDamagePreviewAssignment[];
+  hasFirstStrikeDamageStep: boolean;
+  hasNormalDamageStep: boolean;
+  damageToPlayers: Record<string, number>;
+  damageToPlaneswalkers: Record<string, number>;
+  damageToBattles: Record<string, number>;
+  likelyDestroyedCreatures: string[];
+  likelyDestroyedAfterFirstStrike: string[];
+  warnings: string[];
+}
+
+export interface CombatDamagePreviewAssignment {
+  attackAssignmentId: string;
+  attackerIds: string[];
+  blockerIds: string[];
+  attackTarget: AttackDefenderTarget;
+  attackerName: string;
+  count: number;
+  powerPerAttacker: number;
+  totalPower: number;
+  blocked: boolean;
+  damageToTarget: number;
+  damageToBlockers: Record<string, number>;
+  damageToAttackers: Record<string, number>;
+  keywords: string[];
+  notes: string[];
+  damageStep?: 'firstStrike' | 'normal';
+}
+
 export interface GameState {
   id: string;
+  rulesetVersion: string;
   config: GameConfig;
   players: Player[];
   cards: Record<string, CardState>;      // instanceId → CardState
@@ -392,6 +521,13 @@ export interface GameState {
   assistantFlags: AssistantFlag[];
   combat: CombatState;
   houseRules: HouseRule[];
+  turnTrackers: {
+    spellsWarpedThisTurn: string[];
+    cardsAirbendedThisTurn: string[];
+    waterbendEventsThisTurn: { playerId: string; sourceId?: string; amount: number; permanentIds: string[] }[];
+    earthbentThisTurn: { playerId: string; landId: string; amount: number; sourceId?: string }[];
+    sneakCastsThisTurn?: { playerId: string; cardId: string; returnedAttackerId: string; attackTarget: AttackDefenderTarget }[];
+  };
   snapshots: Record<string, string>;    // id → compressed state
   undoPointer: number;                  // index into actionLog for undo
   createdAt: number;
@@ -399,3 +535,4 @@ export interface GameState {
   status: 'lobby' | 'mulligans' | 'playing' | 'ended';
   winnerId?: string;
 }
+

@@ -14,7 +14,8 @@
 
 import { useState, useCallback, useMemo } from 'react';
 import { useGameStore } from '../../store/gameStore';
-import type { CardState, Player, GameState } from '../../types/game';
+import type { AttackDefenderTarget, CardState, Player, GameState } from '../../types/game';
+import { getFirebendingAmount, getMechanicHint, getMechanicsForCard } from '../../rules/mechanicsRegistry';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -39,7 +40,7 @@ interface MyriadConfig {
   copiesPerOpponent: number;
 }
 
-type CombatStep = 'myriad_setup' | 'assign_targets' | 'response_window' | 'declare_blockers' | 'resolving';
+type CombatStep = 'myriad_setup' | 'assign_targets' | 'response_window' | 'declare_blockers' | 'damage_preview' | 'resolving';
 
 interface CombatPanelProps {
   attackerIds: string[];
@@ -119,6 +120,7 @@ export function CombatPanel({ attackerIds, preAssignments = {}, onClose }: Comba
 
   const attackingPlayerId = game.activePlayerId;
   const defendingPlayers = game.players.filter(p => p.id !== attackingPlayerId);
+  const combatRedManaTotal = game.players.reduce((sum, player) => sum + (player.combatMana?.R ?? 0), 0);
 
   // ── Myriad Setup ────────────────────────────────────────────────────────────
 
@@ -202,18 +204,38 @@ export function CombatPanel({ attackerIds, preAssignments = {}, onClose }: Comba
     for (const b of pendingBlockers) {
       store.declareBlock(b.blockerInstanceId, b.attackerInstanceId);
     }
+    store.generateCombatPreview();
+    setStep('damage_preview');
+  }, [pendingBlockers, store]);
+
+  const confirmDamage = useCallback(() => {
     setStep('resolving');
     setTimeout(() => {
-      store.resolveCombatDamage();
+      store.confirmCombatDamage();
       store.endCombat();
       onClose();
     }, 800);
-  }, [pendingBlockers, store, onClose]);
+  }, [store, onClose]);
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
 
   const getPlayerName = (id: string) => game.players.find(p => p.id === id)?.name ?? id;
   const getPlayerColor = (id: string) => game.players.find(p => p.id === id)?.color ?? '#888';
+  const targetLabel = (target: AttackDefenderTarget): string => {
+    if (target.type === 'player') return getPlayerName(target.playerId);
+    const permanent = game.cards[target.permanentId];
+    if (target.type === 'planeswalker') return permanent?.definition.name ?? 'Planeswalker';
+    return permanent?.definition.name ?? 'Battle';
+  };
+  const tokenStackAssignments = (game.combat.attackAssignments ?? []).filter(assignment => assignment.isTokenStack);
+  const damagePreview = game.combat.damagePreview;
+  const activePlayer = game.players.find(player => player.id === attackingPlayerId);
+  const sneakCandidateCount = store.getSneakReturnCandidates(attackingPlayerId).length;
+  const sneakHandCount = (activePlayer?.hand ?? [])
+    .map(id => game.cards[id])
+    .filter(Boolean)
+    .filter(card => getMechanicsForCard(card).some(mechanic => mechanic.id === 'sneak'))
+    .length;
 
   const localPlayer = game.players.find(p => p.id === localPlayerId);
   const myBattlefieldCreatures = (localPlayer?.battlefield ?? [])
@@ -256,7 +278,14 @@ export function CombatPanel({ attackerIds, preAssignments = {}, onClose }: Comba
               {step === 'declare_blockers'&& 'Defending players assign blockers to each attacker'}
               {step === 'resolving'       && 'Applying combat damage…'}
             </p>
-          </div>
+            {combatRedManaTotal > 0 && (
+              <p className="text-orange-300 text-xs mt-1">
+                Combat mana: {game.players
+                  .filter(player => (player.combatMana?.R ?? 0) > 0)
+                  .map(player => `${player.name} ${player.combatMana?.R ?? 0}R`)
+                  .join(' / ')}
+              </p>
+            )}          </div>
           <button
             onClick={onClose}
             className="text-gray-400 hover:text-white transition-colors text-xl leading-none px-2"
@@ -268,6 +297,25 @@ export function CombatPanel({ attackerIds, preAssignments = {}, onClose }: Comba
 
         {/* Step indicator */}
         <StepIndicator current={step} hasMyriad={hasMyriad} />
+
+        {tokenStackAssignments.length > 0 && (
+          <div className="border-b border-gray-700 bg-gray-900 px-6 py-3">
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Token stack attackers</p>
+            <div className="flex flex-wrap gap-2">
+              {tokenStackAssignments.map(assignment => (
+                <span key={assignment.assignmentId} className="rounded-lg border border-red-800 bg-red-950/40 px-2.5 py-1 text-xs text-red-100">
+                  {assignment.count} {assignment.sourceName}{assignment.count !== 1 ? 's' : ''} attacking {targetLabel(assignment.attackTarget)}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {(step === 'declare_blockers' || game.phase === 'declareBlockers') && sneakCandidateCount > 0 && sneakHandCount > 0 && (
+          <div className="border-b border-amber-800 bg-amber-950/30 px-6 py-2 text-xs text-amber-100">
+            Sneak available: return an unblocked attacker to cast a Sneak spell. {sneakCandidateCount} attacker{sneakCandidateCount !== 1 ? 's' : ''} available.
+          </div>
+        )}
 
         {/* Body — scrollable */}
         <div className="p-6 overflow-y-auto flex-1 min-h-0">
@@ -481,6 +529,114 @@ export function CombatPanel({ attackerIds, preAssignments = {}, onClose }: Comba
             </div>
           )}
 
+          {/* ── STEP 4: DAMAGE PREVIEW ── */}
+          {step === 'damage_preview' && damagePreview && (
+            <div className="space-y-4">
+              <div className="bg-gray-800 rounded-xl p-4">
+                <p className="text-gray-300 font-semibold text-sm mb-3">Damage Preview</p>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <DamageSummary title="Players" entries={Object.entries(damagePreview.damageToPlayers).map(([id, damage]) => [getPlayerName(id), damage])} />
+                  <DamageSummary title="Planeswalkers" entries={Object.entries(damagePreview.damageToPlaneswalkers).map(([id, damage]) => [game.cards[id]?.definition.name ?? id, damage])} />
+                  <DamageSummary title="Battles" entries={Object.entries(damagePreview.damageToBattles).map(([id, damage]) => [game.cards[id]?.definition.name ?? id, damage])} />
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                {[
+                  ...(damagePreview.hasFirstStrikeDamageStep
+                    ? [{ title: 'First Strike Damage', assignments: damagePreview.firstStrikeAssignments }]
+                    : []),
+                  { title: 'Normal Damage', assignments: damagePreview.normalDamageAssignments },
+                ].map(section => (
+                  <div key={section.title} className="space-y-2">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">{section.title}</p>
+                    {section.assignments.length === 0 ? (
+                      <div className="rounded-xl border border-gray-800 bg-gray-900/60 p-3 text-xs text-gray-500">
+                        No combat damage expected in this step.
+                      </div>
+                    ) : section.assignments.map(assignment => (
+                      <div key={`${section.title}-${assignment.attackAssignmentId}`} className="rounded-xl bg-gray-800 border border-gray-700 p-3">
+                        <div className="flex items-center gap-2 text-sm">
+                          <span className="font-semibold text-white">{assignment.count} {assignment.attackerName}</span>
+                          <span className={assignment.blocked ? 'text-blue-300' : 'text-red-300'}>
+                            {assignment.blocked ? 'blocked' : `unblocked for ${assignment.damageToTarget}`}
+                          </span>
+                          <span className="text-gray-500">→ {targetLabel(assignment.attackTarget)}</span>
+                        </div>
+                        <div className="mt-1 text-xs text-gray-400">
+                          Power: {assignment.powerPerAttacker} each / {assignment.totalPower} total
+                          {assignment.blockerIds.length > 0 && ` · blockers: ${assignment.blockerIds.map(id => game.cards[id]?.definition.name ?? id).join(', ')}`}
+                        </div>
+                        {assignment.notes.length > 0 && (
+                          <div className="mt-2 space-y-1">
+                            {assignment.notes.map(note => (
+                              <p key={note} className="text-xs text-amber-300">{note}</p>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+
+              {damagePreview.likelyDestroyedAfterFirstStrike.length > 0 && (
+                <div className="rounded-xl border border-orange-800 bg-orange-950/30 p-3">
+                  <p className="text-orange-200 text-xs font-semibold uppercase tracking-wider mb-2">Likely destroyed after first strike damage</p>
+                  <div className="flex flex-wrap gap-2">
+                    {damagePreview.likelyDestroyedAfterFirstStrike.map(id => (
+                      <span key={id} className="rounded-lg bg-orange-900/50 px-2 py-1 text-xs text-orange-100">
+                        {game.cards[id]?.definition.name ?? id}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {damagePreview.likelyDestroyedCreatures.length > 0 && (
+                <div className="rounded-xl border border-red-800 bg-red-950/30 p-3">
+                  <p className="text-red-200 text-xs font-semibold uppercase tracking-wider mb-2">Likely destroyed</p>
+                  <div className="flex flex-wrap gap-2">
+                    {damagePreview.likelyDestroyedCreatures.map(id => (
+                      <span key={id} className="rounded-lg bg-red-900/50 px-2 py-1 text-xs text-red-100">
+                        {game.cards[id]?.definition.name ?? id}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {damagePreview.warnings.length > 0 && (
+                <div className="rounded-xl border border-amber-800 bg-amber-950/30 p-3">
+                  <p className="text-amber-200 text-xs font-semibold uppercase tracking-wider mb-2">Manual review warnings</p>
+                  <div className="space-y-1">
+                    {damagePreview.warnings.map(warning => (
+                      <p key={warning} className="text-xs text-amber-100">{warning}</p>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              <div className="flex gap-3 pt-3 border-t border-gray-700">
+                <button
+                  onClick={confirmDamage}
+                  className="flex-1 py-2.5 rounded-lg bg-green-700 hover:bg-green-600 text-white font-semibold transition-colors"
+                >
+                  Confirm Damage
+                </button>
+                <button
+                  onClick={() => {
+                    store.clearCombatPreview();
+                    setStep('declare_blockers');
+                  }}
+                  className="px-4 py-2.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm transition-colors"
+                >
+                  ← Back to Blocks
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* ── STEP 4: RESOLVING ── */}
           {step === 'resolving' && (
             <div className="flex flex-col items-center justify-center py-10 gap-4">
@@ -505,6 +661,7 @@ function StepIndicator({ current, hasMyriad }: { current: CombatStep; hasMyriad:
     { key: 'assign_targets', label: 'Targets' },
     { key: 'response_window', label: 'Responses' },
     { key: 'declare_blockers', label: 'Blockers' },
+    { key: 'damage_preview', label: 'Preview' },
     { key: 'resolving', label: 'Resolve' },
   ];
   const currentIdx = steps.findIndex(s => s.key === current);
@@ -533,6 +690,26 @@ function StepIndicator({ current, hasMyriad }: { current: CombatStep; hasMyriad:
 }
 
 // ── Myriad Config Row ─────────────────────────────────────────────────────────
+
+function DamageSummary({ title, entries }: { title: string; entries: [string, number][] }) {
+  return (
+    <div className="rounded-lg bg-gray-900/70 border border-gray-700 p-3">
+      <p className="text-gray-500 text-xs uppercase tracking-wider mb-2">{title}</p>
+      {entries.length === 0 ? (
+        <p className="text-gray-600 text-xs">No damage</p>
+      ) : (
+        <div className="space-y-1">
+          {entries.map(([label, damage]) => (
+            <div key={label} className="flex items-center justify-between text-xs">
+              <span className="text-gray-300 truncate">{label}</span>
+              <span className="font-bold text-red-300">{damage}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 function MyriadConfigRow({
   attacker, opponentCount, copiesPerOpponent, totalCopies, onChangeCopies,
@@ -805,6 +982,8 @@ function AttackerRow({
   const power = card.definition.power ?? '?';
   const toughness = card.definition.toughness ?? '?';
   const isMyriad = hasMyriadKeyword(card);
+  const hasFirebending = getMechanicsForCard(card).some(mechanic => mechanic.id === 'firebending');
+  const firebendingAmount = getFirebendingAmount(card);
 
   return (
     <div className={`flex items-center gap-4 p-3 rounded-xl ${isMyriad ? 'bg-yellow-900/30 border border-yellow-700/40' : 'bg-gray-800'}`}>
@@ -820,6 +999,11 @@ function AttackerRow({
           {isMyriad && <span className="bg-yellow-700 text-yellow-200 text-xs px-1.5 py-0.5 rounded font-semibold shrink-0">MYRIAD</span>}
         </div>
         <p className="text-gray-400 text-xs">{power}/{toughness}</p>
+        {hasFirebending && (
+          <p className="text-orange-300 text-xs mt-1" title={getMechanicHint('firebending', 'combat')}>
+            Firebending: +{firebendingAmount}R combat mana on attack.
+          </p>
+        )}
       </div>
       <div className="flex gap-2 flex-wrap justify-end">
         {defendingPlayers.map(p => (
@@ -941,3 +1125,4 @@ function groupByTarget(
   }
   return Array.from(map.entries()).map(([targetPlayerId, items]) => ({ targetPlayerId, items }));
 }
+

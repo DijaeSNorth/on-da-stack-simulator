@@ -41,6 +41,9 @@ export function getFirebaseClientConfig(): FirebaseClientConfig | null {
 function logFirebaseRecoveryStatus(enabled: boolean, missing: string[] = []): void {
   if (loggedFirebaseRecoveryStatus) return;
   loggedFirebaseRecoveryStatus = true;
+  const debugEnabled = ((import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV ?? false) ||
+    (typeof localStorage !== 'undefined' && localStorage.getItem('on-da-stack-debug') === '1');
+  if (!debugEnabled) return;
   console.info('[firebase] multiplayer recovery status', {
     enabled,
     missing,

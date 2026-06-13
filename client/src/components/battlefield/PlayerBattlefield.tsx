@@ -3,6 +3,7 @@ import { useGameStore } from '../../store/gameStore';
 import { CardImage } from '../cards/CardImage';
 import { useDragCombatContext } from '../../hooks/DragCombatContext';
 import { PlayerAvatar } from '../profile/PlayerAvatar';
+import { TokenStackAttackModal } from '../combat/TokenStackAttackModal';
 import type { CardState, Player } from '../../types/game';
 
 interface TokenCloud {
@@ -118,6 +119,7 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
   const [cloudAttackCounts, setCloudAttackCounts] = useState<Record<string, number>>({});
   const [cloudAttackTargets, setCloudAttackTargets] = useState<Record<string, string>>({});
   const [cloudSplitDrafts, setCloudSplitDrafts] = useState<Record<string, number>>({});
+  const [tokenStackModal, setTokenStackModal] = useState<{ sourceGroupId: string; cards: CardState[] } | null>(null);
   const lastTouchTapRef = useRef<{ id: string; time: number; x: number; y: number } | null>(null);
 
   const cards = player.battlefield.map(id => game.cards[id]).filter(Boolean) as CardState[];
@@ -482,6 +484,60 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
             </button>
             <button
               type="button"
+              disabled={untappedIds.length === 0 || opponentCount === 0}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setTokenStackModal({ sourceGroupId: clusterKey, cards });
+              }}
+              title={`Attack all, some, or split ${cloud.name} tokens across targets`}
+              style={{
+                fontSize: 8,
+                padding: '2px 5px',
+                borderRadius: 3,
+                border: '1px solid #7f1d1d',
+                background: untappedIds.length === 0 || opponentCount === 0 ? 'rgba(15,23,42,0.5)' : '#7f1d1d',
+                color: untappedIds.length === 0 || opponentCount === 0 ? '#334155' : '#fee2e2',
+                cursor: untappedIds.length === 0 || opponentCount === 0 ? 'default' : 'pointer',
+              }}
+            >
+              Attack Stack
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const raw = window.prompt(
+                  `Set base P/T for ${cards.length} ${cloud.name} token${cards.length === 1 ? '' : 's'} as power/toughness. Counters still apply.`,
+                  `${cloud.power}/${cloud.toughness}`,
+                );
+                if (!raw) return;
+                const [power = '', toughness = ''] = raw.split('/').map(part => part.trim());
+                if (!power && !toughness) return;
+                store.setPowerToughnessOverride(
+                  cards.map(card => card.instanceId),
+                  power,
+                  toughness,
+                  'manual',
+                  'Token stack manual P/T',
+                );
+              }}
+              title={`Set manual base P/T for this ${cloud.name} stack`}
+              style={{
+                fontSize: 8,
+                padding: '2px 5px',
+                borderRadius: 3,
+                border: '1px solid #92400e',
+                background: '#78350f',
+                color: '#fed7aa',
+                cursor: 'pointer',
+              }}
+            >
+              Set Stack P/T
+            </button>
+            <button
+              type="button"
               disabled={untappedIds.length === 0}
               onClick={(e) => {
                 e.preventDefault();
@@ -811,6 +867,14 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
         </div>
       )}
       </div>
+      {tokenStackModal && (
+        <TokenStackAttackModal
+          playerId={player.id}
+          sourceGroupId={tokenStackModal.sourceGroupId}
+          cards={tokenStackModal.cards}
+          onClose={() => setTokenStackModal(null)}
+        />
+      )}
     </div>
   );
 }

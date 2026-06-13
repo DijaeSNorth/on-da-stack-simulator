@@ -9,6 +9,7 @@ import {
   createCardState,
   createDefaultGameConfig,
   createEmptyGameState,
+  getEffectivePowerToughness,
   createPlayer,
   resolveTopStack,
 } from '../client/src/engine/gameEngine';
@@ -1318,6 +1319,92 @@ test('large token batches are capped before they can freeze the table', () => {
   assert(tokenIds.length === 250, `expected capped token batch of 250, got ${tokenIds.length}`);
   assert(action.data?.requestedCount === 999, 'expected requested count in action data');
   assert(action.data?.capped === true, 'expected capped flag in action data');
+});
+
+test('judge tools allow player to tap own permanent', () => {
+  const game = makeGame(2);
+  const permanent = {
+    ...createCardState({ ...vanillaCreature, id: 'judge-own-tap', name: 'Own Manual Permanent' }, 'p1', 'library'),
+    zone: 'battlefield' as const,
+    summoningSick: false,
+  };
+  resetStore({
+    ...game,
+    cards: { [permanent.instanceId]: permanent },
+    players: game.players.map(player => player.id === 'p1' ? { ...player, battlefield: [permanent.instanceId] } : player),
+  });
+
+  useGameStore.getState().tapCard(permanent.instanceId);
+
+  assert(useGameStore.getState().game.cards[permanent.instanceId].tapped, 'expected own permanent to tap');
+});
+
+test('judge tools block moving opponent private card', () => {
+  const game = makeGame(2);
+  const privateCard = createCardState({ ...vanillaCreature, id: 'opponent-private', name: 'Opponent Private' }, 'p2', 'library');
+  resetStore({
+    ...game,
+    cards: { [privateCard.instanceId]: privateCard },
+    players: game.players.map(player => player.id === 'p2' ? { ...player, library: [privateCard.instanceId] } : player),
+  });
+  useGameStore.setState(state => ({ ...state, ui: { ...state.ui, judgeMode: false } }));
+
+  useGameStore.getState().moveCardToZone(privateCard.instanceId, 'battlefield', 'p1');
+
+  const state = useGameStore.getState().game;
+  assert(state.cards[privateCard.instanceId].zone === 'library', 'expected opponent private card to stay in library');
+  assert(!state.players[0].battlefield.includes(privateCard.instanceId), 'expected opponent private card not moved to p1 battlefield');
+});
+
+test('judge mode can move private card', () => {
+  const game = makeGame(2);
+  const privateCard = createCardState({ ...vanillaCreature, id: 'judge-private', name: 'Judge Private' }, 'p2', 'library');
+  resetStore({
+    ...game,
+    cards: { [privateCard.instanceId]: privateCard },
+    players: game.players.map(player => player.id === 'p2' ? { ...player, library: [privateCard.instanceId] } : player),
+  });
+  useGameStore.setState(state => ({ ...state, ui: { ...state.ui, judgeMode: true } }));
+
+  useGameStore.getState().moveCardToZone(privateCard.instanceId, 'battlefield', 'p1');
+
+  const state = useGameStore.getState().game;
+  assert(state.cards[privateCard.instanceId].zone === 'battlefield', 'expected judge mode to move private card');
+  assert(state.players[0].battlefield.includes(privateCard.instanceId), 'expected private card on judge-selected battlefield');
+});
+
+test('manual counter changes affect effective power toughness', () => {
+  const game = makeGame(2);
+  const permanent = {
+    ...createCardState({ ...vanillaCreature, id: 'manual-counter-pt', name: 'Counter PT Creature', power: '2', toughness: '2' }, 'p1', 'library'),
+    zone: 'battlefield' as const,
+  };
+  resetStore({
+    ...game,
+    cards: { [permanent.instanceId]: permanent },
+    players: game.players.map(player => player.id === 'p1' ? { ...player, battlefield: [permanent.instanceId] } : player),
+  });
+
+  useGameStore.getState().addCounterToCard(permanent.instanceId, '+1/+1', 2);
+  const pt = getEffectivePowerToughness(useGameStore.getState().game.cards[permanent.instanceId]);
+
+  assert(pt?.power === 4 && pt.toughness === 4, `expected effective 4/4, got ${pt?.power}/${pt?.toughness}`);
+});
+
+test('manual note is stored for card preview', () => {
+  const game = makeGame(2);
+  const permanent = {
+    ...createCardState({ ...vanillaCreature, id: 'manual-note', name: 'Manual Note Creature' }, 'p1', 'library'),
+    zone: 'battlefield' as const,
+  };
+  resetStore({
+    ...game,
+    cards: { [permanent.instanceId]: permanent },
+    players: game.players.map(player => player.id === 'p1' ? { ...player, battlefield: [permanent.instanceId] } : player),
+  });
+
+  assert(useGameStore.getState().setCardTemporaryNote(permanent.instanceId, 'Preview-visible manual note'), 'expected manual note to apply');
+  assert(useGameStore.getState().game.cards[permanent.instanceId].notes === 'Preview-visible manual note', 'expected note stored on card for preview');
 });
 
 test('token trigger shortcuts create large piles in one acknowledged action', () => {

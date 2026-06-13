@@ -285,6 +285,9 @@ let _onDeckSubmitted: ((submission: DeckSubmission, presence: RoomPresence) => v
 let _onGameActionRequest: ((request: GameActionRequestPayload, presence: RoomPresence) => void) | null = null;
 
 function debugMultiplayer(event: string, data?: Record<string, unknown>): void {
+  const debugEnabled = import.meta.env?.DEV === true ||
+    (typeof localStorage !== 'undefined' && localStorage.getItem('on-da-stack-debug') === '1');
+  if (!debugEnabled) return;
   console.debug(`[multiplayer] ${event}`, data ?? {});
 }
 

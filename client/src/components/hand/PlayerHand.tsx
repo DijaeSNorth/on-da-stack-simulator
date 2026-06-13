@@ -392,6 +392,8 @@ export function PlayerHand() {
         const sel = game.cards[ui.selectedCardId];
         if (!sel) return null;
         const isLand = sel.definition.cardTypes.includes('Land');
+        const sneakCandidates = store.getSneakReturnCandidates(localPlayerId);
+        const canSneak = store.canCastWithSneak(localPlayerId, ui.selectedCardId) && sneakCandidates.length === 1;
         return (
           <div style={{
             position: 'absolute',
@@ -421,6 +423,26 @@ export function PlayerHand() {
             >
               {isLand ? 'Play Land' : 'Cast'}
             </button>
+            {canSneak && (
+              <button
+                data-testid="btn-sneak-selected"
+                data-help-title="Cast with Sneak"
+                data-help-body="Returns an unblocked attacker you control, then puts this Sneak creature onto the battlefield tapped and attacking the same target."
+                data-help-placement="top"
+                onClick={() => {
+                  store.castWithSneak(localPlayerId, ui.selectedCardId!, sneakCandidates[0].attackerId);
+                  store.setSelectedCard(null);
+                }}
+                style={{
+                  background: '#7c2d12', color: '#fff',
+                  border: 'none', borderRadius: 4,
+                  padding: '4px 10px', fontSize: 10, cursor: 'pointer',
+                  fontWeight: 600,
+                }}
+              >
+                Sneak
+              </button>
+            )}
             <button
               data-testid="btn-discard-selected"
               data-help-title="Discard Card"

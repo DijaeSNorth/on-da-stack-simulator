@@ -4,6 +4,7 @@ import { CardImage } from '../cards/CardImage';
 import type { CardState } from '../../types/game';
 import { getAllMechanics, hasMechanic } from '../../engine/mechanicResolver';
 import { canControlPlayer, isPrivateZone } from '../../engine/playerPermissions';
+import { getMechanicHint, getMechanicsForCard } from '../../rules/mechanicsRegistry';
 
 export function ZoneDrawer() {
   const store = useGameStore();
@@ -145,14 +146,31 @@ export function ZoneDrawer() {
     }
 
     if (zone === 'exile') {
+      const exileMechanics = getMechanicsForCard(card).filter(mechanic => mechanic.id === 'airbend' || mechanic.id === 'warp');
+      const permission = card.exilePermission;
+      const canUsePermission = Boolean(permission && (permission.ownerId === localPlayerId || ui.judgeMode));
       return (
-        <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', justifyContent: 'center', marginTop: 2 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'center', marginTop: 2 }}>
+          {(exileMechanics.length > 0 || permission) && (
+            <div style={{ fontSize: 8, color: '#c4b5fd', textAlign: 'center', maxWidth: 74, lineHeight: 1.25 }} title={permission?.sourceMechanic === 'airbend' ? 'Airbended - owner may cast this for {2}; normal timing applies.' : exileMechanics.map(m => getMechanicHint(m.id, 'exile')).join('\n')}>
+              {permission?.sourceMechanic === 'airbend'
+                ? 'Airbended - cast for {2}'
+                : permission?.sourceMechanic === 'warp'
+                ? 'Warp - cast from exile'
+                : `${exileMechanics.map(m => m.name).join(' / ')} permission`}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', justifyContent: 'center' }}>
           <ActionBtn
-            label="Cast"
+            label={permission?.alternativeCost ? `Cast ${permission.alternativeCost}` : 'Cast'}
             color="#7c3aed"
-            title="Cast from exile (foretell, adventure, etc.)"
+            title={permission?.sourceMechanic === 'airbend' ? 'Airbended - owner may cast this for {2}; normal timing applies.' : exileMechanics[0] ? getMechanicHint(exileMechanics[0].id, 'exile') : 'Cast from exile (foretell, adventure, etc.)'}
             onClick={() => {
-              store.castFromZone(localPlayerId, card.instanceId, 'exile');
+              if (permission && canUsePermission) {
+                store.castExiledWithPermission(localPlayerId, card.instanceId);
+              } else {
+                store.castFromZone(localPlayerId, card.instanceId, 'exile');
+              }
               store.closeZoneDrawer();
             }}
           />
@@ -185,6 +203,7 @@ export function ZoneDrawer() {
               store.closeZoneDrawer();
             }}
           />
+          </div>
         </div>
       );
     }

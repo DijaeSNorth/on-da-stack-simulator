@@ -1,6 +1,7 @@
 node_modules/
 dist/
 dist-ghpages/
+dist-server-test/
 .vite/
 
 # SQLite database files — never commit; exposes demo data at rest

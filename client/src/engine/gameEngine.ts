@@ -3,12 +3,14 @@ import { v4 as uuid } from 'uuid';
 import type {
   GameState, Player, CardState, CardDefinition, ActionRecord, ActionType,
   Phase, StackObject, TriggerItem, AssistantFlag, Deck, GameConfig, Counter, CombatState, CustomCardDefinition,
-  PlayerAvatarImage, ManaPool,
+  PlayerAvatarImage, ManaPool, AttackDefenderTarget, CombatAttackAssignment, TokenStackAttackInput, CombatDamagePreview,
+  CombatDamagePreviewAssignment, PowerToughnessOverrideExpiration, CardType,
 } from '../types/game';
 import { fetchCardsByNames } from '../data/cardDatabase';
 import { getEffectiveCardDefinition, getEffectiveOracleText } from './cardFaces';
 import { normalizeCommanderDeck } from './deckImport';
 import { PHASE_ORDER } from './phaseMeta';
+import { DEFAULT_RULESET_VERSION } from '../rules/defaultRuleset';
 
 // ─── Factory Helpers ──────────────────────────────────────────────────────────
 
@@ -56,6 +58,7 @@ export function createPlayer(
     life: config.startingLife,
     mulliganCount: 0,
     manaPool: { ...EMPTY_MANA_POOL },
+    combatMana: { ...EMPTY_MANA_POOL },
     commanderDamage: {},
     poisonCounters: 0,
     energyCounters: 0,
@@ -117,12 +120,15 @@ export function createCardState(
     combatDamageAssigned: 0,
     visualX: Math.random() * 80 + 10,
     visualY: Math.random() * 80 + 10,
+    exhaustUsed: {},
+    classLevel: isClassDefinition(def) ? 1 : undefined,
   };
 }
 
 export function createEmptyGameState(config: GameConfig): GameState {
   return {
     id: uuid(),
+    rulesetVersion: DEFAULT_RULESET_VERSION,
     config,
     players: [],
     cards: {},
@@ -137,6 +143,13 @@ export function createEmptyGameState(config: GameConfig): GameState {
     assistantFlags: [],
     combat: createEmptyCombat(),
     houseRules: config.houseRules,
+    turnTrackers: {
+      spellsWarpedThisTurn: [],
+      cardsAirbendedThisTurn: [],
+      waterbendEventsThisTurn: [],
+      earthbentThisTurn: [],
+      sneakCastsThisTurn: [],
+    },
     snapshots: {},
     undoPointer: 0,
     createdAt: Date.now(),
@@ -151,9 +164,997 @@ function createEmptyCombat(): CombatState {
     attackingPlayerId: '',
     attackers: [],
     blockers: [],
+    attackAssignments: [],
+    blockAssignments: [],
+    damagePreview: undefined,
     combatPhase: 'none',
     hasMyriad: false,
     myriadCopies: [],
+  };
+}
+
+export function toAttackDefenderTarget(targetPlayerId: string): AttackDefenderTarget {
+  return { type: 'player', playerId: targetPlayerId };
+}
+
+export function getTargetPlayerIdFromAttackTarget(target: AttackDefenderTarget): string | undefined {
+  return target.type === 'player' ? target.playerId : undefined;
+}
+
+function assignmentIdForAttacker(attackerId: string): string {
+  return `attack-${attackerId}`;
+}
+
+function blockAssignmentIdForBlocker(blockerId: string, attackerId: string): string {
+  return `block-${blockerId}-${attackerId}`;
+}
+
+function parsePowerPreview(card: CardState | undefined): number | undefined {
+  if (!card) return undefined;
+  const parsed = Number.parseInt(getEffectiveCardDefinition(card).power ?? '', 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+export function createSingleAttackAssignment(
+  state: GameState,
+  attackerId: string,
+  target: AttackDefenderTarget,
+  legal = true,
+  legalityWarnings: string[] = [],
+): CombatAttackAssignment {
+  const card = state.cards[attackerId];
+  const def = card ? getEffectiveCardDefinition(card) : undefined;
+  return {
+    assignmentId: assignmentIdForAttacker(attackerId),
+    controllerId: card?.controllerId ?? '',
+    attackerIds: [attackerId],
+    sourceGroupId: card?.visualGroup,
+    sourceName: def?.name ?? card?.definition.name ?? attackerId,
+    count: 1,
+    isTokenStack: Boolean(card?.token && card.visualGroup),
+    powerDisplay: def?.power,
+    toughnessDisplay: def?.toughness,
+    totalPowerPreview: parsePowerPreview(card),
+    attackTarget: target,
+    tappedOnDeclare: Boolean(card?.tapped),
+    legal,
+    legalityWarnings,
+  };
+}
+
+export function getAssignmentsFromLegacyCombat(state: GameState): CombatAttackAssignment[] {
+  return state.combat.attackers.map(attacker =>
+    createSingleAttackAssignment(
+      state,
+      attacker.instanceId,
+      attacker.attackTarget ?? toAttackDefenderTarget(attacker.targetPlayerId),
+    )
+  );
+}
+
+export function getLegalAttackTargetsForPlayer(state: GameState, attackingPlayerId: string): AttackDefenderTarget[] {
+  const targets: AttackDefenderTarget[] = state.players
+    .filter(player => player.id !== attackingPlayerId)
+    .map(player => ({ type: 'player', playerId: player.id }));
+
+  for (const card of Object.values(state.cards)) {
+    if (card.zone !== 'battlefield') continue;
+    const def = getEffectiveCardDefinition(card);
+    if (card.controllerId === attackingPlayerId) continue;
+    if (def.cardTypes.includes('Planeswalker')) {
+      targets.push({ type: 'planeswalker', permanentId: card.instanceId, controllerId: card.controllerId });
+    }
+    if (def.cardTypes.includes('Battle')) {
+      targets.push({ type: 'battle', permanentId: card.instanceId, protectorId: card.controllerId });
+    }
+  }
+
+  return targets;
+}
+
+export function getUnblockedAttackAssignments(state: GameState, playerId: string): CombatAttackAssignment[] {
+  const attackAssignments = state.combat.attackAssignments ?? [];
+  const blockAssignments = state.combat.blockAssignments ?? [];
+  const assignments = attackAssignments.length > 0
+    ? state.combat.attackAssignments
+    : getAssignmentsFromLegacyCombat(state);
+  const blocked = new Set(
+    blockAssignments.length > 0
+      ? blockAssignments.flatMap(block => block.blockedAttackerIds)
+      : state.combat.blockers.map(block => block.blockedAttacker)
+  );
+  return assignments.filter(assignment =>
+    assignment.controllerId === playerId &&
+    assignment.attackerIds.every(attackerId => !blocked.has(attackerId))
+  );
+}
+
+const KNOWN_CARD_TYPES: CardType[] = [
+  'Artifact',
+  'Battle',
+  'Creature',
+  'Enchantment',
+  'Instant',
+  'Kindred',
+  'Land',
+  'Planeswalker',
+  'Sorcery',
+  'Tribal',
+];
+
+const ALL_CREATURE_TYPES = [
+  'Advisor', 'Aetherborn', 'Alien', 'Ally', 'Angel', 'Antelope', 'Ape', 'Archer', 'Archon',
+  'Army', 'Artificer', 'Assassin', 'Assembly-Worker', 'Astartes', 'Atog', 'Aurochs', 'Avatar',
+  'Azra', 'Badger', 'Balloon', 'Barbarian', 'Bard', 'Basilisk', 'Bat', 'Bear', 'Beast',
+  'Beaver', 'Beeble', 'Beholder', 'Berserker', 'Bird', 'Blinkmoth', 'Boar', 'Bringer',
+  'Brushwagg', 'Camarid', 'Camel', 'Caribou', 'Carrier', 'Cat', 'Centaur', 'Cephalid',
+  'Child', 'Chimera', 'Citizen', 'Cleric', 'Clown', 'Cockatrice', 'Construct', 'Coward',
+  'Coyote', 'Crab', 'Crocodile', 'Custodes', 'Cyberman', 'Cyclops', 'Dalek', 'Dauthi',
+  'Demigod', 'Demon', 'Deserter', 'Detective', 'Devil', 'Dinosaur', 'Djinn', 'Doctor',
+  'Dog', 'Dragon', 'Drake', 'Dreadnought', 'Drone', 'Druid', 'Dryad', 'Dwarf', 'Efreet',
+  'Egg', 'Elder', 'Eldrazi', 'Elemental', 'Elephant', 'Elf', 'Elk', 'Employee', 'Eye',
+  'Faerie', 'Ferret', 'Fish', 'Flagbearer', 'Fox', 'Fractal', 'Frog', 'Fungus', 'Gamer',
+  'Gargoyle', 'Germ', 'Giant', 'Gith', 'Gnoll', 'Gnome', 'Goat', 'Goblin', 'God', 'Golem',
+  'Gorgon', 'Graveborn', 'Gremlin', 'Griffin', 'Guest', 'Hag', 'Halfling', 'Hamster',
+  'Harpy', 'Hellion', 'Hippo', 'Hippogriff', 'Homarid', 'Homunculus', 'Horror', 'Horse',
+  'Human', 'Hydra', 'Hyena', 'Illusion', 'Imp', 'Incarnation', 'Inkling', 'Inquisitor',
+  'Insect', 'Jackal', 'Jellyfish', 'Juggernaut', 'Kavu', 'Kirin', 'Kithkin', 'Knight',
+  'Kobold', 'Kor', 'Kraken', 'Lamia', 'Lammasu', 'Leech', 'Leviathan', 'Lhurgoyf',
+  'Licid', 'Lizard', 'Manticore', 'Masticore', 'Mercenary', 'Merfolk', 'Metathran',
+  'Minion', 'Minotaur', 'Mite', 'Mole', 'Monger', 'Mongoose', 'Monk', 'Monkey', 'Moonfolk',
+  'Mouse', 'Mutant', 'Myr', 'Mystic', 'Nautilus', 'Necron', 'Nephilim', 'Nightmare',
+  'Nightstalker', 'Ninja', 'Noble', 'Noggle', 'Nomad', 'Nymph', 'Octopus', 'Ogre', 'Ooze',
+  'Orb', 'Orc', 'Orgg', 'Otter', 'Ouphe', 'Ox', 'Oyster', 'Pangolin', 'Peasant', 'Pegasus',
+  'Pentavite', 'Performer', 'Pest', 'Phelddagrif', 'Phoenix', 'Phyrexian', 'Pilot',
+  'Pincher', 'Pirate', 'Plant', 'Porcupine', 'Possum', 'Praetor', 'Primarch', 'Prism',
+  'Processor', 'Rabbit', 'Raccoon', 'Ranger', 'Rat', 'Rebel', 'Reflection', 'Rhino',
+  'Rigger', 'Robot', 'Rogue', 'Sable', 'Salamander', 'Samurai', 'Sand', 'Saproling',
+  'Satyr', 'Scarecrow', 'Scientist', 'Scion', 'Scorpion', 'Scout', 'Sculpture', 'Serf',
+  'Serpent', 'Servo', 'Shade', 'Shaman', 'Shapeshifter', 'Shark', 'Sheep', 'Siren',
+  'Skeleton', 'Slith', 'Sliver', 'Slug', 'Snail', 'Snake', 'Soldier', 'Soltari', 'Spawn',
+  'Specter', 'Spellshaper', 'Sphinx', 'Spider', 'Spike', 'Spirit', 'Splinter', 'Sponge',
+  'Squid', 'Squirrel', 'Starfish', 'Surrakar', 'Survivor', 'Synth', 'Tentacle', 'Tetravite',
+  'Thalakos', 'Thopter', 'Thrull', 'Tiefling', 'Toy', 'Treefolk', 'Trilobite', 'Triskelavite',
+  'Troll', 'Turtle', 'Tyranid', 'Unicorn', 'Vampire', 'Vedalken', 'Viashino', 'Volver',
+  'Wall', 'Walrus', 'Warlock', 'Warrior', 'Weasel', 'Weird', 'Werewolf', 'Whale', 'Wizard',
+  'Wolf', 'Wolverine', 'Wombat', 'Worm', 'Wraith', 'Wurm', 'Yeti', 'Zombie', 'Zubera',
+];
+
+function normalizeTypeName(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function uniqueCaseInsensitive(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed) continue;
+    const key = normalizeTypeName(trimmed);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(trimmed);
+  }
+  return result;
+}
+
+function parseTypeLineParts(typeLine: string | undefined): { cardTypes: string[]; subTypes: string[] } {
+  if (!typeLine) return { cardTypes: [], subTypes: [] };
+  const [left = '', right = ''] = typeLine.split(/\s+[—-]\s+/, 2);
+  return {
+    cardTypes: left.split(/\s+/).filter(Boolean),
+    subTypes: right.split(/\s+/).filter(Boolean),
+  };
+}
+
+export function hasCardType(card: CardState | undefined, cardType: CardType | string): boolean {
+  if (!card) return false;
+  const def = getEffectiveCardDefinition(card);
+  const target = normalizeTypeName(cardType);
+  const parsed = parseTypeLineParts(def.typeLine).cardTypes;
+  return [...def.cardTypes, ...parsed].some(type => normalizeTypeName(type) === target);
+}
+
+export function hasSubtype(card: CardState | undefined, subtype: string): boolean {
+  if (!card) return false;
+  const def = getEffectiveCardDefinition(card);
+  const target = normalizeTypeName(subtype);
+  const parsed = parseTypeLineParts(def.typeLine).subTypes;
+  return [...def.subTypes, ...parsed].some(type => normalizeTypeName(type) === target);
+}
+
+export function getCreatureTypes(card: CardState | undefined): string[] {
+  if (!card) return [];
+  const def = getEffectiveCardDefinition(card);
+  const subTypes = uniqueCaseInsensitive([...def.subTypes, ...parseTypeLineParts(def.typeLine).subTypes]);
+  if (!hasCardType(card, 'Creature') && !hasCardType(card, 'Kindred') && !hasCardType(card, 'Tribal')) return [];
+  const known = new Set(ALL_CREATURE_TYPES.map(normalizeTypeName));
+  return subTypes.filter(subtype => known.has(normalizeTypeName(subtype)));
+}
+
+export function isChangeling(card: CardState | undefined): boolean {
+  if (!card) return false;
+  const def = getEffectiveCardDefinition(card);
+  return def.keywords.some(keyword => normalizeTypeName(keyword) === 'changeling') ||
+    /\bchangeling\b/i.test(getEffectiveOracleText(card));
+}
+
+export function getEffectiveCreatureTypes(card: CardState | undefined): string[] {
+  if (!card) return [];
+  return isChangeling(card) ? [...ALL_CREATURE_TYPES] : getCreatureTypes(card);
+}
+
+export function hasCreatureType(card: CardState | undefined, type: string): boolean {
+  if (!card) return false;
+  if (isChangeling(card)) return true;
+  const target = normalizeTypeName(type);
+  return getCreatureTypes(card).some(creatureType => normalizeTypeName(creatureType) === target);
+}
+
+function isClassDefinition(def: CardDefinition): boolean {
+  const parsed = parseTypeLineParts(def.typeLine);
+  return [...def.subTypes, ...parsed.subTypes].some(subtype => normalizeTypeName(subtype) === 'class') ||
+    /\bclass\b/i.test(def.typeLine);
+}
+
+export function isClassCard(card: CardState | undefined): boolean {
+  if (!card) return false;
+  const def = getEffectiveCardDefinition(card);
+  return isClassDefinition(def) || hasSubtype(card, 'Class');
+}
+
+export function getClassLevel(card: CardState | undefined): number | undefined {
+  if (!isClassCard(card)) return undefined;
+  const level = card?.classLevel;
+  return typeof level === 'number' && Number.isFinite(level) && level > 0 ? Math.floor(level) : 1;
+}
+
+export function setClassLevel(
+  state: GameState,
+  playerId: string,
+  cardId: string,
+  level: number,
+  judgeOverride = false,
+): { state: GameState; valid: boolean; reason?: string; level?: number } {
+  const card = state.cards[cardId];
+  const safeLevel = Math.floor(level);
+  if (!card) return { state, valid: false, reason: 'missing_class' };
+  if (!isClassCard(card)) return { state, valid: false, reason: 'not_class' };
+  if (card.zone !== 'battlefield') return { state, valid: false, reason: 'not_on_battlefield' };
+  if (!judgeOverride && card.controllerId !== playerId) return { state, valid: false, reason: 'wrong_controller' };
+  if (!judgeOverride && !isSorcerySpeedStationWindow(state, playerId)) return { state, valid: false, reason: 'not_sorcery_speed' };
+  if (safeLevel < 1) return { state, valid: false, reason: 'invalid_level' };
+
+  const currentLevel = getClassLevel(card) ?? 1;
+  if (!judgeOverride && safeLevel !== currentLevel + 1) {
+    return { state, valid: false, reason: 'must_level_in_order', level: currentLevel };
+  }
+
+  return {
+    state: {
+      ...state,
+      cards: {
+        ...state.cards,
+        [cardId]: { ...card, classLevel: safeLevel },
+      },
+      lastUpdatedAt: Date.now(),
+    },
+    valid: true,
+    level: safeLevel,
+  };
+}
+
+export function levelUpClass(
+  state: GameState,
+  playerId: string,
+  cardId: string,
+): { state: GameState; valid: boolean; reason?: string; level?: number } {
+  const currentLevel = getClassLevel(state.cards[cardId]) ?? 1;
+  return setClassLevel(state, playerId, cardId, currentLevel + 1);
+}
+
+export function getEffectivePowerToughness(
+  card: CardState | undefined,
+  _state?: GameState,
+): { power: number; toughness: number } | null {
+  if (!card) return null;
+  const def = getEffectiveCardDefinition(card);
+  const overridePower = card.powerToughnessOverride?.power;
+  const overrideToughness = card.powerToughnessOverride?.toughness;
+  const rawPower = overridePower ?? (card.earthbend ? card.earthbend.basePower : def.power);
+  const rawToughness = overrideToughness ?? (card.earthbend ? card.earthbend.baseToughness : def.toughness);
+  const power = typeof rawPower === 'number' ? rawPower : Number.parseInt(String(rawPower ?? ''), 10);
+  const toughness = typeof rawToughness === 'number' ? rawToughness : Number.parseInt(String(rawToughness ?? ''), 10);
+  if (!Number.isFinite(power) || !Number.isFinite(toughness)) return null;
+  const plusCounters = card.counters.find(counter => counter.type === '+1/+1')?.count ?? 0;
+  const minusCounters = card.counters.find(counter => counter.type === '-1/-1')?.count ?? 0;
+  return {
+    power: power + plusCounters - minusCounters,
+    toughness: toughness + plusCounters - minusCounters,
+  };
+}
+
+export function setPowerToughnessOverride(
+  state: GameState,
+  instanceIds: string[],
+  power?: string,
+  toughness?: string,
+  expires: PowerToughnessOverrideExpiration = 'manual',
+  reason?: string,
+): GameState {
+  const ids = [...new Set(instanceIds)].filter(id => Boolean(state.cards[id]));
+  if (ids.length === 0) return state;
+  const cards = { ...state.cards };
+  for (const id of ids) {
+    cards[id] = {
+      ...cards[id],
+      powerToughnessOverride: {
+        power: power?.trim() || undefined,
+        toughness: toughness?.trim() || undefined,
+        reason: reason?.trim() || undefined,
+        expires,
+        createdAtTurn: state.turn,
+      },
+    };
+  }
+  return { ...state, cards, lastUpdatedAt: Date.now() };
+}
+
+export function clearPowerToughnessOverride(state: GameState, instanceIds: string[]): GameState {
+  const ids = [...new Set(instanceIds)].filter(id => Boolean(state.cards[id]?.powerToughnessOverride));
+  if (ids.length === 0) return state;
+  const cards = { ...state.cards };
+  for (const id of ids) {
+    const { powerToughnessOverride: _override, ...rest } = cards[id];
+    cards[id] = rest;
+  }
+  return { ...state, cards, lastUpdatedAt: Date.now() };
+}
+
+export function clearExpiredPowerToughnessOverrides(
+  state: GameState,
+  expires: PowerToughnessOverrideExpiration,
+): GameState {
+  const ids = Object.values(state.cards)
+    .filter(card => card.powerToughnessOverride?.expires === expires)
+    .map(card => card.instanceId);
+  return clearPowerToughnessOverride(state, ids);
+}
+
+function isSpacecraftCard(card: CardState | undefined): boolean {
+  if (!card) return false;
+  const def = getEffectiveCardDefinition(card);
+  return def.subTypes.some(subtype => subtype.toLowerCase() === 'spacecraft') ||
+    /\bspacecraft\b/i.test(def.typeLine) ||
+    /\bspacecraft\b/i.test(getEffectiveOracleText(card));
+}
+
+export function getStationThreshold(card: CardState | undefined): number | undefined {
+  if (!card) return undefined;
+  const explicit = card.spacecraft?.stationThreshold;
+  if (typeof explicit === 'number' && Number.isFinite(explicit)) return explicit;
+  const text = `${getEffectiveCardDefinition(card).typeLine} ${getEffectiveOracleText(card)}`;
+  const match = text.match(/\bstation\s+(\d+)\b/i);
+  return match ? Number.parseInt(match[1], 10) : undefined;
+}
+
+export function getStationEligibleCreatures(state: GameState, playerId: string, spacecraftId: string): CardState[] {
+  const spacecraft = state.cards[spacecraftId];
+  if (!spacecraft || spacecraft.controllerId !== playerId || spacecraft.zone !== 'battlefield') return [];
+  return Object.values(state.cards).filter(card => {
+    const def = getEffectiveCardDefinition(card);
+    return card.instanceId !== spacecraftId &&
+      card.zone === 'battlefield' &&
+      card.controllerId === playerId &&
+      !card.tapped &&
+      def.cardTypes.includes('Creature');
+  });
+}
+
+function isSorcerySpeedStationWindow(state: GameState, playerId: string): boolean {
+  return state.activePlayerId === playerId &&
+    state.priorityPlayerId === playerId &&
+    (state.phase === 'main1' || state.phase === 'main2') &&
+    state.stack.length === 0;
+}
+
+export function stationSpacecraft(
+  state: GameState,
+  playerId: string,
+  spacecraftId: string,
+  creatureId: string,
+): { state: GameState; valid: boolean; reason?: string; countersAdded?: number; threshold?: number; stationed?: boolean } {
+  const spacecraft = state.cards[spacecraftId];
+  const creature = state.cards[creatureId];
+  if (!spacecraft) return { state, valid: false, reason: 'missing_spacecraft' };
+  if (!creature) return { state, valid: false, reason: 'missing_creature' };
+  if (!isSorcerySpeedStationWindow(state, playerId)) return { state, valid: false, reason: 'not_sorcery_speed' };
+  if (spacecraft.zone !== 'battlefield') return { state, valid: false, reason: 'spacecraft_not_on_battlefield' };
+  if (spacecraft.controllerId !== playerId) return { state, valid: false, reason: 'wrong_spacecraft_controller' };
+  if (!isSpacecraftCard(spacecraft)) return { state, valid: false, reason: 'not_spacecraft' };
+  if (creatureId === spacecraftId) return { state, valid: false, reason: 'same_object' };
+  if (creature.zone !== 'battlefield') return { state, valid: false, reason: 'creature_not_on_battlefield' };
+  if (creature.controllerId !== playerId) return { state, valid: false, reason: 'wrong_creature_controller' };
+  if (creature.tapped) return { state, valid: false, reason: 'creature_tapped' };
+  if (!getEffectiveCardDefinition(creature).cardTypes.includes('Creature')) return { state, valid: false, reason: 'not_creature' };
+  const power = getEffectivePowerToughness(creature, state)?.power;
+  if (typeof power !== 'number' || power <= 0) return { state, valid: false, reason: 'invalid_power' };
+
+  let next = addCounter({
+    ...state,
+    cards: {
+      ...state.cards,
+      [creatureId]: { ...creature, tapped: true },
+    },
+  }, spacecraftId, 'charge', power);
+
+  const currentSpacecraft = next.cards[spacecraftId];
+  const threshold = getStationThreshold(currentSpacecraft);
+  const chargeCount = currentSpacecraft.counters.find(counter => counter.type === 'charge')?.count ?? 0;
+  const stationed = typeof threshold === 'number' ? chargeCount >= threshold : (currentSpacecraft.spacecraft?.stationed ?? false);
+  const def = getEffectiveCardDefinition(currentSpacecraft);
+  const shouldAnimate = stationed && def.power !== undefined && def.toughness !== undefined && !def.cardTypes.includes('Creature');
+  next = {
+    ...next,
+    cards: {
+      ...next.cards,
+      [spacecraftId]: {
+        ...currentSpacecraft,
+        definition: shouldAnimate
+          ? {
+              ...currentSpacecraft.definition,
+              cardTypes: Array.from(new Set([...currentSpacecraft.definition.cardTypes, 'Creature' as const])),
+              typeLine: currentSpacecraft.definition.typeLine.includes('Creature')
+                ? currentSpacecraft.definition.typeLine
+                : `${currentSpacecraft.definition.typeLine} Creature`,
+            }
+          : currentSpacecraft.definition,
+        spacecraft: {
+          ...(currentSpacecraft.spacecraft ?? {}),
+          stationThreshold: threshold,
+          stationed,
+          chargeCountersAddedByStation: (currentSpacecraft.spacecraft?.chargeCountersAddedByStation ?? 0) + power,
+        },
+      },
+    },
+    lastUpdatedAt: Date.now(),
+  };
+
+  return { state: next, valid: true, countersAdded: power, threshold, stationed };
+}
+
+export function applyBlight(
+  state: GameState,
+  playerId: string,
+  creatureId: string,
+  amount: number,
+  sourceId?: string,
+): { state: GameState; valid: boolean; reason?: string; amount?: number } {
+  const card = state.cards[creatureId];
+  const safeAmount = Math.max(0, Math.floor(amount));
+  if (!card) return { state, valid: false, reason: 'missing_creature' };
+  if (card.zone !== 'battlefield') return { state, valid: false, reason: 'not_on_battlefield' };
+  if (card.controllerId !== playerId) return { state, valid: false, reason: 'wrong_controller' };
+  if (!getEffectiveCardDefinition(card).cardTypes.includes('Creature')) return { state, valid: false, reason: 'not_creature' };
+  if (safeAmount <= 0) return { state, valid: false, reason: 'invalid_amount' };
+  return {
+    state: addCounter(state, creatureId, '-1/-1', safeAmount),
+    valid: true,
+    amount: safeAmount,
+  };
+}
+
+export function getVividColorCount(state: GameState, playerId: string): number {
+  const colors = new Set<string>();
+  for (const card of Object.values(state.cards)) {
+    if (card.zone !== 'battlefield' || card.controllerId !== playerId) continue;
+    for (const color of getEffectiveCardDefinition(card).colors) {
+      colors.add(color);
+    }
+  }
+  return colors.size;
+}
+
+function addDamage(record: Record<string, number>, id: string, amount: number): void {
+  if (amount <= 0) return;
+  record[id] = (record[id] ?? 0) + amount;
+}
+
+function uniqueKeywordsForCards(cards: CardState[]): string[] {
+  const known = new Set<string>();
+  for (const card of cards) {
+    const text = `${getEffectiveCardDefinition(card).keywords.join(' ')} ${getEffectiveOracleText(card)}`.toLowerCase();
+    for (const keyword of ['trample', 'deathtouch', 'first strike', 'double strike', 'protection', 'indestructible', 'prevent']) {
+      if (text.includes(keyword)) known.add(keyword);
+    }
+  }
+  return [...known];
+}
+
+function unsupportedCombatWarnings(keywords: string[], subject: string): string[] {
+  const warnings: string[] = [];
+  for (const keyword of keywords) {
+    if (keyword === 'first strike' || keyword === 'double strike' || keyword === 'trample' || keyword === 'deathtouch') continue;
+    if (keyword === 'prevent') warnings.push(`${subject}: damage prevention is not fully previewed.`);
+    else warnings.push(`${subject}: ${keyword} requires manual combat-damage review.`);
+  }
+  return warnings;
+}
+
+function hasCombatPreviewKeyword(card: CardState, keyword: string): boolean {
+  const lowerKeyword = keyword.toLowerCase();
+  return getEffectiveCardDefinition(card).keywords.some(k => k.toLowerCase() === lowerKeyword) ||
+    getEffectiveOracleText(card).toLowerCase().includes(lowerKeyword);
+}
+
+function dealsCombatDamageInPreviewStep(card: CardState, step: 'firstStrike' | 'normal'): boolean {
+  const firstStrike = hasCombatPreviewKeyword(card, 'first strike');
+  const doubleStrike = hasCombatPreviewKeyword(card, 'double strike');
+  return step === 'firstStrike'
+    ? firstStrike || doubleStrike
+    : !firstStrike || doubleStrike;
+}
+
+export function generateCombatDamagePreview(state: GameState): CombatDamagePreview {
+  const assignments = (state.combat.attackAssignments?.length ?? 0) > 0
+    ? state.combat.attackAssignments
+    : getAssignmentsFromLegacyCombat(state);
+  const blockAssignments = state.combat.blockAssignments ?? [];
+  const warnings: string[] = [];
+  const damageToPlayers: Record<string, number> = {};
+  const damageToPlaneswalkers: Record<string, number> = {};
+  const damageToBattles: Record<string, number> = {};
+  const likelyDestroyed = new Set<string>();
+  const likelyDestroyedAfterFirstStrike = new Set<string>();
+  const allCombatCards = [
+    ...assignments.flatMap(assignment => assignment.attackerIds.map(id => state.cards[id]).filter(Boolean) as CardState[]),
+    ...state.combat.blockers.map(block => state.cards[block.instanceId]).filter(Boolean) as CardState[],
+    ...(blockAssignments.map(block => state.cards[block.blockerId]).filter(Boolean) as CardState[]),
+  ];
+  const hasFirstStrikeDamageStep = allCombatCards.some(card =>
+    hasCombatPreviewKeyword(card, 'first strike') || hasCombatPreviewKeyword(card, 'double strike')
+  );
+  const hasNormalDamageStep = true;
+
+  const buildStepAssignments = (
+    step: 'firstStrike' | 'normal',
+    firstStrikeDeadIds: Set<string>,
+  ): CombatDamagePreviewAssignment[] => assignments.flatMap(assignment => {
+    const attackers = assignment.attackerIds.map(id => state.cards[id]).filter(Boolean) as CardState[];
+    const blockersFromAssignments = blockAssignments
+      .filter(block =>
+        block.blockedAttackAssignmentId === assignment.assignmentId ||
+        block.blockedAttackerIds.some(attackerId => assignment.attackerIds.includes(attackerId))
+      )
+      .map(block => block.blockerId);
+    const blockersFromLegacy = state.combat.blockers
+      .filter(block => assignment.attackerIds.includes(block.blockedAttacker))
+      .map(block => block.instanceId);
+    const blockerIds = [...new Set([...blockersFromAssignments, ...blockersFromLegacy])]
+      .filter(id => Boolean(state.cards[id]));
+    const blockers = blockerIds.map(id => state.cards[id]).filter(Boolean) as CardState[];
+    const attackersEligibleThisStep = attackers.filter(card =>
+      dealsCombatDamageInPreviewStep(card, step) && !(step === 'normal' && firstStrikeDeadIds.has(card.instanceId))
+    );
+    const blockersEligibleThisStep = blockers.filter(card =>
+      dealsCombatDamageInPreviewStep(card, step) && !(step === 'normal' && firstStrikeDeadIds.has(card.instanceId))
+    );
+    const firstPT = getEffectivePowerToughness(attackersEligibleThisStep[0] ?? attackers[0], state);
+    const powerPerAttacker = firstPT?.power ?? 0;
+    const hasUnknownPower = attackers.some(card => getEffectivePowerToughness(card, state) === null);
+    const totalPower = hasUnknownPower ? 0 : attackersEligibleThisStep.reduce((sum, card) => sum + (getEffectivePowerToughness(card, state)?.power ?? 0), 0);
+    const keywords = uniqueKeywordsForCards([...attackers, ...blockers]);
+    const notes: string[] = [];
+    const damageToBlockers: Record<string, number> = {};
+    const damageToAttackers: Record<string, number> = {};
+    const blocked = blockerIds.length > 0;
+    let damageToTarget = 0;
+
+    if (attackersEligibleThisStep.length === 0 && blockersEligibleThisStep.length === 0) {
+      return [];
+    }
+
+    if ([...attackers, ...blockers].some(card => card.powerToughnessOverride)) {
+      notes.push('Using manual P/T override.');
+    }
+
+    if (keywords.includes('double strike')) {
+      notes.push('Double strike deals combat damage in both first strike and normal damage steps.');
+    }
+    if (step === 'firstStrike') {
+      notes.push('First Strike Damage step.');
+    }
+    if (step === 'normal' && attackers.some(card => firstStrikeDeadIds.has(card.instanceId))) {
+      notes.push('One or more attackers may not deal normal combat damage because first-strike damage would destroy them.');
+    }
+    if (step === 'normal' && blockers.some(card => firstStrikeDeadIds.has(card.instanceId))) {
+      notes.push('One or more blockers may not deal normal combat damage because first-strike damage would destroy them.');
+    }
+
+    if (hasUnknownPower) {
+      notes.push('Unknown or variable power/toughness. Resolve this assignment manually.');
+      warnings.push(`${assignment.sourceName}: unknown or variable P/T cannot be previewed exactly.`);
+    }
+
+    warnings.push(...unsupportedCombatWarnings(keywords, assignment.sourceName));
+
+    if (!blocked) {
+      damageToTarget = totalPower;
+      if (assignment.attackTarget.type === 'player') addDamage(damageToPlayers, assignment.attackTarget.playerId, damageToTarget);
+      if (assignment.attackTarget.type === 'planeswalker') addDamage(damageToPlaneswalkers, assignment.attackTarget.permanentId, damageToTarget);
+      if (assignment.attackTarget.type === 'battle') addDamage(damageToBattles, assignment.attackTarget.permanentId, damageToTarget);
+    } else {
+      const attackerHasTrample = attackersEligibleThisStep.some(card => hasCombatPreviewKeyword(card, 'trample'));
+      const attackerHasDeathtouch = attackersEligibleThisStep.some(card => hasCombatPreviewKeyword(card, 'deathtouch'));
+      const hasExactDamageCaveat = keywords.some(keyword => keyword === 'protection' || keyword === 'prevent' || keyword === 'indestructible');
+
+      if (attackerHasDeathtouch) {
+        notes.push('Deathtouch: 1 damage is lethal.');
+      }
+
+      if (attackerHasTrample && blockerIds.length > 1) {
+        const warning = `${assignment.sourceName}: multiple blockers with trample need manual damage assignment order.`;
+        notes.push('Multiple blockers with trample: verify assignment order manually.');
+        warnings.push(warning);
+      }
+
+      if (attackerHasTrample) {
+        let remainingAttackerDamage = totalPower;
+        for (const blocker of blockers) {
+          const toughness = getEffectivePowerToughness(blocker, state)?.toughness;
+          const lethalDamage = attackerHasDeathtouch
+            ? 1
+            : typeof toughness === 'number'
+              ? Math.max(0, toughness - (blocker.markedForDamage ?? 0))
+              : remainingAttackerDamage;
+          const assignedToBlocker = Math.min(remainingAttackerDamage, lethalDamage);
+          damageToBlockers[blocker.instanceId] = assignedToBlocker;
+          remainingAttackerDamage = Math.max(0, remainingAttackerDamage - assignedToBlocker);
+
+          if (!hasExactDamageCaveat && assignedToBlocker > 0 && (
+            attackerHasDeathtouch ||
+            (typeof toughness === 'number' && (blocker.markedForDamage ?? 0) + assignedToBlocker >= toughness)
+          )) {
+            likelyDestroyed.add(blocker.instanceId);
+            if (step === 'firstStrike') likelyDestroyedAfterFirstStrike.add(blocker.instanceId);
+          }
+        }
+        damageToTarget = remainingAttackerDamage;
+        if (assignment.attackTarget.type === 'player') addDamage(damageToPlayers, assignment.attackTarget.playerId, damageToTarget);
+        if (assignment.attackTarget.type === 'planeswalker') addDamage(damageToPlaneswalkers, assignment.attackTarget.permanentId, damageToTarget);
+        if (assignment.attackTarget.type === 'battle') addDamage(damageToBattles, assignment.attackTarget.permanentId, damageToTarget);
+        notes.push(`Trample overflow: ${damageToTarget}.`);
+      } else {
+        for (const blocker of blockers) {
+          damageToBlockers[blocker.instanceId] = totalPower;
+          const toughness = getEffectivePowerToughness(blocker, state)?.toughness;
+          if (!hasExactDamageCaveat && totalPower > 0 && (
+            attackerHasDeathtouch ||
+            (typeof toughness === 'number' && (blocker.markedForDamage ?? 0) + totalPower >= toughness)
+          )) {
+            likelyDestroyed.add(blocker.instanceId);
+            if (step === 'firstStrike') likelyDestroyedAfterFirstStrike.add(blocker.instanceId);
+          }
+        }
+      }
+
+      const totalBlockerPower = blockersEligibleThisStep.reduce((sum, blocker) => sum + (getEffectivePowerToughness(blocker, state)?.power ?? 0), 0);
+      for (const attacker of attackers) {
+        damageToAttackers[attacker.instanceId] = totalBlockerPower;
+        const toughness = getEffectivePowerToughness(attacker, state)?.toughness;
+        if (!hasExactDamageCaveat && typeof toughness === 'number' && (attacker.markedForDamage ?? 0) + totalBlockerPower >= toughness) {
+          likelyDestroyed.add(attacker.instanceId);
+          if (step === 'firstStrike') likelyDestroyedAfterFirstStrike.add(attacker.instanceId);
+        }
+      }
+      notes.push(`${step === 'firstStrike' ? 'First strike' : 'Normal'} blocked assignment preview uses simple damage${attackerHasTrample ? ' with trample overflow' : ''}.`);
+    }
+
+    return {
+      attackAssignmentId: assignment.assignmentId,
+      attackerIds: assignment.attackerIds,
+      blockerIds,
+      attackTarget: assignment.attackTarget,
+      attackerName: assignment.sourceName,
+      count: assignment.count,
+      powerPerAttacker,
+      totalPower,
+      blocked,
+      damageToTarget,
+      damageToBlockers,
+      damageToAttackers,
+      keywords,
+      notes,
+      damageStep: step,
+    };
+  });
+
+  const firstStrikeAssignments = hasFirstStrikeDamageStep
+    ? buildStepAssignments('firstStrike', new Set<string>())
+    : [];
+  const normalDamageAssignments = buildStepAssignments('normal', likelyDestroyedAfterFirstStrike);
+  const previewAssignments = hasFirstStrikeDamageStep
+    ? [...firstStrikeAssignments, ...normalDamageAssignments]
+    : normalDamageAssignments;
+
+  return {
+    previewId: uuid(),
+    generatedAt: Date.now(),
+    attackingPlayerId: state.combat.attackingPlayerId || state.activePlayerId,
+    assignments: previewAssignments,
+    firstStrikeAssignments,
+    normalDamageAssignments,
+    hasFirstStrikeDamageStep,
+    hasNormalDamageStep,
+    damageToPlayers,
+    damageToPlaneswalkers,
+    damageToBattles,
+    likelyDestroyedCreatures: [...likelyDestroyed],
+    likelyDestroyedAfterFirstStrike: [...likelyDestroyedAfterFirstStrike],
+    warnings: [...new Set(warnings)],
+  };
+}
+
+function attackTargetToLegacyPlayerId(target: AttackDefenderTarget): string {
+  if (target.type === 'player') return target.playerId;
+  if (target.type === 'planeswalker') return target.controllerId;
+  return target.protectorId;
+}
+
+function cardHasCombatKeyword(card: CardState, keyword: string): boolean {
+  const lowerKeyword = keyword.toLowerCase();
+  return (
+    getEffectiveCardDefinition(card).keywords.some(k => k.toLowerCase() === lowerKeyword) ||
+    getEffectiveOracleText(card).toLowerCase().includes(lowerKeyword)
+  );
+}
+
+function isEligibleTokenStackAttacker(card: CardState, playerId: string): boolean {
+  const def = getEffectiveCardDefinition(card);
+  if (!card.token) return false;
+  if (card.zone !== 'battlefield') return false;
+  if (card.controllerId !== playerId) return false;
+  if (!def.cardTypes.includes('Creature')) return false;
+  if (card.tapped) return false;
+  if (cardHasCombatKeyword(card, 'defender')) return false;
+  if (card.summoningSick && !cardHasCombatKeyword(card, 'haste')) return false;
+  return true;
+}
+
+function tokenStackAssignmentId(sourceGroupId: string, index: number, ids: string[]): string {
+  return `token-stack-${sourceGroupId}-${index}-${ids.join('-')}`;
+}
+
+export function declareTokenStackAttack(
+  state: GameState,
+  playerId: string,
+  sourceGroupId: string,
+  attackerIds: string[],
+  assignments: TokenStackAttackInput[],
+): { state: GameState; valid: boolean; reason?: string; selectedAttackerIds: string[]; assignmentIds: string[] } {
+  const requestedIds = [...new Set(attackerIds)];
+  const requestedCards = requestedIds.map(id => state.cards[id]).filter(Boolean) as CardState[];
+  if (requestedCards.some(card => card.controllerId !== playerId)) {
+    return { state, valid: false, reason: 'Token stack contains cards not controlled by player.', selectedAttackerIds: [], assignmentIds: [] };
+  }
+
+  const normalizedAssignments = assignments
+    .map(assignment => ({ ...assignment, count: Math.max(0, Math.floor(assignment.count)) }))
+    .filter(assignment => assignment.count > 0);
+  const eligible = requestedCards.filter(card => isEligibleTokenStackAttacker(card, playerId));
+  const eligibleIdSet = new Set(eligible.map(card => card.instanceId));
+  const totalRequested = normalizedAssignments.reduce((sum, assignment) => sum + assignment.count, 0);
+  if (totalRequested > eligible.length) {
+    return { state, valid: false, reason: 'Assigned token count exceeds eligible attackers.', selectedAttackerIds: [], assignmentIds: [] };
+  }
+
+  const consumed = new Set<string>();
+  const newCards = { ...state.cards };
+  const legacyAttackers = [...state.combat.attackers];
+  const attackAssignments = [...(state.combat.attackAssignments ?? [])];
+  const selectedAttackerIds: string[] = [];
+  const assignmentIds: string[] = [];
+
+  normalizedAssignments.forEach((assignment, index) => {
+    let selectedIds: string[];
+    if (assignment.attackerIds && assignment.attackerIds.length > 0) {
+      selectedIds = assignment.attackerIds.slice(0, assignment.count);
+      const invalidExactId = selectedIds.some(id => !eligibleIdSet.has(id) || consumed.has(id));
+      if (invalidExactId || selectedIds.length < assignment.count) return;
+    } else {
+      selectedIds = eligible
+        .map(card => card.instanceId)
+        .filter(id => !consumed.has(id))
+        .slice(0, assignment.count);
+    }
+    if (selectedIds.length !== assignment.count) return;
+
+    selectedIds.forEach(id => consumed.add(id));
+    selectedAttackerIds.push(...selectedIds);
+    const firstCard = state.cards[selectedIds[0]];
+    const firstDef = firstCard ? getEffectiveCardDefinition(firstCard) : undefined;
+    const power = parsePowerPreview(firstCard);
+    const assignmentId = tokenStackAssignmentId(sourceGroupId, index, selectedIds);
+    const legacyTargetPlayerId = attackTargetToLegacyPlayerId(assignment.attackTarget);
+    const tappedOnDeclare = selectedIds.some(id => !cardHasCombatKeyword(state.cards[id], 'vigilance'));
+
+    for (const id of selectedIds) {
+      const card = state.cards[id];
+      if (!card) continue;
+      const hasVigilance = cardHasCombatKeyword(card, 'vigilance');
+      newCards[id] = {
+        ...card,
+        tapped: hasVigilance ? card.tapped : true,
+        combatRole: 'attacker',
+        attackTarget: legacyTargetPlayerId,
+      };
+      legacyAttackers.push({
+        instanceId: id,
+        targetPlayerId: legacyTargetPlayerId,
+        targets: [],
+        attackTarget: assignment.attackTarget,
+      });
+    }
+
+    attackAssignments.push({
+      assignmentId,
+      controllerId: playerId,
+      attackerIds: selectedIds,
+      sourceGroupId,
+      sourceName: firstDef?.name ?? firstCard?.definition.name ?? 'Token stack',
+      count: selectedIds.length,
+      isTokenStack: true,
+      powerDisplay: firstDef?.power,
+      toughnessDisplay: firstDef?.toughness,
+      totalPowerPreview: typeof power === 'number' ? power * selectedIds.length : undefined,
+      attackTarget: assignment.attackTarget,
+      tappedOnDeclare,
+      legal: true,
+      legalityWarnings: [],
+    });
+    assignmentIds.push(assignmentId);
+  });
+
+  if (selectedAttackerIds.length !== totalRequested) {
+    return { state, valid: false, reason: 'Unable to select enough eligible token attackers.', selectedAttackerIds: [], assignmentIds: [] };
+  }
+
+  return {
+    state: {
+      ...state,
+      cards: newCards,
+      combat: {
+        ...state.combat,
+        active: true,
+        attackingPlayerId: state.combat.attackingPlayerId || playerId,
+        attackers: legacyAttackers,
+        attackAssignments,
+      },
+      lastUpdatedAt: Date.now(),
+    },
+    valid: true,
+    selectedAttackerIds,
+    assignmentIds,
+  };
+}
+
+function cardHasSneak(card: CardState): boolean {
+  return Boolean(card.sneak?.cost || card.sneak?.castWithSneak || /\bsneak\b/i.test([
+    getEffectiveCardDefinition(card).oracleText,
+    getEffectiveCardDefinition(card).keywords.join(' '),
+    getEffectiveCardDefinition(card).typeLine,
+  ].join(' ')));
+}
+
+export function getSneakReturnCandidates(
+  state: GameState,
+  playerId: string,
+): { attackerId: string; assignment: CombatAttackAssignment }[] {
+  if (state.activePlayerId !== playerId) return [];
+  if (state.phase !== 'declareBlockers' && state.combat.combatPhase !== 'declareBlockers') return [];
+  return getUnblockedAttackAssignments(state, playerId).flatMap(assignment =>
+    assignment.attackerIds
+      .filter(attackerId => {
+        const attacker = state.cards[attackerId];
+        return Boolean(attacker && attacker.controllerId === playerId && attacker.combatRole === 'attacker');
+      })
+      .map(attackerId => ({ attackerId, assignment }))
+  );
+}
+
+export function canCastWithSneak(state: GameState, playerId: string, cardId: string): boolean {
+  const player = state.players.find(p => p.id === playerId);
+  const card = state.cards[cardId];
+  if (!player || !card) return false;
+  if (state.activePlayerId !== playerId) return false;
+  if (state.phase !== 'declareBlockers' && state.combat.combatPhase !== 'declareBlockers') return false;
+  if (card.zone !== 'hand' || !player.hand.includes(cardId)) return false;
+  if (!cardHasSneak(card)) return false;
+  return getSneakReturnCandidates(state, playerId).length > 0;
+}
+
+export function castWithSneak(
+  state: GameState,
+  playerId: string,
+  cardId: string,
+  returnedAttackerId: string,
+): { state: GameState; valid: boolean; reason?: string; attackTarget?: AttackDefenderTarget } {
+  if (!canCastWithSneak(state, playerId, cardId)) {
+    return { state, valid: false, reason: 'Sneak is not currently available for this card.' };
+  }
+  const candidate = getSneakReturnCandidates(state, playerId)
+    .find(item => item.attackerId === returnedAttackerId);
+  if (!candidate) {
+    return { state, valid: false, reason: 'Returned creature must be an unblocked attacker you control.' };
+  }
+
+  const returnedAttacker = state.cards[returnedAttackerId];
+  const sneakCard = state.cards[cardId];
+  if (!returnedAttacker || !sneakCard) return { state, valid: false, reason: 'Sneak card or returned attacker missing.' };
+
+  const attackTarget = candidate.assignment.attackTarget;
+  let next = moveCard(state, returnedAttackerId, 'hand', returnedAttacker.ownerId);
+  const effectiveDef = getEffectiveCardDefinition(sneakCard);
+  const isPermanent = ['Creature', 'Artifact', 'Enchantment', 'Planeswalker', 'Land', 'Battle']
+    .some(type => effectiveDef.cardTypes.includes(type as CardDefinition['cardTypes'][number]));
+  const isCreature = effectiveDef.cardTypes.includes('Creature');
+  next = moveCard(next, cardId, isPermanent ? 'battlefield' : 'graveyard', playerId);
+
+  const enteredCard = next.cards[cardId];
+  if (!enteredCard) return { state, valid: false, reason: 'Sneak card failed to move.' };
+
+  const legacyTargetPlayerId = attackTargetToLegacyPlayerId(attackTarget);
+  const nextCards = {
+    ...next.cards,
+    [cardId]: {
+      ...enteredCard,
+      tapped: isCreature ? true : enteredCard.tapped,
+      combatRole: isCreature ? 'attacker' as const : enteredCard.combatRole,
+      attackTarget: isCreature ? legacyTargetPlayerId : enteredCard.attackTarget,
+      summoningSick: isCreature ? false : enteredCard.summoningSick,
+      sneak: {
+        ...(enteredCard.sneak ?? {}),
+        cost: enteredCard.sneak?.cost,
+        castWithSneak: true,
+        returnedAttackerId,
+        attackTarget,
+      },
+    },
+  };
+
+  const nextCombat = isCreature
+    ? {
+        ...next.combat,
+        attackers: [
+          ...next.combat.attackers,
+          { instanceId: cardId, targetPlayerId: legacyTargetPlayerId, targets: [], attackTarget },
+        ],
+        attackAssignments: [
+          ...(next.combat.attackAssignments ?? []),
+          {
+            ...createSingleAttackAssignment({ ...next, cards: nextCards }, cardId, attackTarget),
+            tappedOnDeclare: true,
+          },
+        ],
+      }
+    : next.combat;
+
+  return {
+    state: {
+      ...next,
+      cards: nextCards,
+      combat: nextCombat,
+      turnTrackers: {
+        ...(next.turnTrackers ?? { spellsWarpedThisTurn: [], cardsAirbendedThisTurn: [], waterbendEventsThisTurn: [], earthbentThisTurn: [] }),
+        sneakCastsThisTurn: [
+          ...(next.turnTrackers?.sneakCastsThisTurn ?? []),
+          { playerId, cardId, returnedAttackerId, attackTarget },
+        ],
+      },
+      lastUpdatedAt: Date.now(),
+    },
+    valid: true,
+    attackTarget,
   };
 }
 
@@ -182,8 +1183,14 @@ export function clearCombatAssignments(state: GameState): GameState {
     }
   }
 
+  const players = g.players.map(player => ({
+    ...player,
+    combatMana: { ...EMPTY_MANA_POOL },
+  }));
+
   return {
     ...g,
+    players,
     cards: changedCards ? newCards : g.cards,
     combat: createEmptyCombat(),
     lastUpdatedAt: Date.now(),
@@ -243,12 +1250,19 @@ export function moveCard(
   if (!card) return state;
 
   const fromZone = card.zone;
+  const earthbendReturns =
+    fromZone === 'battlefield' &&
+    (toZone === 'graveyard' || toZone === 'exile') &&
+    card.earthbend?.returnTappedIfDiesOrExiled;
+  const resolvedToZone = earthbendReturns ? 'battlefield' : toZone;
+  const resolvedControllerId = earthbendReturns ? card.earthbend!.controllerOfEffect : toControllerId;
   const newCard: CardState = {
     ...card,
-    zone: toZone,
-    controllerId: toControllerId || card.controllerId,
-    tapped: toZone === 'battlefield' ? false : card.tapped,
-    summoningSick: toZone === 'battlefield' &&
+    zone: resolvedToZone,
+    controllerId: resolvedControllerId || card.controllerId,
+    tapped: earthbendReturns ? true : resolvedToZone === 'battlefield' ? false : card.tapped,
+    earthbend: earthbendReturns ? undefined : card.earthbend,
+    summoningSick: resolvedToZone === 'battlefield' &&
       (getEffectiveCardDefinition(card).cardTypes.includes('Creature')) ? true : false,
   };
 
@@ -261,7 +1275,7 @@ export function moveCard(
 
   // Remove attachments when leaving battlefield
   let detachedParent: CardState | undefined;
-  if (fromZone === 'battlefield' && toZone !== 'battlefield') {
+  if (fromZone === 'battlefield' && resolvedToZone !== 'battlefield') {
     newCard.attachments = [];
     newCard.attachedTo = undefined;
     // Detach from parent
@@ -294,10 +1308,10 @@ export function moveCard(
     }
 
     // Add to new zone
-    const newOwner = toControllerId || card.controllerId;
+    const newOwner = resolvedControllerId || card.controllerId;
     if (p.id === newOwner) {
       const addTo = (arr: string[]) => [...arr, instanceId];
-      switch (toZone) {
+      switch (resolvedToZone) {
         case 'hand': updated.hand = addTo(updated.hand); break;
         case 'library': updated.library = addTo(updated.library); break;
         case 'graveyard': updated.graveyard = addTo(updated.graveyard); break;
@@ -318,7 +1332,7 @@ export function moveCard(
   }
 
   let nextCombat = state.combat;
-  if (fromZone === 'battlefield' && toZone !== 'battlefield') {
+  if (fromZone === 'battlefield' && resolvedToZone !== 'battlefield') {
     const removedAsAttacker = state.combat.attackers.some(a => a.instanceId === instanceId);
     const removedAsBlocker = state.combat.blockers.some(b => b.instanceId === instanceId);
     const blockersOnRemovedAttacker = removedAsAttacker
@@ -355,6 +1369,10 @@ export function moveCard(
         ...state.combat,
         attackers: state.combat.attackers.filter(a => a.instanceId !== instanceId),
         blockers: state.combat.blockers.filter(b => b.instanceId !== instanceId && b.blockedAttacker !== instanceId),
+        attackAssignments: (state.combat.attackAssignments ?? []).filter(a => !a.attackerIds.includes(instanceId)),
+        blockAssignments: (state.combat.blockAssignments ?? []).filter(b =>
+          b.blockerId !== instanceId && !b.blockedAttackerIds.includes(instanceId)
+        ),
       };
     }
   }
@@ -378,6 +1396,36 @@ export function tapCard(state: GameState, instanceId: string, tapped: boolean): 
   };
 }
 
+export function applyCounterAnnihilation(card: CardState): CardState {
+  const def = getEffectiveCardDefinition(card);
+  if (!def.cardTypes.includes('Creature')) return card;
+  const plus = card.counters.find(counter => counter.type === '+1/+1')?.count ?? 0;
+  const minus = card.counters.find(counter => counter.type === '-1/-1')?.count ?? 0;
+  const cancel = Math.min(plus, minus);
+  if (cancel <= 0) return card;
+  const counters = card.counters
+    .map(counter => {
+      if (counter.type === '+1/+1') return { ...counter, count: counter.count - cancel };
+      if (counter.type === '-1/-1') return { ...counter, count: counter.count - cancel };
+      return counter;
+    })
+    .filter(counter => counter.count > 0);
+  return { ...card, counters };
+}
+
+export function applyStateBasedCounterCleanup(state: GameState): GameState {
+  let changed = false;
+  const cards = { ...state.cards };
+  for (const [id, card] of Object.entries(state.cards)) {
+    const cleaned = applyCounterAnnihilation(card);
+    if (cleaned !== card) {
+      cards[id] = cleaned;
+      changed = true;
+    }
+  }
+  return changed ? { ...state, cards, lastUpdatedAt: Date.now() } : state;
+}
+
 export function addCounter(state: GameState, instanceId: string, counterType: string, amount = 1): GameState {
   const card = state.cards[instanceId];
   if (!card) return state;
@@ -390,9 +1438,10 @@ export function addCounter(state: GameState, instanceId: string, counterType: st
   } else {
     newCounters = [...card.counters, { type: counterType, count: amount }];
   }
+  const nextCard = applyCounterAnnihilation({ ...card, counters: newCounters });
   return {
     ...state,
-    cards: { ...state.cards, [instanceId]: { ...card, counters: newCounters } },
+    cards: { ...state.cards, [instanceId]: nextCard },
     lastUpdatedAt: Date.now(),
   };
 }
@@ -464,12 +1513,15 @@ export function nextPhase(state: GameState): GameState {
 }
 
 export function setPhase(state: GameState, phase: Phase): GameState {
-  const nextState = {
+  let nextState = {
     ...state,
     phase,
     priorityPlayerId: state.activePlayerId,
     lastUpdatedAt: Date.now(),
   };
+  if (phase === 'endStep') {
+    nextState = exileWarpedPermanentsForEndStep(nextState);
+  }
   return isCombatPhase(state.phase) && !isCombatPhase(phase)
     ? clearCombatAssignments(nextState)
     : nextState;
@@ -505,6 +1557,13 @@ export function nextTurn(state: GameState): GameState {
     priorityPlayerId: nextPlayer.id,
     phase: 'untap',
     combat: createEmptyCombat(),
+    turnTrackers: {
+      spellsWarpedThisTurn: [],
+      cardsAirbendedThisTurn: [],
+      waterbendEventsThisTurn: [],
+      earthbentThisTurn: [],
+      sneakCastsThisTurn: [],
+    },
     lastUpdatedAt: Date.now(),
   };
 }
@@ -864,6 +1923,335 @@ export function clearManaPool(state: GameState, playerId: string): GameState {
   return setManaPool(state, playerId, EMPTY_MANA_POOL);
 }
 
+export function addCombatManaToPool(state: GameState, playerId: string, mana: Partial<ManaPool>): GameState {
+  const player = state.players.find(p => p.id === playerId);
+  if (!player) return state;
+  const current = normalizeManaPool(player.combatMana);
+  const next = normalizeManaPool({
+    W: current.W + clampMana(mana.W ?? 0),
+    U: current.U + clampMana(mana.U ?? 0),
+    B: current.B + clampMana(mana.B ?? 0),
+    R: current.R + clampMana(mana.R ?? 0),
+    G: current.G + clampMana(mana.G ?? 0),
+    C: current.C + clampMana(mana.C ?? 0),
+    generic: current.generic + clampMana(mana.generic ?? 0),
+  });
+  return {
+    ...state,
+    players: state.players.map(p =>
+      p.id === playerId
+        ? { ...p, combatMana: next }
+        : p
+    ),
+    lastUpdatedAt: Date.now(),
+  };
+}
+
+function removeTokenCard(state: GameState, instanceId: string): GameState {
+  const card = state.cards[instanceId];
+  if (!card?.token) return state;
+  const cards = { ...state.cards };
+  delete cards[instanceId];
+  const players = state.players.map(player => ({
+    ...player,
+    hand: player.hand.filter(id => id !== instanceId),
+    library: player.library.filter(id => id !== instanceId),
+    graveyard: player.graveyard.filter(id => id !== instanceId),
+    exile: player.exile.filter(id => id !== instanceId),
+    battlefield: player.battlefield.filter(id => id !== instanceId),
+    commandZone: player.commandZone.filter(id => id !== instanceId),
+    sideboard: player.sideboard.filter(id => id !== instanceId),
+    maybeboard: player.maybeboard.filter(id => id !== instanceId),
+  }));
+  return { ...state, cards, players, lastUpdatedAt: Date.now() };
+}
+
+export function applyAirbend(state: GameState, targetId: string, sourceId?: string): GameState {
+  const card = state.cards[targetId];
+  if (!card) return state;
+  if (card.token) {
+    const removed = removeTokenCard(state, targetId);
+    return {
+      ...removed,
+      turnTrackers: {
+        ...(removed.turnTrackers ?? { spellsWarpedThisTurn: [], cardsAirbendedThisTurn: [], waterbendEventsThisTurn: [], earthbentThisTurn: [] }),
+        cardsAirbendedThisTurn: [...(removed.turnTrackers?.cardsAirbendedThisTurn ?? []), targetId],
+      },
+    };
+  }
+
+  let next = moveCard(state, targetId, 'exile', card.controllerId, {
+    exileReason: 'Airbend',
+    exiledBy: sourceId,
+    exileReturn: 'Owner may cast this from exile for {2}.',
+    exilePermanent: false,
+  });
+  const exiled = next.cards[targetId];
+  if (!exiled) return next;
+  return {
+    ...next,
+    cards: {
+      ...next.cards,
+      [targetId]: {
+        ...exiled,
+        exilePermission: {
+          ownerId: card.ownerId,
+          sourceMechanic: 'airbend',
+          alternativeCost: '{2}',
+          timing: 'normal',
+          expires: 'never',
+          createdAtTurn: state.turn,
+          sourceInstanceId: sourceId,
+        },
+      },
+    },
+    turnTrackers: {
+      ...(next.turnTrackers ?? { spellsWarpedThisTurn: [], cardsAirbendedThisTurn: [], waterbendEventsThisTurn: [], earthbentThisTurn: [] }),
+      cardsAirbendedThisTurn: [...(next.turnTrackers?.cardsAirbendedThisTurn ?? []), targetId],
+    },
+    lastUpdatedAt: Date.now(),
+  };
+}
+
+export function markCastForWarp(state: GameState, cardId: string, warpCost?: string): GameState {
+  const card = state.cards[cardId];
+  if (!card) return state;
+  return {
+    ...state,
+    cards: {
+      ...state.cards,
+      [cardId]: { ...card, warpedThisTurn: true },
+    },
+    turnTrackers: {
+      ...(state.turnTrackers ?? { spellsWarpedThisTurn: [], cardsAirbendedThisTurn: [], waterbendEventsThisTurn: [], earthbentThisTurn: [] }),
+      spellsWarpedThisTurn: [...(state.turnTrackers?.spellsWarpedThisTurn ?? []), cardId],
+    },
+    triggerQueue: [
+      ...state.triggerQueue,
+      {
+        id: uuid(),
+        sourceInstanceId: cardId,
+        sourceName: card.definition.name,
+        controllerId: card.controllerId,
+        text: `${card.definition.name} was cast for warp${warpCost ? ` (${warpCost})` : ''}. Exile it at the next end step.`,
+        triggerType: 'exile',
+        acknowledged: false,
+        missed: false,
+        timestamp: Date.now(),
+        data: { mechanicId: 'warp', warpCost },
+      },
+    ],
+    lastUpdatedAt: Date.now(),
+  };
+}
+
+export function getWaterbendEligiblePermanents(state: GameState, playerId: string): CardState[] {
+  return Object.values(state.cards).filter(card => {
+    const def = getEffectiveCardDefinition(card);
+    return card.zone === 'battlefield' &&
+      card.controllerId === playerId &&
+      !card.tapped &&
+      (def.cardTypes.includes('Artifact') || def.cardTypes.includes('Creature'));
+  });
+}
+
+export function markWaterbent(
+  state: GameState,
+  playerId: string,
+  sourceId?: string,
+  amount = 0,
+  permanentIds: string[] = [],
+): GameState {
+  return {
+    ...state,
+    turnTrackers: {
+      ...(state.turnTrackers ?? { spellsWarpedThisTurn: [], cardsAirbendedThisTurn: [], waterbendEventsThisTurn: [], earthbentThisTurn: [] }),
+      waterbendEventsThisTurn: [
+        ...(state.turnTrackers?.waterbendEventsThisTurn ?? []),
+        { playerId, sourceId, amount, permanentIds },
+      ],
+    },
+    lastUpdatedAt: Date.now(),
+  };
+}
+
+export function payWaterbendCost(
+  state: GameState,
+  playerId: string,
+  amount: number,
+  permanentIds: string[],
+  sourceId?: string,
+): { state: GameState; paid: number; valid: boolean; reason?: string } {
+  const safeAmount = Math.max(0, Math.floor(amount));
+  const chosen = [...new Set(permanentIds)];
+  if (chosen.length > safeAmount) return { state, paid: 0, valid: false, reason: 'too_many_permanents' };
+
+  let next = state;
+  for (const id of chosen) {
+    const card = next.cards[id];
+    if (!card) return { state, paid: 0, valid: false, reason: 'missing_permanent' };
+    const def = getEffectiveCardDefinition(card);
+    if (card.zone !== 'battlefield') return { state, paid: 0, valid: false, reason: 'not_on_battlefield' };
+    if (card.controllerId !== playerId) return { state, paid: 0, valid: false, reason: 'wrong_controller' };
+    if (card.tapped) return { state, paid: 0, valid: false, reason: 'already_tapped' };
+    if (!def.cardTypes.includes('Artifact') && !def.cardTypes.includes('Creature')) {
+      return { state, paid: 0, valid: false, reason: 'not_artifact_or_creature' };
+    }
+  }
+
+  for (const id of chosen) {
+    next = tapCard(next, id, true);
+  }
+  next = markWaterbent(next, playerId, sourceId, chosen.length, chosen);
+  return { state: next, paid: chosen.length, valid: true };
+}
+
+export function applyEarthbend(
+  state: GameState,
+  playerId: string,
+  landId: string,
+  amount: number,
+  sourceId?: string,
+): { state: GameState; valid: boolean; reason?: string } {
+  const card = state.cards[landId];
+  const safeAmount = Math.max(0, Math.floor(amount));
+  if (!card) return { state, valid: false, reason: 'missing_land' };
+  if (card.zone !== 'battlefield') return { state, valid: false, reason: 'not_on_battlefield' };
+  if (card.controllerId !== playerId) return { state, valid: false, reason: 'wrong_controller' };
+  if (!getEffectiveCardDefinition(card).cardTypes.includes('Land')) return { state, valid: false, reason: 'not_land' };
+  if (safeAmount <= 0) return { state, valid: false, reason: 'invalid_amount' };
+
+  const def = getEffectiveCardDefinition(card);
+  const cardTypes = Array.from(new Set([...def.cardTypes, 'Creature' as const]));
+  const keywords = Array.from(new Set([...def.keywords, 'Haste']));
+  let next: GameState = {
+    ...state,
+    cards: {
+      ...state.cards,
+      [landId]: {
+        ...card,
+        definition: {
+          ...card.definition,
+          cardTypes,
+          typeLine: card.definition.typeLine.includes('Creature') ? card.definition.typeLine : `${card.definition.typeLine} Creature`,
+          power: '0',
+          toughness: '0',
+          keywords,
+        },
+        summoningSick: false,
+        earthbend: {
+          amount: safeAmount,
+          controllerOfEffect: playerId,
+          basePower: 0,
+          baseToughness: 0,
+          hasHaste: true,
+          returnTappedIfDiesOrExiled: true,
+          sourceInstanceId: sourceId,
+        },
+      },
+    },
+    turnTrackers: {
+      ...(state.turnTrackers ?? { spellsWarpedThisTurn: [], cardsAirbendedThisTurn: [], waterbendEventsThisTurn: [], earthbentThisTurn: [] }),
+      earthbentThisTurn: [
+        ...(state.turnTrackers?.earthbentThisTurn ?? []),
+        { playerId, landId, amount: safeAmount, sourceId },
+      ],
+    },
+    lastUpdatedAt: Date.now(),
+  };
+  next = addCounter(next, landId, '+1/+1', safeAmount);
+  return { state: next, valid: true };
+}
+
+function exileWarpedPermanentsForEndStep(state: GameState): GameState {
+  let next = state;
+  const warpedIds = Object.values(state.cards)
+    .filter(card => card.warpedThisTurn && card.zone === 'battlefield')
+    .map(card => card.instanceId);
+  for (const id of warpedIds) {
+    const card = next.cards[id];
+    if (!card) continue;
+    next = moveCard(next, id, 'exile', card.controllerId, {
+      exileReason: 'Warp',
+      exileReturn: 'Owner may cast this from exile for its normal cost.',
+      exilePermanent: false,
+    });
+    const exiled = next.cards[id];
+    if (!exiled) continue;
+    next = {
+      ...next,
+      cards: {
+        ...next.cards,
+        [id]: {
+          ...exiled,
+          warpedThisTurn: false,
+          exilePermission: {
+            ownerId: card.ownerId,
+            sourceMechanic: 'warp',
+            timing: 'normal',
+            expires: 'never',
+            createdAtTurn: state.turn,
+            sourceInstanceId: id,
+          },
+        },
+      },
+      lastUpdatedAt: Date.now(),
+    };
+  }
+  return next;
+}
+
+export function clearCombatMana(state: GameState, playerId?: string): GameState {
+  return {
+    ...state,
+    players: state.players.map(p =>
+      !playerId || p.id === playerId
+        ? { ...p, combatMana: { ...EMPTY_MANA_POOL } }
+        : p
+    ),
+    lastUpdatedAt: Date.now(),
+  };
+}
+
+export function markExhaustUsedOnCard(state: GameState, instanceId: string, exhaustId = 'default'): GameState {
+  const card = state.cards[instanceId];
+  if (!card) return state;
+  return {
+    ...state,
+    cards: {
+      ...state.cards,
+      [instanceId]: {
+        ...card,
+        exhaustUsed: {
+          ...(card.exhaustUsed ?? {}),
+          [exhaustId]: true,
+        },
+      },
+    },
+    lastUpdatedAt: Date.now(),
+  };
+}
+
+export function resetExhaustUsedOnCard(state: GameState, instanceId: string, exhaustId?: string): GameState {
+  const card = state.cards[instanceId];
+  if (!card) return state;
+  const nextExhaust = { ...(card.exhaustUsed ?? {}) };
+  if (exhaustId) {
+    delete nextExhaust[exhaustId];
+  }
+  return {
+    ...state,
+    cards: {
+      ...state.cards,
+      [instanceId]: {
+        ...card,
+        exhaustUsed: exhaustId ? nextExhaust : {},
+      },
+    },
+    lastUpdatedAt: Date.now(),
+  };
+}
+
 export function takeMulligan(state: GameState, playerId: string): GameState {
   const player = state.players.find(p => p.id === playerId);
   if (!player) return state;
@@ -999,21 +2387,17 @@ export function createTokens(
 // ─── State-Based Actions ──────────────────────────────────────────────────────
 
 export function checkStateBasedActions(state: GameState): { newState: GameState; flags: AssistantFlag[] } {
-  let newState = { ...state };
+  let newState = applyStateBasedCounterCleanup(state);
   const flags: AssistantFlag[] = [];
 
   // Check creature death (toughness ≤ 0 or damage ≥ toughness)
-  for (const card of Object.values(state.cards)) {
+  for (const card of Object.values(newState.cards)) {
     if (card.zone !== 'battlefield') continue;
     const def = getEffectiveCardDefinition(card);
     if (!def.cardTypes.includes('Creature')) continue;
 
-    const basePower = parseInt(def.power || '0', 10) || 0;
-    const baseToughness = parseInt(def.toughness || '0', 10) || 0;
-
-    const plusCounters = card.counters.find(c => c.type === '+1/+1')?.count || 0;
-    const minusCounters = card.counters.find(c => c.type === '-1/-1')?.count || 0;
-    const effectiveToughness = baseToughness + plusCounters - minusCounters;
+    const effectiveToughness = getEffectivePowerToughness(card, state)?.toughness;
+    if (typeof effectiveToughness !== 'number') continue;
 
     if (effectiveToughness <= 0 || card.markedForDamage >= effectiveToughness) {
       newState = moveCard(newState, card.instanceId, 'graveyard');
@@ -1071,6 +2455,7 @@ export function declareAttacker(
 ): GameState {
   const card = state.cards[attackerInstanceId];
   if (!card || card.zone !== 'battlefield') return state;
+  const target = toAttackDefenderTarget(targetPlayerId);
 
   const newCombat: CombatState = {
     ...state.combat,
@@ -1078,7 +2463,11 @@ export function declareAttacker(
     attackingPlayerId: state.activePlayerId,
     attackers: [
       ...state.combat.attackers,
-      { instanceId: attackerInstanceId, targetPlayerId, targets: [] },
+      { instanceId: attackerInstanceId, targetPlayerId, targets: [], attackTarget: target },
+    ],
+    attackAssignments: [
+      ...(state.combat.attackAssignments ?? []),
+      createSingleAttackAssignment(state, attackerInstanceId, target),
     ],
   };
 
@@ -1117,6 +2506,18 @@ export function declareBlocker(
     blockers: [
       ...state.combat.blockers,
       { instanceId: blockerInstanceId, blockedAttacker: attackerInstanceId },
+    ],
+    blockAssignments: [
+      ...(state.combat.blockAssignments ?? []),
+      {
+        assignmentId: blockAssignmentIdForBlocker(blockerInstanceId, attackerInstanceId),
+        blockerId: blockerInstanceId,
+        blockerControllerId: blocker.controllerId,
+        blockedAttackAssignmentId: assignmentIdForAttacker(attackerInstanceId),
+        blockedAttackerIds: [attackerInstanceId],
+        legal: true,
+        legalityWarnings: [],
+      },
     ],
   };
 
@@ -1247,7 +2648,21 @@ export function triggerMyriad(
           hasMyriad: true,
           attackers: [
             ...g.combat.attackers,
-            { instanceId: copyInstanceId, targetPlayerId: opponent.id, targets: [] },
+            { instanceId: copyInstanceId, targetPlayerId: opponent.id, targets: [], attackTarget: toAttackDefenderTarget(opponent.id) },
+          ],
+          attackAssignments: [
+            ...(g.combat.attackAssignments ?? []),
+            createSingleAttackAssignment(
+              {
+                ...g,
+                cards: {
+                  ...g.cards,
+                  [copyInstanceId]: copyCard,
+                },
+              },
+              copyInstanceId,
+              toAttackDefenderTarget(opponent.id),
+            ),
           ],
           myriadCopies: [
             ...g.combat.myriadCopies,
@@ -1288,3 +2703,7 @@ export function exileMyriadCopies(state: GameState): GameState {
 
   return { ...g, cards: newCards };
 }
+
+
+
+
