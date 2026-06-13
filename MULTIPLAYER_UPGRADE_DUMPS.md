@@ -48,3 +48,9 @@ Use this file as a compact handoff ledger so we can continue multiplayer debuggi
 - Commit/push blocked in this workspace: .git/index.lock permission denied and Git push cannot obtain credentials (SEC_E_NO_CREDENTIALS).
 - Files in scope: LobbyScreen.tsx, DeckHealthPanel.tsx, CommanderTable.tsx, TableStatusDock.tsx, MULTIPLAYER_UPGRADE_DUMPS.md.
 
+
+## 2026-06-12 (verification #3 / finalization pass)
+- Re-ran multiplayer tests after latest push: all 3 suites passed (multiplayer-protocol, multiplayer-sync, store-flow).
+- Finalized remote URL normalization to: https://github.com/DijaeSNorth/on-da-stack-simulator.git.
+- GitHub Pages workflow is present and deploys on main push (.github/workflows/deploy.yml).
+
