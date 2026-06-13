@@ -1088,29 +1088,33 @@ function upsertPresenceFromPeer(incoming: RoomPresence, assignment: { isSpectato
   const existingForPeer = _peers.get(incoming.peerId);
   const authoritativeIncoming = mergePresenceWithHostDeckAuthority(existingForPeer, incoming);
   for (const [peerId, existing] of _peers.entries()) {
-    if (existing.playerId === authoritativeIncoming.playerId && peerId !== authoritativeIncoming.peerId) {
-      _peers.delete(peerId);
-      const oldConn = _connections.get(peerId);
-      if (oldConn) cleanupConnection(oldConn);
-      _connections.delete(peerId);
-      const preservedSeat = existing.isSpectator ? -1 : existing.seatIndex;
-      const mergedIncoming = mergePresenceWithHostDeckAuthority(existing, authoritativeIncoming);
-      const next: RoomPresence = {
-        ...existing,
-        ...mergedIncoming,
-        peerId: authoritativeIncoming.peerId,
-        isHostPeer: false,
-        isSpectator: authoritativeIncoming.isSpectator,
-        seatIndex: authoritativeIncoming.isSpectator ? -1 : preservedSeat,
-        online: true,
-        lastSeen: Date.now(),
-        ready: isTerminalDeckStatus(existing.deckStatus ?? existing.deck?.status) ? existing.ready : mergedIncoming.ready,
-        deck: isTerminalDeckStatus(existing.deckStatus ?? existing.deck?.status) ? existing.deck : existing.deck ?? mergedIncoming.deck,
-        deckStatus: isTerminalDeckStatus(existing.deckStatus ?? existing.deck?.status) ? existing.deckStatus : existing.deckStatus ?? mergedIncoming.deckStatus,
-      };
-      _peers.set(authoritativeIncoming.peerId, next);
-      return next;
+    const sameIdentity = existing.playerId === authoritativeIncoming.playerId
+      && existing.sessionId === authoritativeIncoming.sessionId;
+    if (!sameIdentity || peerId === authoritativeIncoming.peerId) continue;
+    if (existing.isHostPeer && !authoritativeIncoming.isHostPeer) {
+      continue;
     }
+    _peers.delete(peerId);
+    const oldConn = _connections.get(peerId);
+    if (oldConn) cleanupConnection(oldConn);
+    _connections.delete(peerId);
+    const preservedSeat = existing.isSpectator ? -1 : existing.seatIndex;
+    const mergedIncoming = mergePresenceWithHostDeckAuthority(existing, authoritativeIncoming);
+    const next: RoomPresence = {
+      ...existing,
+      ...mergedIncoming,
+      peerId: authoritativeIncoming.peerId,
+      isHostPeer: false,
+      isSpectator: authoritativeIncoming.isSpectator,
+      seatIndex: authoritativeIncoming.isSpectator ? -1 : preservedSeat,
+      online: true,
+      lastSeen: Date.now(),
+      ready: isTerminalDeckStatus(existing.deckStatus ?? existing.deck?.status) ? existing.ready : mergedIncoming.ready,
+      deck: isTerminalDeckStatus(existing.deckStatus ?? existing.deck?.status) ? existing.deck : existing.deck ?? mergedIncoming.deck,
+      deckStatus: isTerminalDeckStatus(existing.deckStatus ?? existing.deck?.status) ? existing.deckStatus : existing.deckStatus ?? mergedIncoming.deckStatus,
+    };
+    _peers.set(authoritativeIncoming.peerId, next);
+    return next;
   }
 
   const next: RoomPresence = {

@@ -54,3 +54,8 @@ Use this file as a compact handoff ledger so we can continue multiplayer debuggi
 - Finalized remote URL normalization to: https://github.com/DijaeSNorth/on-da-stack-simulator.git.
 - GitHub Pages workflow is present and deploys on main push (.github/workflows/deploy.yml).
 
+## 2026-06-12 -- Joiner identity collision hardening
+- Fix applied in `upsertPresenceFromPeer`: duplicate presence replacement now uses both `playerId` and `sessionId`, and it no longer replaces host presence from a different session.
+- Why: prevents the non-host joiner from being treated as host or replacing host presence in same-browser/same-profile workflows.
+- Additional follow-up: add a regression for same-session identity collision in multiplayer tests after this pass.
+
