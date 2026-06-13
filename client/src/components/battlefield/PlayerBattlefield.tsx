@@ -64,11 +64,60 @@ interface PlayerBattlefieldProps {
   compact?: boolean;
 }
 
+type ScaledCardSize = {
+  size: 'normal' | 'compact';
+  width: number;
+  height: number;
+  gap: number;
+  zoneGap: number;
+};
+
+function getBattlefieldCardDensity(cardCount: number, compact: boolean): ScaledCardSize {
+  if (compact || cardCount > 28) {
+    return {
+      size: 'compact',
+      width: 33,
+      height: 46,
+      gap: 2,
+      zoneGap: 4,
+    };
+  }
+  if (cardCount > 20) {
+    return {
+      size: 'compact',
+      width: 40,
+      height: 55,
+      gap: 2,
+      zoneGap: 5,
+    };
+  }
+  if (cardCount > 14) {
+    return {
+      size: 'normal',
+      width: 58,
+      height: 82,
+      gap: 3,
+      zoneGap: 6,
+    };
+  }
+  return {
+    size: 'normal',
+    width: 74,
+    height: 103,
+    gap: 4,
+    zoneGap: 8,
+  };
+}
+
 export function PlayerBattlefield({ player, isLocal, isActive, compact }: PlayerBattlefieldProps) {
   const store = useGameStore();
-  const { game, ui } = store;
+  const { game, ui, localPlayerId } = store;
   const drag = useDragCombatContext();
   const [expandedClouds, setExpandedClouds] = useState<Set<string>>(new Set());
+  const [cloudSplits, setCloudSplits] = useState<Record<string, number>>({});
+  const [cloudAttackCounts, setCloudAttackCounts] = useState<Record<string, number>>({});
+  const [cloudAttackTargets, setCloudAttackTargets] = useState<Record<string, string>>({});
+  const [cloudSplitDrafts, setCloudSplitDrafts] = useState<Record<string, number>>({});
   const lastTouchTapRef = useRef<{ id: string; time: number; x: number; y: number } | null>(null);
 
   const cards = player.battlefield.map(id => game.cards[id]).filter(Boolean) as CardState[];
@@ -79,10 +128,15 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
 
   const { singles: tokenSingles, clouds: tokenClouds } = groupTokenClouds(tokens);
 
-  const cardSize = compact || cards.length > 14 ? 'compact' : 'normal';
-  const gap = compact || cards.length > 24 ? 2 : 4;
-  const zoneGap = compact ? 5 : cards.length > 18 ? 6 : 8;
-  const hasWideBoard = cards.length > (compact ? 8 : 14);
+  const scaledCard = getBattlefieldCardDensity(cards.length, !!compact);
+  const cardSize = scaledCard.size;
+  const gap = scaledCard.gap;
+  const zoneGap = scaledCard.zoneGap;
+  const hasWideBoard = cards.length > (compact ? 8 : 12);
+  const cardImageStyle: React.CSSProperties = {
+    width: scaledCard.width,
+    height: scaledCard.height,
+  };
 
   // ── Drag-combat visual state ───────────────────────────────────────────────
   // During an attack drag, own creatures that are valid attackers should glow
@@ -200,7 +254,7 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
         {...dragHandlers}
         {...blockDropHandlers}
       >
-        <CardImage card={card} size={cardSize} />
+        <CardImage card={card} size={cardSize} style={cardImageStyle} />
 
         {/* Combat role badge */}
         {card.combatRole === 'attacker' && (
@@ -241,38 +295,191 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
     );
   }
 
-  function renderTokenCloud(cloud: TokenCloud) {
-    const expanded = expandedClouds.has(cloud.key);
-    const untappedIds = cloud.cards.filter(card => !card.tapped).map(card => card.instanceId);
-    const tappedIds = cloud.cards.filter(card => card.tapped).map(card => card.instanceId);
+  function normalizeDraftCount(raw: number | undefined, fallback = 0, max?: number): number {
+    if (raw === undefined || !Number.isFinite(raw)) return fallback;
+    const normalized = Math.max(1, Math.floor(raw));
+    if (typeof max === 'number') return Math.min(normalized, max);
+    return normalized;
+  }
+
+  function clearCloudSplitTree(prefix: string, currentSplits: Record<string, number>): Record<string, number> {
+    const next: Record<string, number> = {};
+    for (const [key, value] of Object.entries(currentSplits)) {
+      if (key === prefix || key.startsWith(`${prefix}.`)) continue;
+      next[key] = value;
+    }
+    return next;
+  }
+
+  function setCloudAttackTarget(cloudKey: string, targetId: string): void {
+    setCloudAttackTargets(prev => ({ ...prev, [cloudKey]: targetId }));
+  }
+
+  function setCloudAttackCount(cloudKey: string, rawCount: number): void {
+    setCloudAttackCounts(prev => ({ ...prev, [cloudKey]: rawCount }));
+  }
+
+  function setCloudSplitDraft(cloudKey: string, rawCount: number): void {
+    setCloudSplitDrafts(prev => ({ ...prev, [cloudKey]: rawCount }));
+  }
+
+  const opponentPlayers = game.players.filter(opponent => opponent.id !== player.id);
+
+  function resolveAttackTarget(cloudKey: string): string | undefined {
+    const preferred = cloudAttackTargets[cloudKey];
+    if (preferred && opponentPlayers.some(opponent => opponent.id === preferred)) return preferred;
+    return opponentPlayers[0]?.id;
+  }
+
+  function summarizeCounters(cards: CardState[]): { type: string; total: number }[] {
+    const counterMap = new Map<string, number>();
+    for (const card of cards) {
+      for (const c of card.counters) {
+        counterMap.set(c.type, (counterMap.get(c.type) || 0) + c.count);
+      }
+    }
+    return [...counterMap.entries()].map(([type, total]) => ({ type, total }));
+  }
+
+  function attackTokenBatch(cards: CardState[], clusterKey: string) {
+    if (!isLocal) return;
+    const untapped = cards.filter(card => !card.tapped);
+    if (untapped.length === 0) return;
+    const targetPlayerId = resolveAttackTarget(clusterKey);
+    if (!targetPlayerId) return;
+    const requestedCount = normalizeDraftCount(cloudAttackCounts[clusterKey], 1, untapped.length);
+    if (requestedCount < 1 || requestedCount > untapped.length) return;
+    if (!game.combat.active) store.enterCombat();
+    for (const attacker of untapped.slice(0, requestedCount)) {
+      store.declareAttack(attacker.instanceId, targetPlayerId);
+    }
+  }
+
+  function splitTokenCloud(cloudKey: string, cloud: TokenCloud, raw: number) {
+    const requested = normalizeDraftCount(raw, 1, cloud.cards.length - 1);
+    if (requested <= 0 || requested >= cloud.cards.length) {
+      setCloudSplits(prev => {
+        const next = clearCloudSplitTree(cloudKey, prev);
+        return next;
+      });
+      setCloudSplitDrafts(prev => {
+        const next = { ...prev };
+        delete next[cloudKey];
+        return next;
+      });
+      return;
+    }
+    setCloudSplits(prev => ({ ...prev, [cloudKey]: requested }));
+  }
+
+  function renderTokenCloudCluster(cloud: TokenCloud, label: string, cards: CardState[], clusterKey: string) {
+    const untappedIds = cards.filter(card => !card.tapped).map(card => card.instanceId);
+    const tappedIds = cards.filter(card => card.tapped).map(card => card.instanceId);
+    const counters = summarizeCounters(cards);
+    const iconLabel = cards.length === cloud.cards.length ? '' : ` (${label})`;
+    const opponentCount = opponentPlayers.length;
+    const draftAttackCount = normalizeDraftCount(cloudAttackCounts[clusterKey], untappedIds.length ? 1 : 0, Math.max(1, untappedIds.length));
+    const splitDraftDefault = Math.max(1, Math.floor(cards.length / 2));
+    const splitDraft = normalizeDraftCount(
+      cloudSplitDrafts[clusterKey],
+      splitDraftDefault,
+      Math.max(1, cards.length - 1),
+    );
+    const targetPlayerId = resolveAttackTarget(clusterKey);
     return (
       <div
-        key={cloud.key}
+        key={`${cloud.key}-${label}`}
         style={{
-          display: 'flex', flexDirection: 'column', alignItems: 'center',
-          cursor: 'pointer',
-          background: 'rgba(255,255,255,0.04)',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          minWidth: 54,
+          padding: '4px 6px',
+          borderRadius: 6,
           border: '1px solid rgba(255,255,255,0.1)',
-          borderRadius: 6, padding: '4px 6px', minWidth: 54,
-          transition: 'background 0.15s',
+          background: 'rgba(255,255,255,0.04)',
         }}
-        onClick={() => setExpandedClouds(prev => {
-          const next = new Set(prev);
-          if (next.has(cloud.key)) next.delete(cloud.key);
-          else next.add(cloud.key);
-          return next;
-        })}
-        title={`${cloud.cards.length}× ${cloud.name} — click to expand`}
       >
-        <div style={{ fontSize: 18, lineHeight: 1 }}>🪙</div>
-        <div style={{ fontSize: 10, fontWeight: 700, color: '#e2e8f0', marginTop: 2 }}>×{cloud.cards.length}</div>
+        <div style={{ fontSize: 18, lineHeight: 1 }}>ðŸª™</div>
+        <div style={{ fontSize: 10, fontWeight: 700, color: '#e2e8f0', marginTop: 2 }}>
+          ×{cards.length}{iconLabel}
+        </div>
+        <div style={{ fontSize: 9, color: '#94a3b8' }}>{cloud.name}</div>
         <div style={{ fontSize: 9, color: '#94a3b8' }}>{cloud.power}/{cloud.toughness}</div>
-        {cloud.tappedCount > 0 && <div style={{ fontSize: 9, color: '#f59e0b' }}>↻{cloud.tappedCount}</div>}
-        {cloud.counters.map(c => (
-          <div key={c.type} style={{ fontSize: 8, color: '#6ee7b7' }}>{c.type}:{c.total}</div>
+        {tappedIds.length > 0 && <div style={{ fontSize: 9, color: '#f59e0b' }}>â†»{tappedIds.length}</div>}
+        {counters.map(counter => (
+          <div key={counter.type} style={{ fontSize: 8, color: '#6ee7b7' }}>{counter.type}:{counter.total}</div>
         ))}
         {isLocal && (
-          <div style={{ display: 'flex', gap: 3, marginTop: 4 }}>
+          <div style={{ display: 'flex', gap: 3, marginTop: 4, flexWrap: 'wrap', justifyContent: 'center' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 2, fontSize: 8, color: '#94a3b8' }}>
+              <span style={{ opacity: 0.85 }}>atk:</span>
+              <input
+                type="number"
+                min={1}
+                max={Math.max(1, untappedIds.length)}
+                value={draftAttackCount}
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+                onChange={(e) => {
+                  e.preventDefault();
+                  const parsed = Number.parseInt(e.target.value, 10);
+                  setCloudAttackCount(clusterKey, normalizeDraftCount(parsed, 0, Math.max(1, untappedIds.length)));
+                }}
+                style={{
+                  width: 34,
+                  fontSize: 8,
+                  padding: '2px',
+                  borderRadius: 3,
+                  border: '1px solid #334155',
+                  background: '#0b1220',
+                  color: '#e2e8f0',
+                }}
+              />
+            </span>
+            <select
+              value={targetPlayerId ?? ''}
+              onChange={(e) => {
+                e.preventDefault();
+                setCloudAttackTarget(clusterKey, e.target.value);
+              }}
+              onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+              style={{
+                fontSize: 8,
+                background: '#0b1220',
+                color: '#e2e8f0',
+                border: '1px solid #334155',
+                borderRadius: 3,
+              }}
+            >
+              {opponentPlayers.map((opponent) => (
+                <option key={opponent.id} value={opponent.id}>
+                  {opponent.name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              disabled={untappedIds.length === 0 || opponentCount === 0}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                attackTokenBatch(cards, clusterKey);
+              }}
+              title={`Attack ${draftAttackCount} of ${untappedIds.length} ${cloud.name} token${iconLabel ? ` (${iconLabel.trim()})` : ''}`}
+              style={{
+                fontSize: 8,
+                padding: '2px 5px',
+                borderRadius: 3,
+                border: '1px solid #334155',
+                background: untappedIds.length === 0 || opponentCount === 0 ? 'rgba(15,23,42,0.5)' : '#1e293b',
+                color: untappedIds.length === 0 || opponentCount === 0 ? '#334155' : '#cbd5e1',
+                cursor: untappedIds.length === 0 || opponentCount === 0 ? 'default' : 'pointer',
+              }}
+            >
+              Attack
+            </button>
             <button
               type="button"
               disabled={untappedIds.length === 0}
@@ -315,8 +522,142 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
             >
               Untap
             </button>
+            <button
+              type="button"
+              disabled={cards.length < 2}
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                splitTokenCloud(clusterKey, cloud, splitDraft);
+              }}
+              title={`Split ${cloud.name} stack into two groups`}
+              style={{
+                fontSize: 8,
+                padding: '2px 5px',
+                borderRadius: 3,
+                border: '1px solid #334155',
+                background: cards.length < 2 ? 'rgba(15,23,42,0.5)' : '#1e293b',
+                color: cards.length < 2 ? '#334155' : '#cbd5e1',
+                cursor: cards.length < 2 ? 'default' : 'pointer',
+              }}
+            >
+              Apply
+            </button>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 2, fontSize: 8, color: '#94a3b8' }}>
+              <span style={{ opacity: 0.85 }}>split:</span>
+              <input
+                type="number"
+                min={1}
+                max={Math.max(1, cards.length - 1)}
+                value={splitDraft}
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+                onChange={(e) => {
+                  e.preventDefault();
+                  const parsed = Number.parseInt(e.target.value, 10);
+                  setCloudSplitDraft(clusterKey, normalizeDraftCount(parsed, splitDraftDefault, cards.length - 1));
+                }}
+                style={{
+                  width: 34,
+                  fontSize: 8,
+                  padding: '2px',
+                  borderRadius: 3,
+                  border: '1px solid #334155',
+                  background: '#0b1220',
+                  color: '#e2e8f0',
+                }}
+              />
+            </span>
           </div>
         )}
+      </div>
+    );
+  }
+
+  function renderTokenCloud(cloud: TokenCloud) {
+    return renderTokenCloudSegment(cloud, cloud.cards, cloud.key, cloud.name);
+  }
+
+  function renderTokenCloudSegment(
+    cloud: TokenCloud,
+    cards: CardState[],
+    segmentKey: string,
+    label = '',
+  ) {
+    const splitAt = cloudSplits[segmentKey];
+    const safeSplit = splitAt && splitAt > 0 && splitAt < cards.length ? splitAt : null;
+
+    if (safeSplit) {
+      const firstGroup = cards.slice(0, safeSplit);
+      const secondGroup = cards.slice(safeSplit);
+      return (
+        <div
+          key={segmentKey}
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            background: 'rgba(255,255,255,0.04)',
+            border: '1px solid rgba(255,255,255,0.15)',
+            borderRadius: 6,
+            padding: '4px 6px',
+            minWidth: 54,
+            gap: 4,
+          }}
+        >
+          <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+            {renderTokenCloudSegment(cloud, firstGroup, `${segmentKey}.L`, `Left ${firstGroup.length}`)}
+            {renderTokenCloudSegment(cloud, secondGroup, `${segmentKey}.R`, `Right ${secondGroup.length}`)}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'center' }}>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setCloudSplits(prev => clearCloudSplitTree(segmentKey, prev));
+              }}
+              style={{
+                fontSize: 8,
+                padding: '2px 5px',
+                borderRadius: 3,
+                border: '1px solid #334155',
+                background: '#1e293b',
+                color: '#cbd5e1',
+              }}
+              title={`Reset ${cloud.name} stack split`}
+            >
+              Unsplit
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div
+        key={segmentKey}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          cursor: 'pointer',
+          background: 'rgba(255,255,255,0.04)',
+          border: '1px solid rgba(255,255,255,0.1)',
+          borderRadius: 6,
+          padding: '4px 6px',
+          minWidth: 54,
+          transition: 'background 0.15s',
+        }}
+        onClick={() => setExpandedClouds(prev => {
+          const next = new Set(prev);
+          if (next.has(segmentKey)) next.delete(segmentKey);
+          else next.add(segmentKey);
+          return next;
+        })}
+        title={`${cloud.cards.length}x ${cloud.name} - click to expand`}
+      >
+        {renderTokenCloudCluster(cloud, label, cards, segmentKey)}
       </div>
     );
   }
@@ -473,3 +814,4 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
     </div>
   );
 }
+

@@ -5,7 +5,7 @@ import { TableStatusDock } from './TableStatusDock';
 import { DragCombatProvider, useDragCombatContext } from '../../hooks/DragCombatContext';
 import { TriggerQueuePanel } from '../triggers/TriggerQueuePanel';
 import { CardImage } from '../cards/CardImage';
-import type { GameState, Player, StackObject } from '../../types/game';
+import type { CardState, GameState, Player, StackObject } from '../../types/game';
 
 type CombatArrow = {
   id: string;
@@ -318,6 +318,252 @@ function stackActionButton(background: string, color: string): React.CSSProperti
   };
 }
 
+function cardHasKeyword(card: CardState, keyword: string): boolean {
+  const lower = keyword.toLowerCase();
+  return card.definition.keywords.some(k => k.toLowerCase() === lower)
+    || card.definition.oracleText.toLowerCase().includes(lower);
+}
+
+function canUseAsAttacker(card: CardState): boolean {
+  if (!card.definition.cardTypes.includes('Creature')) return false;
+  if (card.tapped || card.combatRole === 'attacker') return false;
+  if (card.summoningSick && !cardHasKeyword(card, 'haste')) return false;
+  if (cardHasKeyword(card, 'defender')) return false;
+  return true;
+}
+
+function canUseAsBlocker(card: CardState): boolean {
+  if (!card.definition.cardTypes.includes('Creature')) return false;
+  if (card.tapped || card.combatRole === 'blocker') return false;
+  if (cardHasKeyword(card, "can't block")) return false;
+  return true;
+}
+
+function cardOptionLabel(card: CardState): string {
+  const power = card.definition.power ?? '?';
+  const toughness = card.definition.toughness ?? '?';
+  return `${card.definition.name} (${power}/${toughness})`;
+}
+
+function combatSelectStyle(disabled = false): React.CSSProperties {
+  return {
+    minWidth: 130,
+    maxWidth: 220,
+    height: 28,
+    background: disabled ? 'rgba(15,23,42,0.55)' : '#0b1220',
+    color: disabled ? '#475569' : '#e2e8f0',
+    border: '1px solid #334155',
+    borderRadius: 4,
+    padding: '0 7px',
+    fontSize: 10,
+    fontWeight: 700,
+  };
+}
+
+function combatButtonStyle(kind: 'attack' | 'block' | 'phase', disabled = false): React.CSSProperties {
+  const colors = {
+    attack: { bg: '#7f1d1d', fg: '#fecaca', border: '#ef4444' },
+    block: { bg: '#1e3a5f', fg: '#bfdbfe', border: '#60a5fa' },
+    phase: { bg: '#1e293b', fg: '#cbd5e1', border: '#64748b' },
+  }[kind];
+  return {
+    height: 28,
+    borderRadius: 4,
+    border: `1px solid ${colors.border}`,
+    background: disabled ? 'rgba(15,23,42,0.55)' : colors.bg,
+    color: disabled ? '#475569' : colors.fg,
+    padding: '0 9px',
+    fontSize: 10,
+    fontWeight: 900,
+    cursor: disabled ? 'default' : 'pointer',
+    whiteSpace: 'nowrap',
+  };
+}
+
+function CombatDeclarationDock() {
+  const store = useGameStore();
+  const { game, localPlayerId } = store;
+  const activePlayer = game.players.find(player => player.id === game.activePlayerId);
+  const localPlayer = game.players.find(player => player.id === localPlayerId);
+
+  const attackOptions = useMemo(() => {
+    if (!activePlayer || activePlayer.id !== localPlayerId) return [];
+    return activePlayer.battlefield
+      .map(id => game.cards[id])
+      .filter((card): card is CardState => Boolean(card) && canUseAsAttacker(card));
+  }, [activePlayer, game.cards, localPlayerId]);
+
+  const targetOptions = useMemo(() => (
+    game.players.filter(player => player.id !== activePlayer?.id)
+  ), [activePlayer?.id, game.players]);
+
+  const blockableAttackers = useMemo(() => {
+    if (!localPlayer) return [];
+    return game.combat.attackers
+      .filter(attacker => attacker.targetPlayerId === localPlayer.id)
+      .map(attacker => game.cards[attacker.instanceId])
+      .filter((card): card is CardState => Boolean(card));
+  }, [game.cards, game.combat.attackers, localPlayer]);
+
+  const blockerOptions = useMemo(() => {
+    if (!localPlayer) return [];
+    return localPlayer.battlefield
+      .map(id => game.cards[id])
+      .filter((card): card is CardState => Boolean(card) && canUseAsBlocker(card));
+  }, [game.cards, localPlayer]);
+
+  const [selectedAttackerId, setSelectedAttackerId] = useState('');
+  const [selectedTargetId, setSelectedTargetId] = useState('');
+  const [selectedBlockerId, setSelectedBlockerId] = useState('');
+  const [selectedBlockedAttackerId, setSelectedBlockedAttackerId] = useState('');
+
+  useEffect(() => {
+    if (!attackOptions.some(card => card.instanceId === selectedAttackerId)) {
+      setSelectedAttackerId(attackOptions[0]?.instanceId ?? '');
+    }
+  }, [attackOptions, selectedAttackerId]);
+
+  useEffect(() => {
+    if (!targetOptions.some(player => player.id === selectedTargetId)) {
+      setSelectedTargetId(targetOptions[0]?.id ?? '');
+    }
+  }, [targetOptions, selectedTargetId]);
+
+  useEffect(() => {
+    if (!blockerOptions.some(card => card.instanceId === selectedBlockerId)) {
+      setSelectedBlockerId(blockerOptions[0]?.instanceId ?? '');
+    }
+  }, [blockerOptions, selectedBlockerId]);
+
+  useEffect(() => {
+    if (!blockableAttackers.some(card => card.instanceId === selectedBlockedAttackerId)) {
+      setSelectedBlockedAttackerId(blockableAttackers[0]?.instanceId ?? '');
+    }
+  }, [blockableAttackers, selectedBlockedAttackerId]);
+
+  const canDeclareAttack = Boolean(selectedAttackerId && selectedTargetId);
+  const canDeclareBlock = Boolean(selectedBlockerId && selectedBlockedAttackerId);
+  const showDock = attackOptions.length > 0 || game.combat.attackers.length > 0 || game.phase === 'declareAttackers' || game.phase === 'declareBlockers';
+
+  if (!showDock) return null;
+
+  const declareAttack = () => {
+    if (!canDeclareAttack) return;
+    if (!game.combat.active) store.enterCombat();
+    store.declareAttack(selectedAttackerId, selectedTargetId);
+  };
+
+  const declareBlock = () => {
+    if (!canDeclareBlock) return;
+    store.declareBlock(selectedBlockerId, selectedBlockedAttackerId);
+  };
+
+  return (
+    <div
+      data-testid="combat-declaration-dock"
+      style={{
+        margin: '2px 4px 0',
+        padding: '6px 8px',
+        borderRadius: 6,
+        border: '1px solid rgba(100,116,139,0.45)',
+        background: 'rgba(15,23,42,0.78)',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
+        flexWrap: 'wrap',
+        zIndex: 15,
+      }}
+    >
+      <span style={{ fontSize: 10, color: '#94a3b8', fontWeight: 900, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+        Declare
+      </span>
+
+      <select
+        aria-label="Attacker"
+        value={selectedAttackerId}
+        onChange={event => setSelectedAttackerId(event.target.value)}
+        disabled={attackOptions.length === 0}
+        style={combatSelectStyle(attackOptions.length === 0)}
+      >
+        {attackOptions.length === 0 ? (
+          <option value="">No attackers</option>
+        ) : attackOptions.map(card => (
+          <option key={card.instanceId} value={card.instanceId}>{cardOptionLabel(card)}</option>
+        ))}
+      </select>
+
+      <select
+        aria-label="Attack target"
+        value={selectedTargetId}
+        onChange={event => setSelectedTargetId(event.target.value)}
+        disabled={targetOptions.length === 0}
+        style={combatSelectStyle(targetOptions.length === 0)}
+      >
+        {targetOptions.map(player => (
+          <option key={player.id} value={player.id}>Attack {player.name}</option>
+        ))}
+      </select>
+
+      <button
+        type="button"
+        data-testid="declare-attack-button"
+        disabled={!canDeclareAttack}
+        onClick={declareAttack}
+        style={combatButtonStyle('attack', !canDeclareAttack)}
+      >
+        Declare Attack
+      </button>
+
+      <button
+        type="button"
+        disabled={game.combat.attackers.length === 0}
+        onClick={() => store.goToPhase('declareBlockers')}
+        style={combatButtonStyle('phase', game.combat.attackers.length === 0)}
+      >
+        Blockers Step
+      </button>
+
+      <select
+        aria-label="Blocker"
+        value={selectedBlockerId}
+        onChange={event => setSelectedBlockerId(event.target.value)}
+        disabled={blockerOptions.length === 0}
+        style={combatSelectStyle(blockerOptions.length === 0)}
+      >
+        {blockerOptions.length === 0 ? (
+          <option value="">No blockers</option>
+        ) : blockerOptions.map(card => (
+          <option key={card.instanceId} value={card.instanceId}>{cardOptionLabel(card)}</option>
+        ))}
+      </select>
+
+      <select
+        aria-label="Blocked attacker"
+        value={selectedBlockedAttackerId}
+        onChange={event => setSelectedBlockedAttackerId(event.target.value)}
+        disabled={blockableAttackers.length === 0}
+        style={combatSelectStyle(blockableAttackers.length === 0)}
+      >
+        {blockableAttackers.length === 0 ? (
+          <option value="">No incoming attackers</option>
+        ) : blockableAttackers.map(card => (
+          <option key={card.instanceId} value={card.instanceId}>Block {cardOptionLabel(card)}</option>
+        ))}
+      </select>
+
+      <button
+        type="button"
+        data-testid="declare-block-button"
+        disabled={!canDeclareBlock}
+        onClick={declareBlock}
+        style={combatButtonStyle('block', !canDeclareBlock)}
+      >
+        Declare Block
+      </button>
+    </div>
+  );
+}
+
 function BattlefieldStackShowcase() {
   const store = useGameStore();
   const { game } = store;
@@ -577,6 +823,7 @@ function CommanderTableInner() {
 
       {/* Combat summary — visible whenever combat phases are active */}
       <CombatSummaryBar />
+      <CombatDeclarationDock />
       <CombatArrowOverlay />
 
       <BattlefieldStackShowcase />
