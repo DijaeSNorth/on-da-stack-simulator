@@ -199,6 +199,15 @@ export function TopBar() {
           style={topBtnStyle(ui.judgeMode ? '#78350f' : 'none', ui.judgeMode ? '#fcd34d' : '#64748b')}
         >⚜</button>
         <button
+          data-testid="btn-ui-settings"
+          data-help-title="UI Settings"
+          data-help-body="Adjust local density, badges, combat math, and large-board display preferences. These settings do not sync to other players."
+          data-help-placement="bottom"
+          aria-label="Open UI settings"
+          onClick={() => store.setUiSettingsOpen(true)}
+          title="UI Settings"
+          style={topBtnStyle(ui.uiSettingsOpen ? '#1e3a5f' : 'none', ui.uiSettingsOpen ? '#93c5fd' : '#64748b')}
+        >UI</button>        <button
           data-testid="btn-card-search"
           data-help-title="Card Search"
           data-help-body="Opens Scryfall-backed lookup for card text and interaction checks while testing."
@@ -329,3 +338,4 @@ function topBtnStyle(bg: string, color: string): CSSProperties {
     lineHeight: 1.4,
   };
 }
+

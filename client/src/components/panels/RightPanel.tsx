@@ -3,6 +3,12 @@ import { useGameStore } from '../../store/gameStore';
 import type { AssistantMessage } from '../../store/gameStore';
 import type { ActionRecord, StackObject, TriggerItem } from '../../types/game';
 import { buildIssueReportUrl } from '../../engine/issueReport';
+import {
+  buildActionLogViewModel,
+  serializeVisibleActionLog,
+  type ActionLogFilter,
+  type ActionLogRow,
+} from './actionLogUiModel';
 
 const SEVERITY_COLORS: Record<string, string> = {
   legal: '#22c55e',
@@ -31,6 +37,18 @@ const sectionHeaderStyle: CSSProperties = {
   letterSpacing: '0.08em',
   textTransform: 'uppercase',
 };
+
+const ACTION_LOG_FILTERS: { id: ActionLogFilter; label: string }[] = [
+  { id: 'all', label: 'All' },
+  { id: 'combat', label: 'Combat' },
+  { id: 'spells-abilities', label: 'Spells/Abilities' },
+  { id: 'zone-changes', label: 'Zone Changes' },
+  { id: 'draws', label: 'Draws' },
+  { id: 'damage-life', label: 'Damage/Life' },
+  { id: 'manual-judge', label: 'Manual/Judge' },
+  { id: 'multiplayer-sync', label: 'Multiplayer Sync' },
+  { id: 'warnings', label: 'Warnings' },
+];
 
 type TimelineItem =
   | {
@@ -71,8 +89,19 @@ function AssistantTab() {
   const messages = useGameStore(s => s.ui.assistantMessages);
   const game = useGameStore(s => s.game);
   const store = useGameStore();
+  const [logFilter, setLogFilter] = useState<ActionLogFilter>('all');
+  const [logSearch, setLogSearch] = useState('');
+  const [groupByTurn, setGroupByTurn] = useState(true);
   const pendingTriggers = game.triggerQueue.filter(t => !t.acknowledged);
   const missedTriggers = game.triggerQueue.filter(t => t.missed);
+  const actionLogView = useMemo(() => buildActionLogViewModel(game.actionLog, {
+    players: game.players,
+    cards: game.cards,
+    filter: logFilter,
+    query: logSearch,
+    groupByTurn,
+    currentTurn: game.turn,
+  }), [game.actionLog, game.cards, game.players, game.turn, groupByTurn, logFilter, logSearch]);
   const timeline = useMemo<TimelineItem[]>(() => {
     const consumedFlagKeys = new Set<string>();
     const actionItems: TimelineItem[] = game.actionLog.slice(-120).map(action => {
@@ -105,6 +134,65 @@ function AssistantTab() {
       .sort((a, b) => b.timestamp - a.timestamp)
       .slice(0, 120);
   }, [game.actionLog, game.players, messages]);
+
+  const copyVisibleLog = () => {
+    const text = serializeVisibleActionLog(actionLogView.groups);
+    if (!text.trim() || typeof navigator === 'undefined' || !navigator.clipboard) return;
+    void navigator.clipboard.writeText(text);
+  };
+
+  const renderActionRow = (row: ActionLogRow) => {
+    const { action } = row;
+    const reviewMessages = [
+      ...(action.flags ?? []).map(flag => flag.text),
+      ...(typeof action.data?.assistantSummary === 'string' ? [action.data.assistantSummary] : []),
+    ].filter((text): text is string => Boolean(text));
+    const isReview = row.category === 'warning' || reviewMessages.length > 0 || Array.isArray(action.data?.reviewTypes);
+    return (
+      <div
+        key={`filtered-action-${action.id}`}
+        data-testid={`action-log-row-${action.id}`}
+        style={{
+          padding: '6px 8px',
+          borderRadius: 5,
+          background: isReview ? 'rgba(245,158,11,0.07)' : 'rgba(255,255,255,0.025)',
+          border: `1px solid ${isReview ? '#78350f' : '#1e293b'}`,
+          opacity: action.undone ? 0.4 : 1,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, marginBottom: 3 }}>
+          <span style={{
+            fontSize: 8,
+            color: isReview ? '#fcd34d' : '#93c5fd',
+            background: isReview ? '#78350f' : '#1e3a5f',
+            borderRadius: 3,
+            padding: '1px 5px',
+            fontWeight: 800,
+            textTransform: 'uppercase',
+          }}>
+            {row.category.replace('-', ' ')}
+          </span>
+          <span style={{ fontSize: 9, color: '#334155', whiteSpace: 'nowrap' }}>
+            T{action.turn} - {action.phase} - {formatClock(action.timestamp)}
+          </span>
+        </div>
+        <div style={{ fontSize: 11, color: isReview ? '#fcd34d' : '#cbd5e1', lineHeight: 1.35 }}>
+          {row.text}
+          {action.undone && <span style={{ color: '#6b7280' }}> [undone]</span>}
+        </div>
+        {row.playerName && (
+          <div style={{ fontSize: 9, color: '#475569', marginTop: 2 }}>
+            {row.playerName}
+          </div>
+        )}
+        {reviewMessages.map(text => (
+          <div key={text} style={{ marginTop: 4, fontSize: 10, color: '#fbbf24', lineHeight: 1.35 }}>
+            Judge: {text}
+          </div>
+        ))}
+      </div>
+    );
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
@@ -169,6 +257,93 @@ function AssistantTab() {
             Report Issue
           </button>
         </div>
+        <div style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 6,
+          padding: 8,
+          borderRadius: 6,
+          background: 'rgba(15,23,42,0.72)',
+          border: '1px solid #1e293b',
+        }}>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <input
+              data-testid="action-log-search"
+              value={logSearch}
+              onChange={event => setLogSearch(event.target.value)}
+              placeholder="Search player, card, or action"
+              style={{
+                flex: 1,
+                minWidth: 0,
+                fontSize: 10,
+                color: '#cbd5e1',
+                background: '#020617',
+                border: '1px solid #334155',
+                borderRadius: 5,
+                padding: '5px 7px',
+              }}
+            />
+            <button
+              type="button"
+              data-testid="action-log-copy"
+              onClick={copyVisibleLog}
+              title="Copy visible action log"
+              style={{
+                fontSize: 9,
+                padding: '5px 7px',
+                background: '#1e293b',
+                color: '#94a3b8',
+                border: '1px solid #334155',
+                borderRadius: 5,
+                cursor: 'pointer',
+                flexShrink: 0,
+              }}
+            >
+              Copy
+            </button>
+          </div>
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            {ACTION_LOG_FILTERS.map(filter => (
+              <button
+                key={filter.id}
+                type="button"
+                data-testid={`action-log-filter-${filter.id}`}
+                onClick={() => setLogFilter(filter.id)}
+                style={{
+                  fontSize: 8,
+                  padding: '3px 6px',
+                  borderRadius: 999,
+                  border: `1px solid ${logFilter === filter.id ? '#60a5fa' : '#334155'}`,
+                  background: logFilter === filter.id ? 'rgba(59,130,246,0.18)' : 'rgba(15,23,42,0.88)',
+                  color: logFilter === filter.id ? '#bfdbfe' : '#64748b',
+                  cursor: 'pointer',
+                  fontWeight: 800,
+                }}
+              >
+                {filter.label}
+              </button>
+            ))}
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, fontSize: 9, color: '#64748b' }}>
+            <span>{actionLogView.visibleCount} of {actionLogView.totalCount} actions</span>
+            <button
+              type="button"
+              data-testid="action-log-group-turn"
+              onClick={() => setGroupByTurn(value => !value)}
+              style={{
+                fontSize: 9,
+                padding: '2px 6px',
+                borderRadius: 4,
+                border: '1px solid #334155',
+                background: groupByTurn ? '#1e3a5f' : 'transparent',
+                color: groupByTurn ? '#bfdbfe' : '#64748b',
+                cursor: 'pointer',
+              }}
+            >
+              {groupByTurn ? 'Grouped by turn' : 'Ungrouped'}
+            </button>
+          </div>
+        </div>
         {timeline.length === 0 ? (
           <div style={{
             color: '#334155', fontSize: 12, fontStyle: 'italic', textAlign: 'center',
@@ -181,9 +356,7 @@ function AssistantTab() {
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {timeline.map(item => {
-              if (item.kind === 'judge') {
-                const msg = item.message;
+            {messages.slice(-12).reverse().map(msg => {
                 const labelStyle = SEVERITY_LABEL_STYLES[msg.label] || { bg: '#1e293b', color: '#94a3b8' };
                 return (
                   <div
@@ -217,51 +390,25 @@ function AssistantTab() {
                     )}
                   </div>
                 );
-              }
-              const { action } = item;
-              return (
-                <div
-                  key={`action-${action.id}`}
-                  style={{
-                    padding: '6px 8px',
-                    borderRadius: 5,
-                    background: item.review ? 'rgba(245,158,11,0.07)' : 'rgba(255,255,255,0.025)',
-                    border: `1px solid ${item.review ? '#78350f' : '#1e293b'}`,
-                    opacity: action.undone ? 0.4 : 1,
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6, marginBottom: 3 }}>
-                    <span style={{
-                      fontSize: 8,
-                      color: item.review ? '#fcd34d' : '#93c5fd',
-                      background: item.review ? '#78350f' : '#1e3a5f',
-                      borderRadius: 3,
-                      padding: '1px 5px',
-                      fontWeight: 800,
-                    }}>
-                      {action.actionType.replace(/_/g, ' ')}
-                    </span>
-                    <span style={{ fontSize: 9, color: '#334155', whiteSpace: 'nowrap' }}>
-                      T{action.turn} - {action.phase} - {formatClock(action.timestamp)}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 11, color: item.review ? '#fcd34d' : '#cbd5e1', lineHeight: 1.35 }}>
-                    {action.description}
-                    {action.undone && <span style={{ color: '#6b7280' }}> [undone]</span>}
-                  </div>
-                  {item.playerName && (
-                    <div style={{ fontSize: 9, color: '#475569', marginTop: 2 }}>
-                      {item.playerName}
-                    </div>
-                  )}
-                  {item.reviewMessages.map(text => (
-                    <div key={text} style={{ marginTop: 4, fontSize: 10, color: '#fbbf24', lineHeight: 1.35 }}>
-                      Judge: {text}
-                    </div>
-                  ))}
-                </div>
-              );
             })}
+            {actionLogView.groups.map(group => (
+              <div key={group.key} data-testid={`action-log-group-${group.key}`} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                {groupByTurn && (
+                  <div style={{ ...sectionHeaderStyle, color: group.label.startsWith('Current') ? '#60a5fa' : '#64748b', marginTop: 4 }}>
+                    {group.label}
+                  </div>
+                )}
+                {group.actions.map(renderActionRow)}
+              </div>
+            ))}
+            {actionLogView.visibleCount === 0 && (
+              <div style={{
+                color: '#334155', fontSize: 12, fontStyle: 'italic', textAlign: 'center',
+                padding: '14px 8px', border: '1px dashed #1e293b', borderRadius: 5,
+              }}>
+                No actions match this log view.
+              </div>
+            )}
           </div>
         )}
       </div>

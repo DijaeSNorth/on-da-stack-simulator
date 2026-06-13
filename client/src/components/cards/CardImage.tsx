@@ -3,6 +3,7 @@ import type { CardState } from '../../types/game';
 import { getCardPlaceholderStyle } from '../../data/cardDatabase';
 import { getActiveProfile, getArtOverride } from '../../engine/profileStorage';
 import { getMechanicBadgesForCard } from '../../rules/mechanicsRegistry';
+import { useGameStore } from '../../store/gameStore';
 
 interface CardImageProps {
   card: CardState;
@@ -22,6 +23,7 @@ const SIZE_DIMS = {
 
 export function CardImage({ card, size = 'normal', showArt = true, className = '', style }: CardImageProps) {
   const [imgError, setImgError] = useState(false);
+  const showMechanicBadges = useGameStore(s => s.ui.settings.showMechanicBadges);
   const def = card.definition;
   const dims = SIZE_DIMS[size];
 
@@ -30,7 +32,7 @@ export function CardImage({ card, size = 'normal', showArt = true, className = '
   const artOverride = getArtOverride(activeProfile, def.name);
   const imageUrl = artOverride?.imageUrl ?? (card.transformed ? def.imageUrlBack : def.imageUrl);
   const placeholder = getCardPlaceholderStyle(def);
-  const mechanicBadges = size === 'tiny' ? [] : getMechanicBadgesForCard(card).slice(0, size === 'compact' ? 2 : 3);
+  const mechanicBadges = !showMechanicBadges || size === 'tiny' ? [] : getMechanicBadgesForCard(card).slice(0, size === 'compact' ? 2 : 3);
 
   const containerStyle: React.CSSProperties = {
     width: dims.width,

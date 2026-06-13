@@ -12,6 +12,7 @@ import { CardContextMenu } from './components/cards/CardContextMenu';
 import { LobbyScreen } from './components/lobby/LobbyScreen';
 import { CommandInput } from './components/command/CommandInput';
 import { CommanderCastMoment } from './components/commander/CommanderCastMoment';
+import { UISettingsPanel } from './components/settings/UISettingsPanel';
 import { useIsMobile } from './hooks/use-mobile';
 
 const CardSearchPanel = lazy(() =>
@@ -94,7 +95,7 @@ export default function App() {
         fontFamily: '"Inter", "SF Pro Display", system-ui, sans-serif',
       }}>
         <LobbyScreen />
-        <div style={{
+        {ui.settings.showBuildStamp && <div style={{
           position: 'fixed',
           left: 8,
           bottom: 6,
@@ -105,7 +106,7 @@ export default function App() {
           pointerEvents: 'none',
         }}>
           Build: {BUILD_STAMP.commit} · {BUILD_STAMP.builtAt}
-        </div>
+        </div>}
         <Suspense fallback={null}>
           <ProfilePanel />
           <TutorialOverlay />
@@ -233,6 +234,7 @@ export default function App() {
       <FloatingCardPreview />
       <CommanderCastMoment />
       <CardContextMenu />
+      <UISettingsPanel />
       {ui.zoneDrawer && (
         <Suspense fallback={null}>
           <ZoneDrawer />
