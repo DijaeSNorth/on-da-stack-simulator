@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { getLegalAttackTargetsForPlayer } from '../../engine/gameEngine';
 import { useGameStore } from '../../store/gameStore';
 import type { AttackDefenderTarget, CardState } from '../../types/game';
+import { groupLegalAttackTargetsByOpponent } from './combatUiModel';
 
 interface TokenStackAttackModalProps {
   playerId: string;
@@ -46,6 +47,7 @@ export function TokenStackAttackModal({ playerId, sourceGroupId, cards, onClose 
   const store = useGameStore();
   const { game } = store;
   const targets = useMemo(() => getLegalAttackTargetsForPlayer(game, playerId), [game, playerId]);
+  const targetGroups = useMemo(() => groupLegalAttackTargetsByOpponent(game, playerId), [game, playerId]);
   const targetMap = useMemo(() => new Map(targets.map(target => [targetKey(target), target])), [targets]);
   const firstTargetKey = targets[0] ? targetKey(targets[0]) : '';
   const eligibleCards = cards.filter(card => isEligible(card, playerId));
@@ -81,6 +83,26 @@ export function TokenStackAttackModal({ playerId, sourceGroupId, cards, onClose 
     }
     const protector = game.players.find(p => p.id === target.protectorId);
     return `${card?.definition.name ?? 'Battle'} - protected by ${protector?.name ?? target.protectorId}`;
+  }
+
+  function renderGroupedTargetOptions() {
+    return targetGroups.map(group => (
+      <optgroup key={group.player.id} label={`${group.player.name} - life ${group.player.life}`}>
+        <option value={targetKey(group.playerTarget)}>
+          Player: {labelForTarget(group.playerTarget)}
+        </option>
+        {group.planeswalkers.map(target => (
+          <option key={targetKey(target)} value={targetKey(target)}>
+            Planeswalker: {labelForTarget(target)}
+          </option>
+        ))}
+        {group.battles.map(target => (
+          <option key={targetKey(target)} value={targetKey(target)}>
+            Battle: {labelForTarget(target)}
+          </option>
+        ))}
+      </optgroup>
+    ));
   }
 
   function submit(assignments: { count: number; attackTarget: AttackDefenderTarget }[]): void {
@@ -122,11 +144,7 @@ export function TokenStackAttackModal({ playerId, sourceGroupId, cards, onClose 
               onChange={(event) => setSingleTargetKey(event.target.value)}
               className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-100"
             >
-              {targets.map(target => (
-                <option key={targetKey(target)} value={targetKey(target)}>
-                  {labelForTarget(target)}
-                </option>
-              ))}
+              {renderGroupedTargetOptions()}
             </select>
           </label>
 
@@ -204,11 +222,7 @@ export function TokenStackAttackModal({ playerId, sourceGroupId, cards, onClose 
                     onChange={(event) => setSplitRows(prev => prev.map(item => item.id === row.id ? { ...item, targetKey: event.target.value } : item))}
                     className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-sm text-slate-100"
                   >
-                    {targets.map(target => (
-                      <option key={targetKey(target)} value={targetKey(target)}>
-                        {labelForTarget(target)}
-                      </option>
-                    ))}
+                    {renderGroupedTargetOptions()}
                   </select>
                   <button
                     type="button"

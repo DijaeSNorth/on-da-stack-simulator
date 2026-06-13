@@ -5,6 +5,13 @@ import { DragCombatProvider, useDragCombatContext } from '../../hooks/DragCombat
 import { TriggerQueuePanel } from '../triggers/TriggerQueuePanel';
 import { CardImage } from '../cards/CardImage';
 import type { CardState, GameState, Player, StackObject } from '../../types/game';
+import {
+  chooseFocusedPlayerId,
+  getPlayerBoardSummary,
+  getTableViewModeLabel,
+  isPlayerCombatRelevant,
+  type TableViewMode,
+} from './tableViewUiModel';
 
 type CombatArrow = {
   id: string;
@@ -706,6 +713,10 @@ function CommanderTableInner() {
   const bottomPlayers = getPlayers(layout.bottom);
   const localPlayerId = store.localPlayerId;
   const hasSidePlayers = leftPlayers.length > 0 || rightPlayers.length > 0;
+  const tableViewMode = ui.tableViewMode;
+  const focusedPlayerId = chooseFocusedPlayerId(game, ui.focusedPlayerId, localPlayerId);
+  const showCompactGrid = tableViewMode === 'compact';
+  const showCombatFocus = tableViewMode === 'combat' && (game.combat.active || game.combat.attackers.length > 0);
 
   const sectionStyle = (side: 'top' | 'bottom' | 'left' | 'right'): React.CSSProperties => {
     const base: React.CSSProperties = { display: 'flex', gap: 2, flex: 1, overflow: 'hidden', minHeight: 0, minWidth: 0 };
@@ -730,6 +741,11 @@ function CommanderTableInner() {
   function wrapPlayerSlot(player: Player, isLocal: boolean, compact: boolean) {
     const isDropTarget = drag.dropTarget?.id === player.id && drag.dropTarget?.type === 'player';
     const isDraggingAttack = drag.dragState?.mode === 'attack';
+    const isFocused = tableViewMode === 'focused' && player.id === focusedPlayerId;
+    const combatRelevant = showCombatFocus && isPlayerCombatRelevant(game, player.id);
+    const collapsedByFocus = tableViewMode === 'focused' && !isFocused;
+    const collapsedByCombat = showCombatFocus && !combatRelevant;
+    const effectiveCompact = compact || collapsedByFocus || collapsedByCombat;
     // Opponent zones glow green when a valid attack drag is in progress
     const showDropGlow = isDraggingAttack && !isLocal;
 
@@ -741,7 +757,7 @@ function CommanderTableInner() {
         key={player.id}
         data-player-slot={player.id}
         style={{
-          flex: 1,
+          flex: isFocused ? 2.2 : combatRelevant ? 1.6 : collapsedByFocus || collapsedByCombat ? 0.48 : 1,
           background: isActive(player)
             ? `linear-gradient(180deg, ${player.color}15, transparent)`
             : 'rgba(255,255,255,0.02)',
@@ -757,7 +773,7 @@ function CommanderTableInner() {
           flexDirection: 'column',
           minWidth: 0,
           maxWidth: '100%',
-          minHeight: compact ? 80 : 120,
+          minHeight: effectiveCompact ? 76 : isFocused ? 190 : 120,
           maxHeight: '100%',
           transition: 'border-color 0.15s, box-shadow 0.15s',
           boxShadow: isDropTarget
@@ -765,13 +781,19 @@ function CommanderTableInner() {
             : 'none',
           cursor: isDraggingAttack && !isLocal ? 'copy' : undefined,
         }}
+        onClick={() => {
+          if (!drag.dragState) {
+            store.setFocusedPlayer(player.id);
+            if (tableViewMode === 'table') store.setTableViewMode('focused');
+          }
+        }}
         {...dropHandlers}
       >
         <PlayerBattlefield
           player={player}
           isLocal={isLocal}
           isActive={isActive(player)}
-          compact={compact}
+          compact={effectiveCompact}
         />
 
         {/* Drop overlay label */}
@@ -824,11 +846,48 @@ function CommanderTableInner() {
       )}
 
       {/* Combat summary — visible whenever combat phases are active */}
+      <TableViewToolbar
+        mode={tableViewMode}
+        playerCount={players.length}
+        combatActive={game.combat.active || game.combat.attackers.length > 0}
+        label={getTableViewModeLabel(tableViewMode)}
+        onModeChange={(mode) => store.setTableViewMode(mode)}
+      />
+
       <CombatSummaryBar />
       <CombatDeclarationDock />
       <CombatArrowOverlay />
 
       <BattlefieldStackShowcase />
+
+      {showCompactGrid ? (
+        <div
+          data-testid="compact-board-grid"
+          style={{
+            flex: 1,
+            minHeight: 0,
+            display: 'grid',
+            gridTemplateColumns: `repeat(${players.length >= 4 ? 2 : 1}, minmax(0, 1fr))`,
+            gap: 8,
+            padding: 8,
+            overflow: 'auto',
+          }}
+        >
+          {players.map(player => (
+            <PlayerBoardSummaryCard
+              key={player.id}
+              player={player}
+              summary={getPlayerBoardSummary(game, player)}
+              focused={player.id === focusedPlayerId}
+              onFocus={() => {
+                store.setFocusedPlayer(player.id);
+                store.setTableViewMode('focused');
+              }}
+            />
+          ))}
+        </div>
+      ) : (
+        <>
 
       {/* Top opponents */}
       {topPlayers.length > 0 && (
@@ -887,15 +946,163 @@ function CommanderTableInner() {
         margin: '0 20px', flexShrink: 0,
       }} />
 
-      {/* Bottom — local player */}
+      {/* Bottom - local player */}
       <div style={{ ...sectionStyle('bottom'), maxHeight: '42%', flexShrink: 0 }}>
         {bottomPlayers.map(p => wrapPlayerSlot(p, p.id === localPlayerId, false))}
       </div>
+        </>
+      )}
     </div>
   );
 }
 
 // ── Drag hint bar ─────────────────────────────────────────────────────────────
+
+function TableViewToolbar({
+  mode,
+  playerCount,
+  combatActive,
+  label,
+  onModeChange,
+}: {
+  mode: TableViewMode;
+  playerCount: number;
+  combatActive: boolean;
+  label: string;
+  onModeChange: (mode: TableViewMode) => void;
+}) {
+  const modes: Array<{ mode: TableViewMode; label: string; disabled?: boolean }> = [
+    { mode: 'table', label: 'Table' },
+    { mode: 'focused', label: 'Focus' },
+    { mode: 'combat', label: 'Combat', disabled: !combatActive },
+    { mode: 'compact', label: 'Grid', disabled: playerCount < 3 },
+  ];
+  return (
+    <div
+      data-testid="table-view-toolbar"
+      title={label}
+      style={{
+        position: 'absolute',
+        top: 8,
+        right: 8,
+        zIndex: 19,
+        display: 'flex',
+        gap: 4,
+        padding: 4,
+        borderRadius: 999,
+        border: '1px solid rgba(71,85,105,0.55)',
+        background: 'rgba(15,23,42,0.78)',
+        boxShadow: '0 10px 28px rgba(0,0,0,0.28)',
+      }}
+    >
+      {modes.map(item => (
+        <button
+          key={item.mode}
+          type="button"
+          data-testid={`table-view-mode-${item.mode}`}
+          disabled={item.disabled}
+          onClick={() => onModeChange(item.mode)}
+          style={{
+            border: `1px solid ${mode === item.mode ? '#60a5fa' : 'rgba(100,116,139,0.45)'}`,
+            background: mode === item.mode ? 'rgba(37,99,235,0.34)' : 'rgba(15,23,42,0.62)',
+            color: item.disabled ? '#475569' : mode === item.mode ? '#dbeafe' : '#94a3b8',
+            borderRadius: 999,
+            padding: '3px 8px',
+            fontSize: 9,
+            fontWeight: 900,
+            cursor: item.disabled ? 'default' : 'pointer',
+          }}
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function PlayerBoardSummaryCard({
+  player,
+  summary,
+  focused,
+  onFocus,
+}: {
+  player: Player;
+  summary: ReturnType<typeof getPlayerBoardSummary>;
+  focused: boolean;
+  onFocus: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-testid={`compact-player-summary-${player.id}`}
+      onClick={onFocus}
+      style={{
+        textAlign: 'left',
+        border: `1px solid ${focused ? '#60a5fa' : `${player.color}55`}`,
+        borderRadius: 12,
+        background: focused ? 'rgba(37,99,235,0.18)' : 'rgba(15,23,42,0.72)',
+        padding: 12,
+        color: '#cbd5e1',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+        minHeight: 132,
+        cursor: 'pointer',
+      }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ color: '#f8fafc', fontSize: 13, fontWeight: 900, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {player.name}
+          </div>
+          <div style={{ color: summary.connected ? '#86efac' : '#fca5a5', fontSize: 9, fontWeight: 800 }}>
+            {summary.connected ? 'Connected' : 'Disconnected'}
+          </div>
+        </div>
+        <div style={{ color: player.color, fontSize: 22, fontWeight: 1000 }}>{player.life}</div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6 }}>
+        <SummaryStat label="Hand" value={summary.handCount} />
+        <SummaryStat label="Library" value={summary.libraryCount} />
+        <SummaryStat label="Perms" value={summary.permanents} />
+        <SummaryStat label="Creatures" value={summary.creatures} />
+        <SummaryStat label="Tokens" value={summary.tokens} />
+        <SummaryStat label="Blockers" value={summary.untappedBlockers} />
+        <SummaryStat label="A/E" value={summary.artifactsEnchantments} />
+        <SummaryStat label="Lands" value={summary.lands} />
+        <SummaryStat label="Walkers" value={summary.planeswalkers} />
+      </div>
+      {(summary.isAttackingPlayer || summary.isDefendingPlayer) && (
+        <div style={{ display: 'flex', gap: 6 }}>
+          {summary.isAttackingPlayer && <span style={combatTagStyle('#7f1d1d', '#fecaca')}>Attacking</span>}
+          {summary.isDefendingPlayer && <span style={combatTagStyle('#1e3a5f', '#bfdbfe')}>Defending</span>}
+        </div>
+      )}
+    </button>
+  );
+}
+
+function SummaryStat({ label, value }: { label: string; value: number }) {
+  return (
+    <span style={{ border: '1px solid rgba(71,85,105,0.4)', borderRadius: 7, padding: '4px 5px', background: 'rgba(2,6,23,0.42)' }}>
+      <span style={{ display: 'block', color: '#64748b', fontSize: 8, fontWeight: 900, textTransform: 'uppercase' }}>{label}</span>
+      <span style={{ color: '#e2e8f0', fontSize: 13, fontWeight: 900 }}>{value}</span>
+    </span>
+  );
+}
+
+function combatTagStyle(background: string, color: string): React.CSSProperties {
+  return {
+    borderRadius: 999,
+    background,
+    color,
+    padding: '2px 7px',
+    fontSize: 9,
+    fontWeight: 900,
+    textTransform: 'uppercase',
+    letterSpacing: '0.08em',
+  };
+}
 
 function DragHintBar({ mode, hasMyriad, combatActive }: {
   mode: 'attack' | 'block' | null;
@@ -937,3 +1144,5 @@ export function CommanderTable() {
     </DragCombatProvider>
   );
 }
+
+

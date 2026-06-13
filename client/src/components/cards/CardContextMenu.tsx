@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import type { CardState, Zone } from '../../types/game';
 import {
@@ -26,6 +26,7 @@ export function CardContextMenu() {
   const store = useGameStore();
   const { ui, game, localPlayerId, multiplayer } = store;
   const menuRef = useRef<HTMLDivElement>(null);
+  const [manualToolsOpen, setManualToolsOpen] = useState(false);
 
   useEffect(() => {
     const handleClick = (e: MouseEvent) => {
@@ -49,6 +50,8 @@ export function CardContextMenu() {
   const canControlThisCard = canControlPlayer(localPlayerId, ownerId, multiplayerControlStatus, ui.judgeMode);
   const canViewThisCard = canAccessPrivateCard(game, card, localPlayerId, multiplayerControlStatus, ui.judgeMode);
   if (!canViewThisCard) return null;
+  const manualToolsExpandedByDensity = ui.judgeMode || ui.settings.density === 'detailed' || ui.settings.density === 'judge';
+  const showManualTools = manualToolsExpandedByDensity || manualToolsOpen;
   const onBattlefield = card.zone === 'battlefield';
   const inHand = card.zone === 'hand';
   const inGraveyard = card.zone === 'graveyard';
@@ -508,12 +511,16 @@ export function CardContextMenu() {
   if (canControlThisCard || ui.judgeMode) {
     actions.push({ divider: true, label: '', action: () => {} });
     actions.push({
-      label: 'Judge / Manual Tools',
+      label: showManualTools ? 'Manual / Judge Tools - Hide' : 'Manual / Judge Tools',
       tier: 3,
-      disabled: true,
-      tooltip: 'Controlled manual corrections for unsupported card logic.',
-      action: () => {},
+      tooltip: showManualTools
+        ? 'Hide controlled correction tools.'
+        : 'Show controlled correction tools for unsupported or missed card logic.',
+      action: () => { if (!manualToolsExpandedByDensity) setManualToolsOpen(open => !open); },
     });
+  }
+
+  if ((canControlThisCard || ui.judgeMode) && showManualTools) {
     actions.push({
       label: 'Manual: Add Counter...',
       tier: 3,
@@ -530,9 +537,74 @@ export function CardContextMenu() {
       action: () => { promptPowerToughnessOverride(); close(); },
     });
     actions.push({
+      label: 'Manual: Clear P/T Override',
+      tier: 3,
+      disabled: !card.powerToughnessOverride,
+      action: () => { store.clearPowerToughnessOverride([instanceId]); close(); },
+    });
+    actions.push({
       label: card.tapped ? 'Manual: Untap' : 'Manual: Tap',
       tier: 3,
+      disabled: !onBattlefield,
       action: () => { card.tapped ? store.untapCard(instanceId) : store.tapCard(instanceId); close(); },
+    });
+    actions.push({
+      label: 'Manual: Mark Exhaust Used',
+      tier: 3,
+      disabled: exhaustUsed,
+      tooltip: 'Manual correction for Exhaust or similar once-per-object tracking.',
+      action: () => { store.markExhaustUsed(instanceId); close(); },
+    });
+    actions.push({
+      label: 'Manual: Reset Exhaust',
+      tier: 3,
+      tooltip: 'Controlled manual corrections for unsupported card logic.',
+      action: () => { store.resetExhaust(instanceId); close(); },
+    });
+    actions.push({
+      label: 'Manual: Add Damage...',
+      tier: 3,
+      disabled: !onBattlefield,
+      action: () => {
+        const amount = Math.max(0, Number.parseInt(window.prompt('Add marked damage', '1') ?? '0', 10));
+        store.setMarkedDamage(instanceId, (card.markedForDamage ?? 0) + amount);
+        close();
+      },
+    });
+    actions.push({
+      label: 'Manual: Set Damage...',
+      tier: 3,
+      disabled: !onBattlefield,
+      action: () => {
+        const amount = Math.max(0, Number.parseInt(window.prompt('Marked damage', String(card.markedForDamage ?? 0)) ?? '0', 10));
+        store.setMarkedDamage(instanceId, amount);
+        close();
+      },
+    });
+    actions.push({
+      label: 'Manual: Clear Damage',
+      tier: 3,
+      disabled: !onBattlefield,
+      action: () => { store.clearMarkedDamage(instanceId); close(); },
+    });
+    actions.push({
+      label: 'Manual: Move to Zone...',
+      tier: 3,
+      action: () => {
+        const choices: { label: string; zone: Zone }[] = [
+          { label: 'Hand', zone: 'hand' },
+          { label: 'Battlefield', zone: 'battlefield' },
+          { label: 'Graveyard', zone: 'graveyard' },
+          { label: 'Exile', zone: 'exile' },
+          { label: 'Library', zone: 'library' },
+          { label: 'Command', zone: 'command' },
+        ];
+        const raw = window.prompt(`Move to zone:\n${choices.map((choice, index) => `${index + 1}: ${choice.label}`).join('\n')}`, '3');
+        const selected = Number.parseInt(raw ?? '', 10);
+        const zone = choices[selected - 1]?.zone;
+        if (zone) store.moveCardToZone(instanceId, zone);
+        close();
+      },
     });
     actions.push({
       label: 'Manual: Mark Attacking',
@@ -548,20 +620,6 @@ export function CardContextMenu() {
       label: 'Manual: Clear Combat Role',
       tier: 3,
       action: () => { store.setManualCombatRole(instanceId, 'none'); close(); },
-    });
-    actions.push({
-      label: 'Manual: Set Damage...',
-      tier: 3,
-      action: () => {
-        const amount = Math.max(0, Number.parseInt(window.prompt('Marked damage', String(card.markedForDamage ?? 0)) ?? '0', 10));
-        store.setMarkedDamage(instanceId, amount);
-        close();
-      },
-    });
-    actions.push({
-      label: 'Manual: Clear Damage',
-      tier: 3,
-      action: () => { store.clearMarkedDamage(instanceId); close(); },
     });
     actions.push({
       label: 'Manual: Add Note...',

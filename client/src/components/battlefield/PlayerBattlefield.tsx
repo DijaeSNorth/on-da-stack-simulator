@@ -1,10 +1,17 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import { CardImage } from '../cards/CardImage';
 import { useDragCombatContext } from '../../hooks/DragCombatContext';
 import { PlayerAvatar } from '../profile/PlayerAvatar';
 import { TokenStackAttackModal } from '../combat/TokenStackAttackModal';
 import type { CardState, Player } from '../../types/game';
+import {
+  buildBattlefieldView,
+  type BattlefieldDensityMode,
+  type BattlefieldFilterChip,
+  type BattlefieldSection,
+  type BattlefieldSectionKey,
+} from './battlefieldUiModel';
 
 interface TokenCloud {
   key: string;
@@ -16,7 +23,7 @@ interface TokenCloud {
   counters: { type: string; total: number }[];
 }
 
-function groupTokenClouds(cards: CardState[]): { singles: CardState[]; clouds: TokenCloud[] } {
+function groupTokenClouds(cards: CardState[], threshold = 3): { singles: CardState[]; clouds: TokenCloud[] } {
   const tokenGroups = new Map<string, CardState[]>();
   const singles: CardState[] = [];
 
@@ -32,7 +39,7 @@ function groupTokenClouds(cards: CardState[]): { singles: CardState[]; clouds: T
 
   const clouds: TokenCloud[] = [];
   for (const [key, group] of tokenGroups) {
-    if (group.length >= 3) {
+    if (group.length >= threshold) {
       const def = group[0].definition;
       const tappedCount = group.filter(c => c.tapped).length;
       const counterMap = new Map<string, number>();
@@ -120,17 +127,29 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
   const [cloudAttackTargets, setCloudAttackTargets] = useState<Record<string, string>>({});
   const [cloudSplitDrafts, setCloudSplitDrafts] = useState<Record<string, number>>({});
   const [tokenStackModal, setTokenStackModal] = useState<{ sourceGroupId: string; cards: CardState[] } | null>(null);
+  const [battlefieldSearch, setBattlefieldSearch] = useState('');
+  const [activeFilters, setActiveFilters] = useState<Set<BattlefieldFilterChip>>(() => new Set());
+  const [densityMode, setDensityMode] = useState<BattlefieldDensityMode | 'auto'>('auto');
+  const [collapsedSections, setCollapsedSections] = useState<Set<BattlefieldSectionKey>>(() => new Set([
+    ...(ui.settings.collapseLandsByDefault ? ['lands' as BattlefieldSectionKey] : []),
+    ...(ui.settings.collapseTokensByDefault ? ['tokens' as BattlefieldSectionKey] : []),
+  ]));
   const lastTouchTapRef = useRef<{ id: string; time: number; x: number; y: number } | null>(null);
 
   const cards = player.battlefield.map(id => game.cards[id]).filter(Boolean) as CardState[];
+  const battlefieldView = useMemo(() => buildBattlefieldView(cards, {
+    search: battlefieldSearch,
+    filters: activeFilters,
+    forcedDensity: densityMode,
+    compact,
+    combatActive: game.combat.active,
+  }), [activeFilters, battlefieldSearch, cards, compact, densityMode, game.combat.active]);
 
-  const lands    = cards.filter(c => c.definition.cardTypes.includes('Land'));
-  const nonLands = cards.filter(c => !c.definition.cardTypes.includes('Land') && !c.token);
-  const tokens   = cards.filter(c => c.token);
+  const visibleCards = battlefieldView.filteredCards;
+  const tokens = visibleCards.filter(c => c.token);
+  const { singles: tokenSingles, clouds: tokenClouds } = groupTokenClouds(tokens, ui.settings.tokenStackThreshold);
 
-  const { singles: tokenSingles, clouds: tokenClouds } = groupTokenClouds(tokens);
-
-  const scaledCard = getBattlefieldCardDensity(cards.length, !!compact);
+  const scaledCard = getBattlefieldCardDensity(cards.length, !!compact || battlefieldView.density !== 'normal');
   const cardSize = scaledCard.size;
   const gap = scaledCard.gap;
   const zoneGap = scaledCard.zoneGap;
@@ -161,6 +180,64 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
     if (!isLocal || card.zone !== 'battlefield') return;
     if (card.tapped) store.untapCard(card.instanceId);
     else store.tapCard(card.instanceId);
+  }
+
+  function getCountersLabel(card: CardState): string {
+    const activeCounters = (card.counters ?? []).filter(counter => counter.count > 0);
+    if (activeCounters.length === 0) return '';
+    return activeCounters.map(counter => `${counter.type}:${counter.count}`).join(' ');
+  }
+
+  function getStatLabel(card: CardState): string {
+    if (card.definition.power !== undefined || card.definition.toughness !== undefined) {
+      const override = card.powerToughnessOverride;
+      return `${override?.power ?? card.definition.power ?? '?'}/${override?.toughness ?? card.definition.toughness ?? '?'}`;
+    }
+    if (card.definition.loyalty !== undefined) return `[${card.definition.loyalty}]`;
+    return '';
+  }
+
+  function UltraCompactPermanent({ card }: { card: CardState }) {
+    const stat = getStatLabel(card);
+    const counters = getCountersLabel(card);
+    return (
+      <div style={{
+        width: 116,
+        minHeight: 34,
+        borderRadius: 5,
+        border: `1px solid ${card.tapped ? '#f59e0b66' : '#334155'}`,
+        background: card.tapped ? 'rgba(120,53,15,0.32)' : 'rgba(15,23,42,0.88)',
+        color: '#e2e8f0',
+        padding: '4px 6px',
+        boxSizing: 'border-box',
+        display: 'grid',
+        gridTemplateColumns: 'minmax(0, 1fr) auto',
+        gap: 4,
+        alignItems: 'center',
+      }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 9, fontWeight: 800, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {card.definition.name}
+          </div>
+          <div style={{ fontSize: 8, color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {card.tapped ? 'Tapped' : 'Ready'}{card.token ? ' / Token' : ''}{counters ? ` / ${counters}` : ''}
+          </div>
+        </div>
+        {stat && (
+          <div style={{
+            fontSize: 9,
+            fontWeight: 900,
+            color: card.powerToughnessOverride ? '#fed7aa' : '#cbd5e1',
+            border: '1px solid rgba(148,163,184,0.22)',
+            borderRadius: 4,
+            padding: '1px 4px',
+            background: card.powerToughnessOverride ? 'rgba(146,64,14,0.36)' : 'rgba(255,255,255,0.05)',
+          }}>
+            {stat}
+          </div>
+        )}
+      </div>
+    );
   }
 
   function handleCardPointerUp(e: React.PointerEvent<HTMLDivElement>, card: CardState) {
@@ -256,7 +333,9 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
         {...dragHandlers}
         {...blockDropHandlers}
       >
-        <CardImage card={card} size={cardSize} style={cardImageStyle} />
+        {battlefieldView.density === 'ultraCompact'
+          ? <UltraCompactPermanent card={card} />
+          : <CardImage card={card} size={cardSize} style={cardImageStyle} />}
 
         {/* Combat role badge */}
         {card.combatRole === 'attacker' && (
@@ -326,6 +405,40 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
   }
 
   const opponentPlayers = game.players.filter(opponent => opponent.id !== player.id);
+
+  function toggleFilter(filter: BattlefieldFilterChip) {
+    setActiveFilters(prev => {
+      const next = new Set(prev);
+      if (next.has(filter)) next.delete(filter);
+      else next.add(filter);
+      return next;
+    });
+  }
+
+  function toggleSection(section: BattlefieldSectionKey) {
+    setCollapsedSections(prev => {
+      const next = new Set(prev);
+      if (next.has(section)) next.delete(section);
+      else next.add(section);
+      return next;
+    });
+  }
+
+  function collapseLands() {
+    setCollapsedSections(prev => new Set([...prev, 'lands']));
+  }
+
+  function collapseTokens() {
+    setCollapsedSections(prev => new Set([...prev, 'tokens']));
+  }
+
+  function collapseNoncombatPermanents() {
+    setCollapsedSections(prev => new Set([...prev, 'lands', 'artifacts', 'enchantments', 'planeswalkers', 'battles', 'other']));
+  }
+
+  function expandAllSections() {
+    setCollapsedSections(new Set());
+  }
 
   function resolveAttackTarget(cloudKey: string): string | undefined {
     const preferred = cloudAttackTargets[cloudKey];
@@ -718,10 +831,64 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
     );
   }
 
+  function renderBattlefieldSection(section: BattlefieldSection) {
+    const collapsed = collapsedSections.has(section.key);
+    const isTokenSection = section.key === 'tokens';
+    return (
+      <div key={section.key} data-testid={`battlefield-section-${section.key}`} style={{ flexShrink: 0 }}>
+        {!compact && (
+          <button
+            type="button"
+            onClick={() => toggleSection(section.key)}
+            style={{
+              ...labelStyle,
+              width: '100%',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              background: 'rgba(15,23,42,0.62)',
+              border: '1px solid rgba(71,85,105,0.35)',
+              borderRadius: 5,
+              padding: '3px 6px',
+              cursor: 'pointer',
+            }}
+          >
+            <span>{collapsed ? '+' : '-'} {section.label} ({section.cards.length})</span>
+            <span>{battlefieldView.density === 'ultraCompact' ? 'ultra' : battlefieldView.density}</span>
+          </button>
+        )}
+        {!collapsed && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap, alignItems: isTokenSection ? 'flex-end' : 'flex-start' }}>
+            {isTokenSection ? (
+              <>
+                {tokenClouds.map(renderTokenCloud)}
+                {tokenClouds.filter(c => expandedClouds.has(c.key)).flatMap(c => c.cards.map(renderCard))}
+                {tokenSingles.map(renderCard)}
+              </>
+            ) : (
+              section.cards.map(renderCard)
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   const labelStyle: React.CSSProperties = {
     fontSize: 9, color: '#475569', textTransform: 'uppercase',
     letterSpacing: '0.08em', marginBottom: 3, fontWeight: 600,
   };
+  const filterChips: Array<{ key: BattlefieldFilterChip; label: string }> = [
+    { key: 'tapped', label: 'Tapped' },
+    { key: 'untapped', label: 'Untapped' },
+    { key: 'creatures', label: 'Creatures' },
+    { key: 'tokens', label: 'Tokens' },
+    { key: 'canAttack', label: 'Can Attack' },
+    { key: 'canBlock', label: 'Can Block' },
+    { key: 'hasCounters', label: 'Counters' },
+    { key: 'hasPowerToughnessOverride', label: 'P/T Override' },
+    { key: 'hasMechanicBadge', label: 'Mechanic' },
+  ];
 
   return (
     <div
@@ -803,6 +970,99 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
         )}
       </div>
 
+      {!compact && (
+        <div style={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 5,
+          padding: '4px 6px',
+          border: '1px solid rgba(71,85,105,0.28)',
+          borderRadius: 7,
+          background: 'rgba(2,6,23,0.34)',
+          flexShrink: 0,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 9, color: '#94a3b8', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+              Board
+            </span>
+            <SummaryPill label="Creatures" value={battlefieldView.summary.totalCreatures} />
+            <SummaryPill label="Blockers" value={battlefieldView.summary.untappedBlockers} />
+            <SummaryPill label="Atk Power" value={battlefieldView.summary.attackingPower} />
+            <SummaryPill label="Tokens" value={battlefieldView.summary.tokenCount} />
+            <SummaryPill label="Walkers" value={battlefieldView.summary.planeswalkerCount} />
+            <span style={{ marginLeft: 'auto', fontSize: 9, color: '#64748b' }}>
+              {visibleCards.length}/{cards.length} shown
+            </span>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(150px, 1fr) 112px auto', gap: 6, alignItems: 'center' }}>
+            <input
+              value={battlefieldSearch}
+              onChange={e => setBattlefieldSearch(e.target.value)}
+              placeholder="Search battlefield..."
+              style={{
+                minWidth: 0,
+                background: '#0b1220',
+                border: '1px solid #334155',
+                borderRadius: 5,
+                color: '#e2e8f0',
+                fontSize: 10,
+                padding: '4px 7px',
+                outline: 'none',
+              }}
+            />
+            <select
+              value={densityMode}
+              onChange={e => setDensityMode(e.target.value as BattlefieldDensityMode | 'auto')}
+              title="Battlefield density"
+              style={{
+                background: '#0b1220',
+                border: '1px solid #334155',
+                borderRadius: 5,
+                color: '#cbd5e1',
+                fontSize: 10,
+                padding: '4px 6px',
+              }}
+            >
+              <option value="auto">Auto density</option>
+              <option value="normal">Normal</option>
+              <option value="compact">Compact</option>
+              <option value="ultraCompact">Ultra compact</option>
+            </select>
+            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <button type="button" data-testid={`collapse-lands-${player.id}`} onClick={collapseLands} style={miniControlStyle}>Collapse Lands</button>
+              <button type="button" data-testid={`collapse-tokens-${player.id}`} onClick={collapseTokens} style={miniControlStyle}>Collapse Tokens</button>
+              <button type="button" onClick={collapseNoncombatPermanents} style={miniControlStyle}>Noncombat</button>
+              <button type="button" onClick={expandAllSections} style={miniControlStyle}>Expand All</button>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+            {filterChips.map(chip => {
+              const active = activeFilters.has(chip.key);
+              return (
+                <button
+                  key={chip.key}
+                  type="button"
+                  data-testid={`battlefield-filter-${chip.key}-${player.id}`}
+                  onClick={() => toggleFilter(chip.key)}
+                  style={{
+                    fontSize: 9,
+                    fontWeight: 800,
+                    borderRadius: 999,
+                    border: `1px solid ${active ? '#60a5fa' : '#334155'}`,
+                    background: active ? 'rgba(37,99,235,0.28)' : 'rgba(15,23,42,0.72)',
+                    color: active ? '#bfdbfe' : '#94a3b8',
+                    padding: '2px 7px',
+                    cursor: 'pointer',
+                  }}
+                >
+                  {chip.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <div
         data-testid={`battlefield-scroll-${player.id}`}
         style={{
@@ -819,36 +1079,10 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
           gap: zoneGap,
         }}
       >
-      {/* Lands */}
-      {lands.length > 0 && (
-        <div style={{ flexShrink: 0 }}>
-          {!compact && <div style={labelStyle}>Lands ({lands.length})</div>}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap, alignItems: 'flex-start' }}>{lands.map(renderCard)}</div>
-        </div>
-      )}
-
-      {/* Non-land permanents */}
-      {nonLands.length > 0 && (
-        <div style={{ flexShrink: 0 }}>
-          {!compact && <div style={labelStyle}>Permanents ({nonLands.length})</div>}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap, alignItems: 'flex-start' }}>{nonLands.map(renderCard)}</div>
-        </div>
-      )}
-
-      {/* Tokens */}
-      {(tokenSingles.length > 0 || tokenClouds.length > 0) && (
-        <div style={{ flexShrink: 0 }}>
-          {!compact && <div style={labelStyle}>Tokens ({tokens.length})</div>}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap, alignItems: 'flex-end' }}>
-            {tokenClouds.map(renderTokenCloud)}
-            {tokenClouds.filter(c => expandedClouds.has(c.key)).flatMap(c => c.cards.map(renderCard))}
-            {tokenSingles.map(renderCard)}
-          </div>
-        </div>
-      )}
+      {battlefieldView.sections.map(section => renderBattlefieldSection(section))}
 
       {/* Empty state */}
-      {cards.length === 0 && !compact && (
+      {visibleCards.length === 0 && !compact && (
         <div style={{
           display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
           flex: 1, gap: 4,
@@ -856,7 +1090,9 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
           {isDraggingAttack && !isLocal ? (
             <span style={{ color: '#ef444466', fontSize: 12, fontStyle: 'italic' }}>Drop here to attack {player.name}</span>
           ) : (
-            <span style={{ color: '#1e293b', fontSize: 11, fontStyle: 'italic' }}>No permanents</span>
+            <span style={{ color: '#1e293b', fontSize: 11, fontStyle: 'italic' }}>
+              {cards.length === 0 ? 'No permanents' : 'No permanents match filters'}
+            </span>
           )}
           {/* Show library / graveyard counts as context */}
           {isLocal && (
@@ -878,4 +1114,36 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
     </div>
   );
 }
+
+function SummaryPill({ label, value }: { label: string; value: number }) {
+  return (
+    <span style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: 3,
+      fontSize: 9,
+      color: '#94a3b8',
+      border: '1px solid rgba(71,85,105,0.35)',
+      background: 'rgba(15,23,42,0.55)',
+      borderRadius: 999,
+      padding: '1px 6px',
+      whiteSpace: 'nowrap',
+    }}>
+      <span>{label}</span>
+      <strong style={{ color: '#e2e8f0' }}>{value}</strong>
+    </span>
+  );
+}
+
+const miniControlStyle: React.CSSProperties = {
+  fontSize: 9,
+  fontWeight: 800,
+  borderRadius: 5,
+  border: '1px solid #334155',
+  background: 'rgba(15,23,42,0.78)',
+  color: '#94a3b8',
+  padding: '3px 6px',
+  cursor: 'pointer',
+  whiteSpace: 'nowrap',
+};
 

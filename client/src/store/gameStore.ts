@@ -72,6 +72,18 @@ import {
 
 // ─── UI State ─────────────────────────────────────────────────────────────────
 
+export interface UISettings {
+  density: 'simple' | 'normal' | 'detailed' | 'judge';
+  showMechanicBadges: boolean;
+  showCombatMath: boolean;
+  collapseLandsByDefault: boolean;
+  collapseTokensByDefault: boolean;
+  compactHandThreshold: number;
+  tokenStackThreshold: number;
+  showWarningBadges: boolean;
+  showBuildStamp: boolean;
+}
+
 export interface UIState {
   screen: 'lobby' | 'game';
   selectedCardId: string | null;
@@ -84,7 +96,7 @@ export interface UIState {
   deckBuilderOpen: boolean;
   lobbyOpen: boolean;
   zoneDrawer: {
-    zone: 'graveyard' | 'exile' | 'library' | 'hand';
+    zone: 'graveyard' | 'exile' | 'library' | 'hand' | 'command';
     playerId: string;
     mode?: 'normal' | 'scry' | 'surveil' | 'lookTop' | 'search';
     limit?: number;
@@ -99,8 +111,11 @@ export interface UIState {
   cardSearchOpen: boolean;
   replayOpen: boolean;
   profileOpen: boolean;
+  uiSettingsOpen: boolean;
   judgeMode: boolean;
   battlefieldView: 'normal' | 'overview';
+  tableViewMode: 'table' | 'focused' | 'combat' | 'compact';
+  settings: UISettings;
   assistantMessages: AssistantMessage[];
   actionFilter: string;
   panelSizes: {
@@ -164,10 +179,22 @@ const DEFAULT_MULTIPLAYER: MultiplayerState = {
 };
 
 const PANEL_SIZES_KEY = 'mtg_sim_panel_sizes';
+const UI_SETTINGS_KEY = 'mtg_sim_ui_settings_v1';
 const DEFAULT_PANEL_SIZES: UIState['panelSizes'] = {
   left: 220,
   right: 280,
   deckBuilder: 430,
+};
+export const DEFAULT_UI_SETTINGS: UISettings = {
+  density: 'normal',
+  showMechanicBadges: true,
+  showCombatMath: true,
+  collapseLandsByDefault: false,
+  collapseTokensByDefault: false,
+  compactHandThreshold: 8,
+  tokenStackThreshold: 3,
+  showWarningBadges: true,
+  showBuildStamp: true,
 };
 const MAX_TOKEN_BATCH = 250;
 const START_GAME_ACK_TIMEOUT_MS = 5000;
@@ -225,6 +252,49 @@ function savePanelSizes(sizes: UIState['panelSizes']): void {
     localStorage.setItem(PANEL_SIZES_KEY, JSON.stringify(sizes));
   } catch {
     // Storage may be unavailable; resizing should still work for this session.
+  }
+}
+
+export function normalizeUISettings(value: Partial<UISettings> | undefined | null): UISettings {
+  const compactHandThreshold = Number.isFinite(value?.compactHandThreshold)
+    ? Math.max(4, Math.min(30, Math.round(value!.compactHandThreshold!)))
+    : DEFAULT_UI_SETTINGS.compactHandThreshold;
+  const tokenStackThreshold = Number.isFinite(value?.tokenStackThreshold)
+    ? Math.max(2, Math.min(20, Math.round(value!.tokenStackThreshold!)))
+    : DEFAULT_UI_SETTINGS.tokenStackThreshold;
+  const density = value?.density && ['simple', 'normal', 'detailed', 'judge'].includes(value.density)
+    ? value.density
+    : DEFAULT_UI_SETTINGS.density;
+  return {
+    ...DEFAULT_UI_SETTINGS,
+    ...value,
+    density,
+    compactHandThreshold,
+    tokenStackThreshold,
+    showMechanicBadges: value?.showMechanicBadges ?? DEFAULT_UI_SETTINGS.showMechanicBadges,
+    showCombatMath: value?.showCombatMath ?? DEFAULT_UI_SETTINGS.showCombatMath,
+    collapseLandsByDefault: value?.collapseLandsByDefault ?? DEFAULT_UI_SETTINGS.collapseLandsByDefault,
+    collapseTokensByDefault: value?.collapseTokensByDefault ?? DEFAULT_UI_SETTINGS.collapseTokensByDefault,
+    showWarningBadges: value?.showWarningBadges ?? DEFAULT_UI_SETTINGS.showWarningBadges,
+    showBuildStamp: value?.showBuildStamp ?? DEFAULT_UI_SETTINGS.showBuildStamp,
+  };
+}
+
+export function loadUISettings(): UISettings {
+  if (typeof localStorage === 'undefined') return DEFAULT_UI_SETTINGS;
+  try {
+    return normalizeUISettings(JSON.parse(localStorage.getItem(UI_SETTINGS_KEY) || '{}') as Partial<UISettings>);
+  } catch {
+    return DEFAULT_UI_SETTINGS;
+  }
+}
+
+function saveUISettings(settings: UISettings): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(UI_SETTINGS_KEY, JSON.stringify(settings));
+  } catch {
+    // Settings persistence should never block gameplay.
   }
 }
 
@@ -341,8 +411,11 @@ const DEFAULT_UI: UIState = {
   cardSearchOpen: false,
   replayOpen: false,
   profileOpen: false,
+  uiSettingsOpen: false,
   judgeMode: false,
   battlefieldView: 'normal',
+  tableViewMode: 'table',
+  settings: loadUISettings(),
   assistantMessages: [],
   actionFilter: '',
   panelSizes: loadPanelSizes(),
@@ -649,7 +722,7 @@ export interface GameStore {
   toggleLeftPanel: () => void;
   toggleRightPanel: () => void;
   openZoneDrawer: (
-    zone: 'graveyard' | 'exile' | 'library' | 'hand',
+    zone: 'graveyard' | 'exile' | 'library' | 'hand' | 'command',
     playerId: string,
     options?: Omit<NonNullable<UIState['zoneDrawer']>, 'zone' | 'playerId'>
   ) => void;
@@ -661,8 +734,11 @@ export interface GameStore {
   setCardSearchOpen: (open: boolean) => void;
   setReplayOpen: (open: boolean) => void;
   setProfileOpen: (open: boolean) => void;
+  setUiSettingsOpen: (open: boolean) => void;
+  updateUISettings: (settings: Partial<UISettings>) => void;
   saveReplay: (name?: string) => void;
   setJudgeMode: (on: boolean) => void;
+  setTableViewMode: (mode: UIState['tableViewMode']) => void;
   toggleBattlefieldView: () => void;
   toggleCombatMode: () => void;
   enterGameScreen: () => void;
@@ -3963,12 +4039,19 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   setCardSearchOpen: (open) => set(s => ({ ui: { ...s.ui, cardSearchOpen: open } })),
   setReplayOpen: (open) => set(s => ({ ui: { ...s.ui, replayOpen: open } })),
   setProfileOpen: (open) => set(s => ({ ui: { ...s.ui, profileOpen: open } })),
+  setUiSettingsOpen: (open) => set(s => ({ ui: { ...s.ui, uiSettingsOpen: open } })),
+  updateUISettings: (settings) => set(s => {
+    const nextSettings = normalizeUISettings({ ...s.ui.settings, ...settings });
+    saveUISettings(nextSettings);
+    return { ui: { ...s.ui, settings: nextSettings } };
+  }),
   saveReplay: (name) => {
     const { game } = get();
     const replay = createReplay(game, name);
     saveReplayToStorage(replay);
   },
   setJudgeMode: (on) => set(s => ({ ui: { ...s.ui, judgeMode: on } })),
+  setTableViewMode: (mode) => set(s => ({ ui: { ...s.ui, tableViewMode: mode } })),
   toggleBattlefieldView: () => set(s => ({ ui: { ...s.ui, battlefieldView: s.ui.battlefieldView === 'normal' ? 'overview' : 'normal' } })),
   toggleCombatMode: () => set(s => ({ ui: { ...s.ui, combatMode: !s.ui.combatMode } })),
   enterGameScreen: () => set(s => ({ ui: { ...s.ui, screen: 'game', lobbyOpen: false } })),

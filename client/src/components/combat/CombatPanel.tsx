@@ -16,6 +16,16 @@ import { useState, useCallback, useMemo } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import type { AttackDefenderTarget, CardState, Player, GameState } from '../../types/game';
 import { getFirebendingAmount, getMechanicHint, getMechanicsForCard } from '../../rules/mechanicsRegistry';
+import {
+  buildCombatAssignmentSummaries,
+  classifyCombatWarning,
+  formatAttackTargetLabel,
+  getAttackerBlockBadge,
+  getBlockerLegalityIssue,
+  getPendingBlockedAttackerIds,
+  groupLegalAttackTargetsByOpponent,
+  type AttackTargetGroup,
+} from './combatUiModel';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -65,6 +75,7 @@ const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(ma
 export function CombatPanel({ attackerIds, preAssignments = {}, onClose }: CombatPanelProps) {
   const store = useGameStore();
   const { game, localPlayerId } = store;
+  const uiSettings = store.ui.settings;
 
   // Build initial attacker list
   const initialAttackers: PendingAttacker[] = attackerIds
@@ -228,6 +239,8 @@ export function CombatPanel({ attackerIds, preAssignments = {}, onClose }: Comba
     return permanent?.definition.name ?? 'Battle';
   };
   const tokenStackAssignments = (game.combat.attackAssignments ?? []).filter(assignment => assignment.isTokenStack);
+  const assignmentSummaries = buildCombatAssignmentSummaries(game);
+  const attackTargetGroups = groupLegalAttackTargetsByOpponent(game, attackingPlayerId);
   const damagePreview = game.combat.damagePreview;
   const activePlayer = game.players.find(player => player.id === attackingPlayerId);
   const sneakCandidateCount = store.getSneakReturnCandidates(attackingPlayerId).length;
@@ -298,13 +311,17 @@ export function CombatPanel({ attackerIds, preAssignments = {}, onClose }: Comba
         {/* Step indicator */}
         <StepIndicator current={step} hasMyriad={hasMyriad} />
 
-        {tokenStackAssignments.length > 0 && (
+        {assignmentSummaries.length > 0 && (
           <div className="border-b border-gray-700 bg-gray-900 px-6 py-3">
-            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Token stack attackers</p>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Combat assignment summary</p>
             <div className="flex flex-wrap gap-2">
-              {tokenStackAssignments.map(assignment => (
-                <span key={assignment.assignmentId} className="rounded-lg border border-red-800 bg-red-950/40 px-2.5 py-1 text-xs text-red-100">
-                  {assignment.count} {assignment.sourceName}{assignment.count !== 1 ? 's' : ''} attacking {targetLabel(assignment.attackTarget)}
+              {assignmentSummaries.map(summary => (
+                <span
+                  key={summary.key}
+                  data-testid={`combat-assignment-summary-${summary.key}`}
+                  className={`rounded-lg border px-2.5 py-1 text-xs ${summary.isTokenStack ? 'border-red-800 bg-red-950/40 text-red-100' : 'border-slate-700 bg-slate-900 text-slate-200'}`}
+                >
+                  {summary.text}
                 </span>
               ))}
             </div>
@@ -398,7 +415,8 @@ export function CombatPanel({ attackerIds, preAssignments = {}, onClose }: Comba
                 <AttackerRow
                   key={a.instanceId}
                   attacker={a}
-                  defendingPlayers={defendingPlayers}
+                  targetGroups={attackTargetGroups}
+                  game={game}
                   getPlayerColor={getPlayerColor}
                   onAssign={(playerId) => assignTarget(a.instanceId, playerId)}
                 />
@@ -484,7 +502,7 @@ export function CombatPanel({ attackerIds, preAssignments = {}, onClose }: Comba
                   onClick={confirmBlockers}
                   className="px-4 py-2.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm transition-colors"
                 >
-                  No Blocks / Resolve
+                  Generate Damage Preview
                 </button>
               </div>
             </div>
@@ -517,7 +535,7 @@ export function CombatPanel({ attackerIds, preAssignments = {}, onClose }: Comba
                   onClick={confirmBlockers}
                   className="flex-1 py-2.5 rounded-lg bg-green-700 hover:bg-green-600 text-white font-semibold transition-colors"
                 >
-                  Confirm Blockers & Resolve Combat
+                  Confirm Blockers / Preview Damage
                 </button>
                 <button
                   onClick={() => setStep('response_window')}
@@ -563,15 +581,27 @@ export function CombatPanel({ attackerIds, preAssignments = {}, onClose }: Comba
                           </span>
                           <span className="text-gray-500">→ {targetLabel(assignment.attackTarget)}</span>
                         </div>
-                        <div className="mt-1 text-xs text-gray-400">
+                        {uiSettings.showCombatMath && <div className="mt-1 text-xs text-gray-400">
                           Power: {assignment.powerPerAttacker} each / {assignment.totalPower} total
                           {assignment.blockerIds.length > 0 && ` · blockers: ${assignment.blockerIds.map(id => game.cards[id]?.definition.name ?? id).join(', ')}`}
-                        </div>
-                        {assignment.notes.length > 0 && (
+                        </div>}
+                        {(assignment.notes.length > 0 || (uiSettings.showCombatMath && ((assignment.combatMathNotes?.length ?? 0) > 0 || assignment.trampleOverflow !== undefined || assignment.deathtouchLethal)) || assignment.manualAssignmentRequired) && (
                           <div className="mt-2 space-y-1">
                             {assignment.notes.map(note => (
                               <p key={note} className="text-xs text-amber-300">{note}</p>
                             ))}
+                            {uiSettings.showCombatMath && assignment.combatMathNotes?.map(note => (
+                              <p key={note} className="text-xs text-blue-200">{note}</p>
+                            ))}
+                            {uiSettings.showCombatMath && assignment.trampleOverflow !== undefined && (
+                              <p className="text-xs text-green-300">Trample overflow: {assignment.trampleOverflow}</p>
+                            )}
+                            {uiSettings.showCombatMath && assignment.deathtouchLethal && (
+                              <p className="text-xs text-lime-300">Deathtouch lethal damage considered.</p>
+                            )}
+                            {assignment.manualAssignmentRequired && (
+                              <p className="text-xs font-semibold text-amber-200">Manual assignment review required.</p>
+                            )}
                           </div>
                         )}
                       </div>
@@ -611,7 +641,12 @@ export function CombatPanel({ attackerIds, preAssignments = {}, onClose }: Comba
                   <p className="text-amber-200 text-xs font-semibold uppercase tracking-wider mb-2">Manual review warnings</p>
                   <div className="space-y-1">
                     {damagePreview.warnings.map(warning => (
-                      <p key={warning} className="text-xs text-amber-100">{warning}</p>
+                      <p key={warning} className="text-xs text-amber-100">
+                        <span className="mr-2 rounded bg-amber-900/60 px-1.5 py-0.5 text-[10px] font-black uppercase tracking-wide text-amber-200">
+                          {classifyCombatWarning(warning)}
+                        </span>
+                        {warning}
+                      </p>
                     ))}
                   </div>
                 </div>
@@ -908,6 +943,7 @@ function BlockerBoard({
   const relevantAttackers = isLocalPlayerAttacking
     ? allAttackers
     : allAttackers.filter(a => a.targetPlayerId === localPlayerId);
+  const pendingBlockedAttackerIds = getPendingBlockedAttackerIds(pendingBlockers);
 
   // Pagination for large stacks
   const totalPages = Math.ceil(relevantAttackers.length / BLOCKERS_PER_PAGE);
@@ -958,6 +994,7 @@ function BlockerBoard({
           attacker={a}
           myCreatures={myCreatures}
           pendingBlockers={pendingBlockers}
+          pendingBlockedAttackerIds={pendingBlockedAttackerIds}
           onDeclareBlocker={onDeclareBlocker}
           onRemoveBlocker={onRemoveBlocker}
           getPlayerName={getPlayerName}
@@ -971,10 +1008,11 @@ function BlockerBoard({
 // ── AttackerRow (assign targets step) ────────────────────────────────────────
 
 function AttackerRow({
-  attacker, defendingPlayers, getPlayerColor, onAssign,
+  attacker, targetGroups, game, getPlayerColor, onAssign,
 }: {
   attacker: PendingAttacker;
-  defendingPlayers: Player[];
+  targetGroups: AttackTargetGroup[];
+  game: GameState;
   getPlayerColor: (id: string) => string;
   onAssign: (playerId: string) => void;
 }) {
@@ -1005,23 +1043,38 @@ function AttackerRow({
           </p>
         )}
       </div>
-      <div className="flex gap-2 flex-wrap justify-end">
-        {defendingPlayers.map(p => (
-          <button
-            key={p.id}
-            onClick={() => onAssign(p.id)}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
-              attacker.targetPlayerId === p.id
-                ? 'text-white border-current'
-                : 'text-gray-400 border-gray-600 hover:border-gray-400'
-            }`}
-            style={attacker.targetPlayerId === p.id
-              ? { borderColor: getPlayerColor(p.id), backgroundColor: getPlayerColor(p.id) + '33', color: getPlayerColor(p.id) }
-              : {}
-            }
-          >
-            {p.name}
-          </button>
+      <div className="flex max-w-[360px] flex-col gap-2">
+        {targetGroups.map(group => (
+          <div key={group.player.id} className="rounded-lg border border-gray-700 bg-gray-900/60 p-2">
+            <button
+              onClick={() => onAssign(group.player.id)}
+              className={`w-full rounded-md border px-3 py-1.5 text-left text-xs font-semibold transition-all ${
+                attacker.targetPlayerId === group.player.id
+                  ? 'text-white border-current'
+                  : 'text-gray-400 border-gray-600 hover:border-gray-400'
+              }`}
+              style={attacker.targetPlayerId === group.player.id
+                ? { borderColor: getPlayerColor(group.player.id), backgroundColor: getPlayerColor(group.player.id) + '33', color: getPlayerColor(group.player.id) }
+                : {}
+              }
+            >
+              {group.player.name} <span className="text-gray-500">life {group.player.life}</span>
+            </button>
+            {(group.planeswalkers.length > 0 || group.battles.length > 0) && (
+              <div className="mt-1 flex flex-wrap gap-1">
+                {group.planeswalkers.map(target => (
+                  <span key={`pw-${target.permanentId}`} className="rounded border border-indigo-800 bg-indigo-950/40 px-1.5 py-0.5 text-[10px] text-indigo-200" title="Use token stack assignment or battlefield target model where available">
+                    PW: {formatAttackTargetLabel(game, target).split(' - ')[0]}
+                  </span>
+                ))}
+                {group.battles.map(target => (
+                  <span key={`battle-${target.permanentId}`} className="rounded border border-orange-800 bg-orange-950/40 px-1.5 py-0.5 text-[10px] text-orange-200" title="Use token stack assignment or battlefield target model where available">
+                    Battle: {formatAttackTargetLabel(game, target).split(' - ')[0]}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
         ))}
       </div>
     </div>
@@ -1031,11 +1084,12 @@ function AttackerRow({
 // ── BlockerAssignRow ──────────────────────────────────────────────────────────
 
 function BlockerAssignRow({
-  attacker, myCreatures, pendingBlockers, onDeclareBlocker, onRemoveBlocker, getPlayerName, game,
+  attacker, myCreatures, pendingBlockers, pendingBlockedAttackerIds, onDeclareBlocker, onRemoveBlocker, getPlayerName, game,
 }: {
   attacker: PendingAttacker;
   myCreatures: CardState[];
   pendingBlockers: PendingBlocker[];
+  pendingBlockedAttackerIds: Set<string>;
   onDeclareBlocker: (blockerInstanceId: string, attackerInstanceId: string) => void;
   onRemoveBlocker: (blockerInstanceId: string) => void;
   getPlayerName: (id: string) => string;
@@ -1049,6 +1103,7 @@ function BlockerAssignRow({
   const power = attacker.card.definition.power ?? '?';
   const toughness = attacker.card.definition.toughness ?? '?';
   const isCopy = attacker.isMyriadCopy;
+  const blockBadge = getAttackerBlockBadge(attacker.instanceId, pendingBlockedAttackerIds);
 
   return (
     <div className={`p-4 rounded-xl space-y-3 ${isCopy ? 'bg-yellow-900/20 border border-yellow-700/30' : 'bg-gray-800'}`}>
@@ -1065,6 +1120,9 @@ function BlockerAssignRow({
           <p className="text-white font-bold text-sm">
             {attacker.card.definition.name.replace(' (Myriad copy)', '')}{' '}
             <span className="text-gray-400 font-normal">({power}/{toughness})</span>
+            <span className={`ml-2 rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wide ${blockBadge === 'blocked' ? 'bg-blue-900/60 text-blue-200 border border-blue-700' : 'bg-red-950/60 text-red-200 border border-red-800'}`}>
+              {blockBadge}
+            </span>
             {attacker.targetPlayerId && (
               <span className="text-gray-500 text-xs font-normal ml-1">→ {getPlayerName(attacker.targetPlayerId)}</span>
             )}
@@ -1090,19 +1148,24 @@ function BlockerAssignRow({
             {myCreatures.map(c => {
               const alreadyBlockingThis = pendingBlockers.some(b => b.blockerInstanceId === c.instanceId && b.attackerInstanceId === attacker.instanceId);
               const blockedElsewhere = pendingBlockers.some(b => b.blockerInstanceId === c.instanceId && b.attackerInstanceId !== attacker.instanceId);
+              const issue = getBlockerLegalityIssue(c, attacker.card);
               return (
-                <button
-                  key={c.instanceId}
-                  onClick={() => alreadyBlockingThis ? onRemoveBlocker(c.instanceId) : onDeclareBlocker(c.instanceId, attacker.instanceId)}
-                  disabled={blockedElsewhere}
-                  className={`px-3 py-1.5 rounded-lg text-xs border transition-all ${
-                    alreadyBlockingThis   ? 'bg-blue-700 border-blue-500 text-white' :
-                    blockedElsewhere      ? 'opacity-30 cursor-not-allowed border-gray-700 text-gray-500' :
-                    'border-gray-600 text-gray-300 hover:border-blue-500 hover:text-blue-300'
-                  }`}
-                >
-                  {c.definition.name} ({c.definition.power}/{c.definition.toughness})
-                </button>
+                <div key={c.instanceId} className="flex flex-col gap-1">
+                  <button
+                    onClick={() => alreadyBlockingThis ? onRemoveBlocker(c.instanceId) : onDeclareBlocker(c.instanceId, attacker.instanceId)}
+                    disabled={blockedElsewhere}
+                    title={issue}
+                    className={`px-3 py-1.5 rounded-lg text-xs border transition-all ${
+                      alreadyBlockingThis   ? 'bg-blue-700 border-blue-500 text-white' :
+                      blockedElsewhere      ? 'opacity-30 cursor-not-allowed border-gray-700 text-gray-500' :
+                      issue                 ? 'border-amber-700 text-amber-200 hover:border-amber-500' :
+                      'border-gray-600 text-gray-300 hover:border-blue-500 hover:text-blue-300'
+                    }`}
+                  >
+                    {c.definition.name} ({c.definition.power}/{c.definition.toughness})
+                  </button>
+                  {issue && <span className="max-w-[160px] text-[10px] leading-tight text-amber-300">{issue}</span>}
+                </div>
               );
             })}
           </div>
@@ -1125,4 +1188,5 @@ function groupByTarget(
   }
   return Array.from(map.entries()).map(([targetPlayerId, items]) => ({ targetPlayerId, items }));
 }
+
 
