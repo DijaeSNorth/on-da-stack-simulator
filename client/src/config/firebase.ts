@@ -1,4 +1,5 @@
 import { initializeApp, getApps, type FirebaseApp } from 'firebase/app';
+import { getAuth, signInAnonymously, type Auth, type User } from 'firebase/auth';
 import { getDatabase, type Database } from 'firebase/database';
 
 export interface FirebaseClientConfig {
@@ -10,8 +11,11 @@ export interface FirebaseClientConfig {
 }
 
 let warnedMissingFirebaseConfig = false;
+let cachedApp: FirebaseApp | null = null;
+let cachedAuth: Auth | null = null;
 let cachedDatabase: Database | null = null;
 let loggedFirebaseRecoveryStatus = false;
+let anonymousAuthPromise: Promise<User | null> | null = null;
 
 function env(name: string): string {
   return ((import.meta as unknown as { env?: Record<string, string | undefined> }).env?.[name] ?? '').trim();
@@ -54,11 +58,44 @@ export function isFirebaseRecoveryConfigured(): boolean {
   return getFirebaseClientConfig() !== null;
 }
 
-export function getFirebaseDatabase(): Database | null {
-  if (cachedDatabase) return cachedDatabase;
+function getFirebaseApp(): FirebaseApp | null {
+  if (cachedApp) return cachedApp;
   const config = getFirebaseClientConfig();
   if (!config) return null;
-  const app: FirebaseApp = getApps()[0] ?? initializeApp(config);
+  cachedApp = getApps()[0] ?? initializeApp(config);
+  return cachedApp;
+}
+
+export function getFirebaseAuthClient(): Auth | null {
+  if (cachedAuth) return cachedAuth;
+  const app = getFirebaseApp();
+  if (!app) return null;
+  cachedAuth = getAuth(app);
+  return cachedAuth;
+}
+
+export async function ensureFirebaseAnonymousAuth(): Promise<User | null> {
+  const auth = getFirebaseAuthClient();
+  if (!auth) return null;
+  if (auth.currentUser) return auth.currentUser;
+  anonymousAuthPromise ??= signInAnonymously(auth)
+    .then(credential => credential.user)
+    .catch(() => null)
+    .finally(() => {
+      anonymousAuthPromise = null;
+    });
+  return anonymousAuthPromise;
+}
+
+export async function getFirebaseAuthUid(): Promise<string | null> {
+  return (await ensureFirebaseAnonymousAuth())?.uid ?? null;
+}
+
+export function getFirebaseDatabase(): Database | null {
+  if (cachedDatabase) return cachedDatabase;
+  const app = getFirebaseApp();
+  if (!app) return null;
+  void ensureFirebaseAnonymousAuth();
   cachedDatabase = getDatabase(app);
   return cachedDatabase;
 }

@@ -10,6 +10,7 @@ export interface FirebaseRoomControl {
   roomCode: string;
   roomId: string;
   hostPeerId: string;
+  hostUid?: string;
   status: FirebaseRoomStatus;
   startSeq: number;
   gameId?: string;
@@ -21,11 +22,24 @@ export interface FirebaseRoomControl {
 export interface FirebasePresenceState {
   playerId: string;
   peerId: string;
+  authUid?: string;
+  participantToken?: string;
   displayName: string;
   seatIndex: number;
   role: FirebasePresenceRole;
   online: boolean;
   connectionState: FirebaseConnectionState;
+  lastSeen: number;
+}
+
+export interface FirebaseParticipantState {
+  playerId: string;
+  peerId: string;
+  uid: string;
+  token: string;
+  role: FirebasePresenceRole;
+  seatIndex: number;
+  joinedAt: number;
   lastSeen: number;
 }
 
@@ -82,6 +96,7 @@ export interface FirebaseResyncRequest {
   requestId: string;
   playerId: string;
   peerId: string;
+  authUid?: string;
   reason: FirebaseResyncReason;
   requestedAt: number;
   handledAt?: number;

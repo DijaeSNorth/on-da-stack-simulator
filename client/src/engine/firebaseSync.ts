@@ -11,10 +11,11 @@ import {
   type DataSnapshot,
   type Unsubscribe,
 } from 'firebase/database';
-import { getFirebaseDatabase, isFirebaseRecoveryConfigured } from '../config/firebase';
+import { getFirebaseAuthUid, getFirebaseDatabase, isFirebaseRecoveryConfigured } from '../config/firebase';
 import type { GameState, Player, CardState } from '../types/game';
 import {
   type FirebaseActionRelayEntry,
+  type FirebaseParticipantState,
   type FirebasePresenceRole,
   type FirebasePresenceState,
   type FirebasePrivatePlayerSnapshot,
@@ -41,6 +42,39 @@ const FIREBASE_CLEANUP_INTERVAL_MS = 30 * 60 * 1000;
 
 function roomPath(roomCode: string): string {
   return `rooms/${roomCode.toUpperCase()}`;
+}
+
+function getParticipantToken(roomCode: string, playerId: string): string {
+  const storageKey = `ods-firebase-participant-token:${roomCode.toUpperCase()}:${playerId}`;
+  if (typeof localStorage !== 'undefined') {
+    const existing = localStorage.getItem(storageKey);
+    if (existing) return existing;
+  }
+  const token = typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem(storageKey, token);
+  }
+  return token;
+}
+
+function buildFirebaseParticipant(
+  roomCode: string,
+  presence: Omit<FirebasePresenceState, 'online' | 'lastSeen'>,
+  uid: string,
+  joinedAt = now(),
+): FirebaseParticipantState {
+  return {
+    playerId: presence.playerId,
+    peerId: presence.peerId,
+    uid,
+    token: presence.participantToken ?? getParticipantToken(roomCode, presence.playerId),
+    role: presence.role,
+    seatIndex: presence.seatIndex,
+    joinedAt,
+    lastSeen: joinedAt,
+  };
 }
 
 function cardPublicSnapshot(card: CardState): FirebasePublicCard {
@@ -218,13 +252,17 @@ export async function cleanupFirebaseRecoveryRooms(force = false): Promise<numbe
 export async function writeFirebaseRoomControl(control: FirebaseRoomControl): Promise<void> {
   const db = getFirebaseDatabase();
   if (!db) return;
+  const authUid = await getFirebaseAuthUid();
+  if (!authUid) return;
   void cleanupFirebaseRecoveryRooms();
-  await set(ref(db, `${roomPath(control.roomCode)}/control`), stripFirebaseUndefined(control));
+  await set(ref(db, `${roomPath(control.roomCode)}/control`), stripFirebaseUndefined({ ...control, hostUid: authUid }));
 }
 
 export async function patchFirebaseRoomControl(roomCode: string, patch: Partial<FirebaseRoomControl>): Promise<void> {
   const db = getFirebaseDatabase();
   if (!db) return;
+  const authUid = await getFirebaseAuthUid();
+  if (!authUid) return;
   await update(ref(db, `${roomPath(roomCode)}/control`), stripFirebaseUndefined({ ...patch, updatedAt: now() }));
 }
 
@@ -234,10 +272,17 @@ export async function writeFirebasePresence(
 ): Promise<() => void> {
   const db = getFirebaseDatabase();
   if (!db) return () => {};
+  const authUid = await getFirebaseAuthUid();
+  if (!authUid) return () => {};
+  const participant = buildFirebaseParticipant(roomCode, presence, authUid);
+  const participantToken = participant.token;
   const presenceRef = ref(db, `${roomPath(roomCode)}/presence/${presence.playerId}`);
+  const participantRef = ref(db, `${roomPath(roomCode)}/participants/${presence.playerId}`);
   const connectedRef = ref(db, '.info/connected');
   const onlineState: FirebasePresenceState = {
     ...presence,
+    authUid,
+    participantToken,
     online: true,
     connectionState: 'connected',
     lastSeen: now(),
@@ -247,12 +292,14 @@ export async function writeFirebasePresence(
     connectionState: 'disconnected',
     lastSeen: now(),
   };
+  await set(participantRef, participant);
   await set(presenceRef, onlineState);
   await onDisconnect(presenceRef).update(offlineState);
 
   const unsubscribe = onValue(connectedRef, snapshot => {
     if (snapshot.val() === true) {
       void set(presenceRef, { ...onlineState, lastSeen: now() });
+      void update(participantRef, { lastSeen: now(), role: presence.role, seatIndex: presence.seatIndex, peerId: presence.peerId });
       void onDisconnect(presenceRef).update({ online: false, connectionState: 'disconnected', lastSeen: now() });
     }
   });
@@ -273,6 +320,8 @@ export async function writeFirebaseStartSnapshot(
 ): Promise<string | null> {
   const db = getFirebaseDatabase();
   if (!db) return null;
+  const authUid = await getFirebaseAuthUid();
+  if (!authUid) return null;
   const createdAt = now();
   const snapshotId = `${game.id}-${createdAt}`;
   const publicSnapshot = buildFirebasePublicStartSnapshot(game, snapshotId, createdAt);
@@ -283,6 +332,7 @@ export async function writeFirebaseStartSnapshot(
       roomCode,
       roomId: roomCode,
       hostPeerId,
+      hostUid: authUid,
       status: 'playing',
       startSeq,
       gameId: game.id,
@@ -313,9 +363,18 @@ export function listenFirebaseRoomControl(
 ): Unsubscribe {
   const db = getFirebaseDatabase();
   if (!db) return () => {};
-  return onValue(ref(db, `${roomPath(roomCode)}/control`), snapshot => {
-    onControl(snapshot.val() as FirebaseRoomControl | null);
+  let unsubscribe: Unsubscribe | null = null;
+  let cancelled = false;
+  void getFirebaseAuthUid().then(uid => {
+    if (!uid || cancelled) return;
+    unsubscribe = onValue(ref(db, `${roomPath(roomCode)}/control`), snapshot => {
+      onControl(snapshot.val() as FirebaseRoomControl | null);
+    });
   });
+  return () => {
+    cancelled = true;
+    unsubscribe?.();
+  };
 }
 
 export function listenFirebaseResyncRequests(
@@ -324,12 +383,21 @@ export function listenFirebaseResyncRequests(
 ): Unsubscribe {
   const db = getFirebaseDatabase();
   if (!db) return () => {};
-  return onValue(ref(db, `${roomPath(roomCode)}/resyncRequests`), snapshot => {
-    const requests = (snapshot.val() ?? {}) as Record<string, FirebaseResyncRequest>;
-    for (const request of Object.values(requests)) {
-      if (!request.handledAt) onRequest(request);
-    }
+  let unsubscribe: Unsubscribe | null = null;
+  let cancelled = false;
+  void getFirebaseAuthUid().then(uid => {
+    if (!uid || cancelled) return;
+    unsubscribe = onValue(ref(db, `${roomPath(roomCode)}/resyncRequests`), snapshot => {
+      const requests = (snapshot.val() ?? {}) as Record<string, FirebaseResyncRequest>;
+      for (const request of Object.values(requests)) {
+        if (!request.handledAt) onRequest(request);
+      }
+    });
   });
+  return () => {
+    cancelled = true;
+    unsubscribe?.();
+  };
 }
 
 export async function writeFirebaseResyncRequest(
@@ -340,11 +408,14 @@ export async function writeFirebaseResyncRequest(
 ): Promise<string | null> {
   const db = getFirebaseDatabase();
   if (!db) return null;
+  const authUid = await getFirebaseAuthUid();
+  if (!authUid) return null;
   const requestId = `${playerId}-${now()}`;
   const request: FirebaseResyncRequest = {
     requestId,
     playerId,
     peerId,
+    authUid,
     reason,
     requestedAt: now(),
   };
@@ -355,6 +426,8 @@ export async function writeFirebaseResyncRequest(
 export async function markFirebaseResyncHandled(roomCode: string, requestId: string): Promise<void> {
   const db = getFirebaseDatabase();
   if (!db) return;
+  const authUid = await getFirebaseAuthUid();
+  if (!authUid) return;
   await update(ref(db, `${roomPath(roomCode)}/resyncRequests/${requestId}`), { handledAt: now() });
 }
 
@@ -365,6 +438,8 @@ export async function loadFirebaseRecoverySnapshot(
 ): Promise<FirebasePrivatePlayerSnapshot | null> {
   const db = getFirebaseDatabase();
   if (!db) return null;
+  const authUid = await getFirebaseAuthUid();
+  if (!authUid) return null;
   const snapshot = await get(child(ref(db), `${roomPath(roomCode)}/snapshots/${snapshotId}/private/${playerId}`));
   return snapshot.exists() ? snapshot.val() as FirebasePrivatePlayerSnapshot : null;
 }
@@ -372,6 +447,8 @@ export async function loadFirebaseRecoverySnapshot(
 export async function removeFirebasePresence(roomCode: string, playerId: string): Promise<void> {
   const db = getFirebaseDatabase();
   if (!db) return;
+  const authUid = await getFirebaseAuthUid();
+  if (!authUid) return;
   await remove(ref(db, `${roomPath(roomCode)}/presence/${playerId}`));
 }
 
