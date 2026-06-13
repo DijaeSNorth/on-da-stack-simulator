@@ -17,6 +17,15 @@ function assert(condition: boolean, message: string): void {
   if (!condition) throw new Error(message);
 }
 
+function containsUndefined(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (Array.isArray(value)) return value.some(containsUndefined);
+  if (value && typeof value === 'object') {
+    return Object.values(value).some(containsUndefined);
+  }
+  return false;
+}
+
 function makeDef(id: string, name: string): CardDefinition {
   return {
     id,
@@ -100,6 +109,8 @@ assert(joinerPrivateJson.includes('Joiner Library Card'), 'joiner private recove
 assert(!joinerPrivateJson.includes('Host Hidden Card'), 'joiner private recovery snapshot must not include host hand card data');
 assert(!joinerPrivateJson.includes('Host Library Card'), 'joiner private recovery snapshot must not include host library card data');
 assert(privateSnapshots.p2.sanitizedGame?.status === 'playing', 'private recovery snapshot should carry a playing sanitized game');
+assert(containsUndefined(privateSnapshots.p2), 'test fixture should include nested undefined before Firebase sanitization');
+assert(!containsUndefined(stripFirebaseUndefined(privateSnapshots.p2)), 'Firebase private snapshot sanitizer should remove nested undefined values');
 
 const sanitizedControl = stripFirebaseUndefined({
   roomCode: 'ABC123',

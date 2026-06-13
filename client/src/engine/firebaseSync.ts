@@ -226,7 +226,7 @@ export async function writeFirebaseStartSnapshot(
       };
     }
   }
-  await update(ref(db), updates);
+  await update(ref(db), stripFirebaseUndefined(updates));
   return snapshotId;
 }
 
