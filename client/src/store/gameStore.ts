@@ -1014,6 +1014,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       (prepare: StartGamePrepare) => get().handleMultiplayerStartPrepare(prepare),
       (ack: StartGameAck) => get().handleMultiplayerStartAck(ack),
       (commit: StartGameCommit) => {
+        if (!commit.game) return;
         clearStartGameHandshakeTimer();
         const committedGame: GameState = { ...commit.game, status: 'playing' };
         const syncedGame = ensureGameHasSeatsForPresence(committedGame, get().multiplayer.peers);
