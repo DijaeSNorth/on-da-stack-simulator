@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import { PlayerBattlefield } from './PlayerBattlefield';
-import { TableStatusDock } from './TableStatusDock';
 import { DragCombatProvider, useDragCombatContext } from '../../hooks/DragCombatContext';
 import { TriggerQueuePanel } from '../triggers/TriggerQueuePanel';
 import { CardImage } from '../cards/CardImage';
@@ -328,11 +327,12 @@ function BattlefieldStackShowcase() {
       data-testid="battlefield-stack-showcase"
       style={{
         position: 'absolute',
-        top: '50%',
-        left: '50%',
-        transform: 'translate(-50%, -50%)',
+        top: 46,
+        right: 10,
         zIndex: 18,
-        width: 'min(560px, calc(100% - 28px))',
+        width: 'min(380px, calc(100% - 20px))',
+        maxHeight: '38%',
+        overflow: 'auto',
         pointerEvents: 'auto',
       }}
     >
@@ -341,7 +341,7 @@ function BattlefieldStackShowcase() {
         borderRadius: 8,
         border: '1px solid rgba(96,165,250,0.65)',
         background: 'linear-gradient(135deg, rgba(15,23,42,0.94), rgba(8,13,17,0.9))',
-        boxShadow: '0 20px 60px rgba(15,23,42,0.72), 0 0 24px rgba(59,130,246,0.22)',
+        boxShadow: '0 16px 38px rgba(15,23,42,0.58), 0 0 18px rgba(59,130,246,0.16)',
       }}>
         <div style={{
           display: 'flex',
@@ -353,7 +353,9 @@ function BattlefieldStackShowcase() {
           <span style={{ color: '#93c5fd', fontSize: 10, fontWeight: 900, letterSpacing: '0.14em', textTransform: 'uppercase' }}>
             On the Stack
           </span>
-          <span style={{ color: '#64748b', fontSize: 10 }}>Resolves top to bottom</span>
+          <span style={{ color: '#64748b', fontSize: 10 }}>
+            {game.stack.length} item{game.stack.length === 1 ? '' : 's'}
+          </span>
         </div>
 
         <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
@@ -368,17 +370,17 @@ function BattlefieldStackShowcase() {
                 data-testid={`battlefield-stack-item-${obj.id}`}
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: card ? '58px minmax(0, 1fr) auto' : 'minmax(0, 1fr) auto',
-                  gap: 10,
+                  gridTemplateColumns: card ? '42px minmax(0, 1fr) auto' : 'minmax(0, 1fr) auto',
+                  gap: 8,
                   alignItems: 'center',
-                  padding: 8,
+                  padding: 7,
                   borderRadius: 7,
                   border: `1px solid ${isTop ? '#60a5fa' : '#334155'}`,
                   background: isTop ? 'rgba(59,130,246,0.16)' : 'rgba(15,23,42,0.72)',
                 }}
               >
                 {card && (
-                  <div style={{ width: 54, transform: isTop ? 'rotate(-2deg)' : 'none' }}>
+                  <div style={{ width: 40, transform: isTop ? 'rotate(-2deg)' : 'none' }}>
                     <CardImage card={card} size="compact" />
                   </div>
                 )}
@@ -389,7 +391,7 @@ function BattlefieldStackShowcase() {
                         TOP
                       </span>
                     )}
-                    <span style={{ color: '#f8fafc', fontSize: 13, fontWeight: 900, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    <span style={{ color: '#f8fafc', fontSize: 12, fontWeight: 900, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                       {obj.sourceName}
                     </span>
                     <span style={{ color: obj.type === 'spell' ? '#93c5fd' : '#a8a29e', fontSize: 9, fontWeight: 800, textTransform: 'uppercase' }}>
@@ -590,7 +592,18 @@ function CommanderTableInner() {
 
       {!hasSidePlayers && (
         <div style={{ ...centerSurfaceStyle, flex: 0.7, minHeight: 150 }}>
-          <TableStatusDock />
+          <div style={{
+            color: '#1e293b', fontSize: 11, fontWeight: 600,
+            letterSpacing: '0.2em', textTransform: 'uppercase', userSelect: 'none',
+          }}>
+            Commander
+          </div>
+          <div style={{
+            fontSize: 9, color: '#1a2540', fontWeight: 600,
+            letterSpacing: '0.08em', textTransform: 'uppercase', userSelect: 'none',
+          }}>
+            T{game.turn} · {game.phase}
+          </div>
         </div>
       )}
 
