@@ -35,11 +35,11 @@ jobs:
           echo "VITE_APP_VERSION=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
           echo "VITE_COMMIT_SHA=${GITHUB_SHA}" >> "$GITHUB_ENV"
           echo "VITE_BUILD_TIME=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
-          echo "VITE_FIREBASE_API_KEY=${{ vars.VITE_FIREBASE_API_KEY || secrets.VITE_FIREBASE_API_KEY }}" >> "$GITHUB_ENV"
-          echo "VITE_FIREBASE_AUTH_DOMAIN=${{ vars.VITE_FIREBASE_AUTH_DOMAIN || secrets.VITE_FIREBASE_AUTH_DOMAIN }}" >> "$GITHUB_ENV"
-          echo "VITE_FIREBASE_DATABASE_URL=${{ vars.VITE_FIREBASE_DATABASE_URL || secrets.VITE_FIREBASE_DATABASE_URL }}" >> "$GITHUB_ENV"
-          echo "VITE_FIREBASE_PROJECT_ID=${{ vars.VITE_FIREBASE_PROJECT_ID || secrets.VITE_FIREBASE_PROJECT_ID }}" >> "$GITHUB_ENV"
-          echo "VITE_FIREBASE_APP_ID=${{ vars.VITE_FIREBASE_APP_ID || secrets.VITE_FIREBASE_APP_ID }}" >> "$GITHUB_ENV"
+          echo "VITE_FIREBASE_API_KEY=${{ vars.VITE_FIREBASE_API_KEY || secrets.VITE_FIREBASE_API_KEY || 'AIzaSyDB6IgLY2PV58Tl9dmK8rN1Vox9FeWlylI' }}" >> "$GITHUB_ENV"
+          echo "VITE_FIREBASE_AUTH_DOMAIN=${{ vars.VITE_FIREBASE_AUTH_DOMAIN || secrets.VITE_FIREBASE_AUTH_DOMAIN || 'on-da-stack-simulator.firebaseapp.com' }}" >> "$GITHUB_ENV"
+          echo "VITE_FIREBASE_DATABASE_URL=${{ vars.VITE_FIREBASE_DATABASE_URL || secrets.VITE_FIREBASE_DATABASE_URL || 'https://on-da-stack-simulator-default-rtdb.firebaseio.com' }}" >> "$GITHUB_ENV"
+          echo "VITE_FIREBASE_PROJECT_ID=${{ vars.VITE_FIREBASE_PROJECT_ID || secrets.VITE_FIREBASE_PROJECT_ID || 'on-da-stack-simulator' }}" >> "$GITHUB_ENV"
+          echo "VITE_FIREBASE_APP_ID=${{ vars.VITE_FIREBASE_APP_ID || secrets.VITE_FIREBASE_APP_ID || '1:570911169329:web:3a5283469dbc6a9b562e10' }}" >> "$GITHUB_ENV"
 
       - name: Build for GitHub Pages
         run: npx vite build --config vite.ghpages.config.ts
