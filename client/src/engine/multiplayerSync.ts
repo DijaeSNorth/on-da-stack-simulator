@@ -2542,6 +2542,14 @@ function sendSanitizedGamePatch(
   const patchGame: GameState = game.status === 'playing' || _lobbyState?.status === 'playing'
     ? { ...game, status: 'playing' }
     : game;
+  if (patchGame.status !== 'playing') {
+    debugMultiplayer('host skipped GAME_STATE_PATCH before game start', {
+      gameId: patchGame.id,
+      gameStatus: patchGame.status,
+      peerId: conn.peer,
+    });
+    return;
+  }
   const presence = _peers.get(conn.peer);
   if (!presence) return;
   const viewerGamePlayerId = presence.seatIndex >= 0 ? patchGame.players[presence.seatIndex]?.id : undefined;
