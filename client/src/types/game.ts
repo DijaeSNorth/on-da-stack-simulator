@@ -170,6 +170,7 @@ export interface SpacecraftState {
   stationThreshold?: number;
   stationed?: boolean;
   chargeCountersAddedByStation?: number;
+  stationSourceIds?: string[];
 }
 
 export interface StackObject {
@@ -483,6 +484,9 @@ export interface CombatDamagePreview {
   damageToBattles: Record<string, number>;
   likelyDestroyedCreatures: string[];
   likelyDestroyedAfterFirstStrike: string[];
+  firstStrikeLikelyDestroyedCreatures: string[];
+  normalLikelyDestroyedCreatures: string[];
+  stepNotes: string[];
   warnings: string[];
 }
 
@@ -499,6 +503,11 @@ export interface CombatDamagePreviewAssignment {
   damageToTarget: number;
   damageToBlockers: Record<string, number>;
   damageToAttackers: Record<string, number>;
+  trampleOverflow?: number;
+  lethalDamageRequired?: Record<string, number>;
+  deathtouchLethal?: boolean;
+  manualAssignmentRequired?: boolean;
+  combatMathNotes?: string[];
   keywords: string[];
   notes: string[];
   damageStep?: 'firstStrike' | 'normal';
@@ -527,6 +536,7 @@ export interface GameState {
     waterbendEventsThisTurn: { playerId: string; sourceId?: string; amount: number; permanentIds: string[] }[];
     earthbentThisTurn: { playerId: string; landId: string; amount: number; sourceId?: string }[];
     sneakCastsThisTurn?: { playerId: string; cardId: string; returnedAttackerId: string; attackTarget: AttackDefenderTarget }[];
+    stationEventsThisTurn?: { playerId: string; spacecraftId: string; creatureId: string; amount: number; manual: boolean }[];
   };
   snapshots: Record<string, string>;    // id → compressed state
   undoPointer: number;                  // index into actionLog for undo

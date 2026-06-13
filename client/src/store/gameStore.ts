@@ -31,6 +31,7 @@ import {
   clearExpiredPowerToughnessOverrides,
   getStationEligibleCreatures as getStationEligibleCreaturesFromEngine,
   stationSpacecraft as stationSpacecraftInEngine,
+  stationSpacecraftManual as stationSpacecraftManualInEngine,
   applyBlight as applyBlightInEngine,
   getVividColorCount as getVividColorCountFromEngine,
   levelUpClass as levelUpClassInEngine,
@@ -270,10 +271,11 @@ function canLocalControlPlayer(state: GameStore, playerId: string): boolean {
 }
 
 function canLocalAccessCard(state: GameStore, card: CardState | undefined): boolean {
+  const viewerId = hostAuthoritativeActionActorId ?? state.localPlayerId;
   return canAccessPrivateCard(
     state.game,
     card,
-    state.localPlayerId,
+    viewerId,
     state.multiplayer.isSpectator ? 'spectator' : state.multiplayer.status,
     state.ui.judgeMode,
   );
@@ -402,6 +404,8 @@ export function applyHostAuthoritativeGameActionRequest(
         return store.applyEarthbend(actor.id, asString(params.landId) ?? '', asNumber(params.amount) ?? 0, asString(params.sourceId));
       case 'stationSpacecraft':
         return store.stationSpacecraft(actor.id, asString(params.spacecraftId) ?? '', asString(params.creatureId) ?? '');
+      case 'stationSpacecraftManual':
+        return store.stationSpacecraftManual(actor.id, asString(params.spacecraftId) ?? '', asString(params.creatureId) ?? '', asNumber(params.amount) ?? 0);
       case 'applyBlight':
         return store.applyBlight(actor.id, asString(params.creatureId) ?? '', asNumber(params.amount) ?? 0, asString(params.sourceId));
       case 'levelUpClass':
@@ -565,6 +569,7 @@ export interface GameStore {
   applyEarthbend: (playerId: string, landId: string, amount: number, sourceId?: string) => boolean;
   getStationEligibleCreatures: (playerId: string, spacecraftId: string) => CardState[];
   stationSpacecraft: (playerId: string, spacecraftId: string, creatureId: string) => boolean;
+  stationSpacecraftManual: (playerId: string, spacecraftId: string, creatureId: string, amount: number) => boolean;
   applyBlight: (playerId: string, creatureId: string, amount: number, sourceId?: string) => boolean;
   getVividColorCount: (playerId: string) => number;
   levelUpClass: (playerId: string, cardId: string) => boolean;
@@ -2864,6 +2869,41 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         countersAdded: result.countersAdded,
         threshold: result.threshold,
         stationed: result.stationed,
+        notManaAbility: true,
+      },
+    );
+    set({ game: { ...result.state, actionLog: [...result.state.actionLog, action], lastUpdatedAt: Date.now() } });
+    return true;
+  },
+
+  stationSpacecraftManual: (playerId, spacecraftId, creatureId, amount) => {
+    if (!canLocalControlPlayer(get(), playerId)) return false;
+    const safeAmount = Math.floor(amount);
+    if (!Number.isFinite(safeAmount) || safeAmount <= 0) return false;
+    const g = get().game;
+    const spacecraft = g.cards[spacecraftId];
+    const creature = g.cards[creatureId];
+    if (!spacecraft || !creature) return false;
+    if (!canLocalControlCard(get(), spacecraft) || !canLocalControlCard(get(), creature)) return false;
+    if (shouldRouteToHostAuthoritativeAction(get())) {
+      return routeHostAuthoritativeAction('stationSpacecraftManual', { playerId, spacecraftId, creatureId, amount: safeAmount });
+    }
+    const result = stationSpacecraftManualInEngine(g, playerId, spacecraftId, creatureId, safeAmount);
+    if (!result.valid) return false;
+    const action = createAction(
+      result.state,
+      playerId,
+      'ADD_COUNTER',
+      `${creature.definition.name} stationed ${spacecraft.definition.name} for manual amount ${safeAmount}: add ${result.countersAdded ?? safeAmount} charge counter${(result.countersAdded ?? safeAmount) === 1 ? '' : 's'}${result.stationed ? ' and unlock it' : ''}.`,
+      [spacecraftId, creatureId],
+      {
+        mechanicId: 'station',
+        spacecraftId,
+        creatureId,
+        countersAdded: result.countersAdded,
+        threshold: result.threshold,
+        stationed: result.stationed,
+        manualAmount: safeAmount,
         notManaAbility: true,
       },
     );

@@ -40,3 +40,14 @@
 
 
 2026-06-13 - Cleanup/guardrail pass: ignored dist-server-test output, removed duplicate generated vite.config.js in favor of vite.config.ts, gated multiplayer/Firebase/drag debug logs behind DEV or localStorage on-da-stack-debug=1, kept the single build stamp log visible, confirmed Firebase config references are VITE env names only, and found no tracked giant logs/traces/build output in git status.
+
+2026-06-13 - Multiplayer mechanic/combat action sync audit
+- Mutating host-authoritative actions audited: activateClue, markExhaustUsed, resetExhaust, applyAirbend, markCastForWarp, castExiledWithPermission, payWaterbendCost, applyEarthbend, declareTokenStackAttack, castWithSneak, generateCombatPreview, confirmCombatDamage, clearCombatPreview, setPowerToughnessOverride, clearPowerToughnessOverride.
+- Store guard hardening: host-authoritative replay now evaluates private-card access as the acting seated player, not always the host local player. This is required for replaying joiner actions such as castWithSneak from the joiner's hand while preserving private-zone protections.
+- Multiplayer regression coverage added for: blocked direct joiner mutation of another player's private card, host replay of Sneak from private hand, token stack attack state sync, public P/T override sync through sanitized game state, and combat preview sanitization without private card leakage.
+- Type-query helpers are pure/non-mutating and require no multiplayer route: hasCardType, hasSubtype, getCreatureTypes, hasCreatureType, isChangeling, getEffectiveCreatureTypes.
+
+2026-06-13 - castExiledWithPermission multiplayer access audit
+- castExiledWithPermission is a mutating host-authoritative action. Host replay uses the acting seat from presence and the store guard allows only the exile permission owner unless judgeMode is enabled.
+- Regression coverage added for multiplayer host replay: non-owner rejected, owner succeeds, judge override succeeds, permission clears on successful cast, and action log keeps the source mechanic ID.
+- No new local/manual-only TODOs were added; the audited actions remain either host-routed mutators or pure non-mutating helpers.

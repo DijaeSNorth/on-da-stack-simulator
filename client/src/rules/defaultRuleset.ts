@@ -184,10 +184,10 @@ export const defaultRuleset: RulesetDefinition = {
       name: 'Classes',
       kind: 'card_type',
       setCodes: ['AFR'],
-      rulesText: 'Class enchantments have level abilities activated as sorceries.',
+      rulesText: 'Class enchantments track a class level as card state, not counters; level abilities unlock at that level or below.',
       eventHooks: ['onActivateAbility'],
-      parameters: { activateAsSorcery: true },
-      ui: { reminder: 'Track class level and sorcery-speed activation.' },
+      parameters: { activateAsSorcery: true, levelIsCounter: false },
+      ui: { reminder: 'Classes track level as card state, not counters. Level up at sorcery speed.' },
       automationLevel: 'hint_only',
     }),
     'partner-character-select': mechanic({

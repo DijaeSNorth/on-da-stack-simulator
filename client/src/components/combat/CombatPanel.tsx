@@ -580,11 +580,11 @@ export function CombatPanel({ attackerIds, preAssignments = {}, onClose }: Comba
                 ))}
               </div>
 
-              {damagePreview.likelyDestroyedAfterFirstStrike.length > 0 && (
+              {(damagePreview.firstStrikeLikelyDestroyedCreatures ?? damagePreview.likelyDestroyedAfterFirstStrike).length > 0 && (
                 <div className="rounded-xl border border-orange-800 bg-orange-950/30 p-3">
                   <p className="text-orange-200 text-xs font-semibold uppercase tracking-wider mb-2">Likely destroyed after first strike damage</p>
                   <div className="flex flex-wrap gap-2">
-                    {damagePreview.likelyDestroyedAfterFirstStrike.map(id => (
+                    {(damagePreview.firstStrikeLikelyDestroyedCreatures ?? damagePreview.likelyDestroyedAfterFirstStrike).map(id => (
                       <span key={id} className="rounded-lg bg-orange-900/50 px-2 py-1 text-xs text-orange-100">
                         {game.cards[id]?.definition.name ?? id}
                       </span>

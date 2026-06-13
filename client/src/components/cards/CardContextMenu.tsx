@@ -315,7 +315,7 @@ export function CardContextMenu() {
       });
     }
 
-    if (hasBlight && def.cardTypes.includes('Creature')) {
+    if ((hasBlight || ui.judgeMode) && def.cardTypes.includes('Creature')) {
       actions.push({
         label: 'Blight...',
         tier: 2,

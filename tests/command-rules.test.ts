@@ -5,6 +5,8 @@
  */
 
 import { parseCommand } from '../client/src/engine/nlpParser';
+import { canBeCommander, createCardState } from '../client/src/engine/gameEngine';
+import type { CardDefinition } from '../client/src/types/game';
 
 let passed = 0;
 let failed = 0;
@@ -23,6 +25,23 @@ function test(name: string, fn: () => void): void {
     failed++;
   }
 }
+
+const commanderBaseDef: CardDefinition = {
+  id: 'commander-base',
+  name: 'Commander Base',
+  cmc: 3,
+  typeLine: 'Creature - Test',
+  superTypes: [],
+  cardTypes: ['Creature'],
+  subTypes: ['Test'],
+  oracleText: '',
+  colors: [],
+  colorIdentity: [],
+  keywords: [],
+  legalities: {},
+  power: '2',
+  toughness: '2',
+};
 
 test('mulligan command parses to the mulligan intent', () => {
   const parsed = parseCommand('mulligan');
@@ -108,6 +127,51 @@ test('combat declaration commands parse explicit attack and block language', () 
   assert(declareMultiBlock.intent === 'MULTI_BLOCK', `expected MULTI_BLOCK, got ${declareMultiBlock.intent}`);
   assert(declareMultiBlock.cardName === 'Goblin Guide', `expected attacker Goblin Guide, got ${declareMultiBlock.cardName}`);
   assert(declareMultiBlock.cardNames?.length === 2, `expected 2 blockers, got ${declareMultiBlock.cardNames?.length}`);
+});
+
+test('Legendary Spacecraft with printed P/T is commander-legal', () => {
+  const card = createCardState({
+    ...commanderBaseDef,
+    id: 'legendary-spacecraft-commander',
+    name: 'Legendary Spacecraft Commander',
+    typeLine: 'Legendary Artifact - Spacecraft',
+    superTypes: ['Legendary'],
+    cardTypes: ['Artifact'],
+    subTypes: ['Spacecraft'],
+    power: '5',
+    toughness: '5',
+  }, 'p1');
+  assert(canBeCommander(card), 'expected legendary Spacecraft with printed P/T to be commander-legal');
+});
+
+test('Legendary Vehicle with printed P/T is commander-legal', () => {
+  const card = createCardState({
+    ...commanderBaseDef,
+    id: 'legendary-vehicle-commander',
+    name: 'Legendary Vehicle Commander',
+    typeLine: 'Legendary Artifact - Vehicle',
+    superTypes: ['Legendary'],
+    cardTypes: ['Artifact'],
+    subTypes: ['Vehicle'],
+    power: '4',
+    toughness: '4',
+  }, 'p1');
+  assert(canBeCommander(card), 'expected legendary Vehicle with printed P/T to be commander-legal');
+});
+
+test('Nonlegendary Vehicle with printed P/T is not commander-legal', () => {
+  const card = createCardState({
+    ...commanderBaseDef,
+    id: 'nonlegendary-vehicle-commander',
+    name: 'Nonlegendary Vehicle',
+    typeLine: 'Artifact - Vehicle',
+    superTypes: [],
+    cardTypes: ['Artifact'],
+    subTypes: ['Vehicle'],
+    power: '4',
+    toughness: '4',
+  }, 'p1');
+  assert(!canBeCommander(card), 'expected nonlegendary Vehicle not to be commander-legal');
 });
 
 console.log(`\nCommand-rules tests: ${passed} passed, ${failed} failed`);

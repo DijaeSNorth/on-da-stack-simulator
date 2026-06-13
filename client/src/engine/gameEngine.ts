@@ -1,10 +1,10 @@
-// ─── Game State Engine ─────────────────────────────────────────────────────────
+﻿// â”€â”€â”€ Game State Engine â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 import { v4 as uuid } from 'uuid';
 import type {
   GameState, Player, CardState, CardDefinition, ActionRecord, ActionType,
   Phase, StackObject, TriggerItem, AssistantFlag, Deck, GameConfig, Counter, CombatState, CustomCardDefinition,
   PlayerAvatarImage, ManaPool, AttackDefenderTarget, CombatAttackAssignment, TokenStackAttackInput, CombatDamagePreview,
-  CombatDamagePreviewAssignment, PowerToughnessOverrideExpiration, CardType,
+  CombatDamagePreviewAssignment, PowerToughnessOverrideExpiration, CardType, ManaColor,
 } from '../types/game';
 import { fetchCardsByNames } from '../data/cardDatabase';
 import { getEffectiveCardDefinition, getEffectiveOracleText } from './cardFaces';
@@ -12,7 +12,7 @@ import { normalizeCommanderDeck } from './deckImport';
 import { PHASE_ORDER } from './phaseMeta';
 import { DEFAULT_RULESET_VERSION } from '../rules/defaultRuleset';
 
-// ─── Factory Helpers ──────────────────────────────────────────────────────────
+// â”€â”€â”€ Factory Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const EMPTY_MANA_POOL: ManaPool = {
   W: 0,
@@ -149,6 +149,7 @@ export function createEmptyGameState(config: GameConfig): GameState {
       waterbendEventsThisTurn: [],
       earthbentThisTurn: [],
       sneakCastsThisTurn: [],
+      stationEventsThisTurn: [],
     },
     snapshots: {},
     undoPointer: 0,
@@ -340,36 +341,84 @@ function uniqueCaseInsensitive(values: string[]): string[] {
 
 function parseTypeLineParts(typeLine: string | undefined): { cardTypes: string[]; subTypes: string[] } {
   if (!typeLine) return { cardTypes: [], subTypes: [] };
-  const [left = '', right = ''] = typeLine.split(/\s+[—-]\s+/, 2);
+  const [left = '', right = ''] = typeLine.split(/\s+(?:-|—|–|â€”|â€“|â€”-|â€“- )\s+/, 2);
+  const superTypes = new Set(['legendary', 'basic', 'snow', 'world', 'historic']);
   return {
-    cardTypes: left.split(/\s+/).filter(Boolean),
+    cardTypes: left.split(/\s+/).filter(Boolean).filter(type => !superTypes.has(normalizeTypeName(type))),
     subTypes: right.split(/\s+/).filter(Boolean),
   };
 }
 
+export function getTypeLine(card: CardState | undefined): string {
+  return card ? getEffectiveCardDefinition(card).typeLine ?? '' : '';
+}
+
+export function getCardTypes(card: CardState | undefined): string[] {
+  if (!card) return [];
+  const def = getEffectiveCardDefinition(card);
+  return uniqueCaseInsensitive([...def.cardTypes, ...parseTypeLineParts(def.typeLine).cardTypes]);
+}
+
+export function getSubtypes(card: CardState | undefined): string[] {
+  if (!card) return [];
+  const def = getEffectiveCardDefinition(card);
+  return uniqueCaseInsensitive([...def.subTypes, ...parseTypeLineParts(def.typeLine).subTypes]);
+}
+
 export function hasCardType(card: CardState | undefined, cardType: CardType | string): boolean {
   if (!card) return false;
-  const def = getEffectiveCardDefinition(card);
   const target = normalizeTypeName(cardType);
-  const parsed = parseTypeLineParts(def.typeLine).cardTypes;
-  return [...def.cardTypes, ...parsed].some(type => normalizeTypeName(type) === target);
+  return getCardTypes(card).some(type => normalizeTypeName(type) === target);
 }
 
 export function hasSubtype(card: CardState | undefined, subtype: string): boolean {
   if (!card) return false;
-  const def = getEffectiveCardDefinition(card);
   const target = normalizeTypeName(subtype);
-  const parsed = parseTypeLineParts(def.typeLine).subTypes;
-  return [...def.subTypes, ...parsed].some(type => normalizeTypeName(type) === target);
+  return getSubtypes(card).some(type => normalizeTypeName(type) === target);
+}
+
+export function isCreature(card: CardState | undefined): boolean {
+  return hasCardType(card, 'Creature');
+}
+
+export function isArtifact(card: CardState | undefined): boolean {
+  return hasCardType(card, 'Artifact');
+}
+
+export function isEnchantment(card: CardState | undefined): boolean {
+  return hasCardType(card, 'Enchantment');
+}
+
+export function isLand(card: CardState | undefined): boolean {
+  return hasCardType(card, 'Land');
+}
+
+export function isPlaneswalker(card: CardState | undefined): boolean {
+  return hasCardType(card, 'Planeswalker');
+}
+
+export function isBattle(card: CardState | undefined): boolean {
+  return hasCardType(card, 'Battle');
+}
+
+export function isKindred(card: CardState | undefined): boolean {
+  return hasCardType(card, 'Kindred') || hasCardType(card, 'Tribal');
+}
+
+export function isToken(card: CardState | undefined): boolean {
+  return Boolean(card?.token || /\btoken\b/i.test(getTypeLine(card)));
 }
 
 export function getCreatureTypes(card: CardState | undefined): string[] {
   if (!card) return [];
-  const def = getEffectiveCardDefinition(card);
-  const subTypes = uniqueCaseInsensitive([...def.subTypes, ...parseTypeLineParts(def.typeLine).subTypes]);
-  if (!hasCardType(card, 'Creature') && !hasCardType(card, 'Kindred') && !hasCardType(card, 'Tribal')) return [];
+  const subTypes = getSubtypes(card);
+  if (!isCreature(card) && !isKindred(card)) return [];
   const known = new Set(ALL_CREATURE_TYPES.map(normalizeTypeName));
   return subTypes.filter(subtype => known.has(normalizeTypeName(subtype)));
+}
+
+export function getKindredSubtypes(card: CardState | undefined): string[] {
+  return isKindred(card) ? getCreatureTypes(card) : [];
 }
 
 export function isChangeling(card: CardState | undefined): boolean {
@@ -389,6 +438,45 @@ export function hasCreatureType(card: CardState | undefined, type: string): bool
   if (isChangeling(card)) return true;
   const target = normalizeTypeName(type);
   return getCreatureTypes(card).some(creatureType => normalizeTypeName(creatureType) === target);
+}
+
+export function sharesCreatureType(cardA: CardState | undefined, cardB: CardState | undefined): boolean {
+  if (!cardA || !cardB) return false;
+  if (isChangeling(cardA) && getCreatureTypes(cardB).length > 0) return true;
+  if (isChangeling(cardB) && getCreatureTypes(cardA).length > 0) return true;
+  const aTypes = new Set(getCreatureTypes(cardA).map(normalizeTypeName));
+  return getCreatureTypes(cardB).some(type => aTypes.has(normalizeTypeName(type)));
+}
+
+export function isSpacecraft(card: CardState | undefined): boolean {
+  if (!card) return false;
+  return hasSubtype(card, 'Spacecraft') ||
+    hasCardType(card, 'Spacecraft') ||
+    /\bspacecraft\b/i.test(getEffectiveOracleText(card));
+}
+
+export function isVehicle(card: CardState | undefined): boolean {
+  return hasSubtype(card, 'Vehicle') || hasCardType(card, 'Vehicle');
+}
+
+export function hasPrintedPowerToughness(card: CardState | undefined): boolean {
+  if (!card) return false;
+  const def = getEffectiveCardDefinition(card);
+  return def.power !== undefined && def.toughness !== undefined;
+}
+
+export function isLegendary(card: CardState | undefined): boolean {
+  if (!card) return false;
+  const def = getEffectiveCardDefinition(card);
+  return def.superTypes.some(superType => normalizeTypeName(superType) === 'legendary') ||
+    /\blegendary\b/i.test(def.typeLine);
+}
+
+export function canBeCommander(card: CardState | undefined): boolean {
+  if (!isLegendary(card)) return false;
+  if (hasCardType(card, 'Creature')) return true;
+  if (hasCardType(card, 'Planeswalker')) return true;
+  return hasPrintedPowerToughness(card) && (isVehicle(card) || isSpacecraft(card));
 }
 
 function isClassDefinition(def: CardDefinition): boolean {
@@ -466,8 +554,9 @@ export function getEffectivePowerToughness(
   const power = typeof rawPower === 'number' ? rawPower : Number.parseInt(String(rawPower ?? ''), 10);
   const toughness = typeof rawToughness === 'number' ? rawToughness : Number.parseInt(String(rawToughness ?? ''), 10);
   if (!Number.isFinite(power) || !Number.isFinite(toughness)) return null;
-  const plusCounters = card.counters.find(counter => counter.type === '+1/+1')?.count ?? 0;
-  const minusCounters = card.counters.find(counter => counter.type === '-1/-1')?.count ?? 0;
+  const counters = card.counters ?? [];
+  const plusCounters = counters.find(counter => counter.type === '+1/+1')?.count ?? 0;
+  const minusCounters = counters.find(counter => counter.type === '-1/-1')?.count ?? 0;
   return {
     power: power + plusCounters - minusCounters,
     toughness: toughness + plusCounters - minusCounters,
@@ -522,11 +611,7 @@ export function clearExpiredPowerToughnessOverrides(
 }
 
 function isSpacecraftCard(card: CardState | undefined): boolean {
-  if (!card) return false;
-  const def = getEffectiveCardDefinition(card);
-  return def.subTypes.some(subtype => subtype.toLowerCase() === 'spacecraft') ||
-    /\bspacecraft\b/i.test(def.typeLine) ||
-    /\bspacecraft\b/i.test(getEffectiveOracleText(card));
+  return isSpacecraft(card);
 }
 
 export function getStationThreshold(card: CardState | undefined): number | undefined {
@@ -564,6 +649,28 @@ export function stationSpacecraft(
   spacecraftId: string,
   creatureId: string,
 ): { state: GameState; valid: boolean; reason?: string; countersAdded?: number; threshold?: number; stationed?: boolean } {
+  return stationSpacecraftWithAmount(state, playerId, spacecraftId, creatureId);
+}
+
+export function stationSpacecraftManual(
+  state: GameState,
+  playerId: string,
+  spacecraftId: string,
+  creatureId: string,
+  amount: number,
+): { state: GameState; valid: boolean; reason?: string; countersAdded?: number; threshold?: number; stationed?: boolean } {
+  const safeAmount = Math.floor(amount);
+  if (!Number.isFinite(safeAmount) || safeAmount <= 0) return { state, valid: false, reason: 'invalid_amount' };
+  return stationSpacecraftWithAmount(state, playerId, spacecraftId, creatureId, safeAmount);
+}
+
+function stationSpacecraftWithAmount(
+  state: GameState,
+  playerId: string,
+  spacecraftId: string,
+  creatureId: string,
+  manualAmount?: number,
+): { state: GameState; valid: boolean; reason?: string; countersAdded?: number; threshold?: number; stationed?: boolean } {
   const spacecraft = state.cards[spacecraftId];
   const creature = state.cards[creatureId];
   if (!spacecraft) return { state, valid: false, reason: 'missing_spacecraft' };
@@ -577,7 +684,7 @@ export function stationSpacecraft(
   if (creature.controllerId !== playerId) return { state, valid: false, reason: 'wrong_creature_controller' };
   if (creature.tapped) return { state, valid: false, reason: 'creature_tapped' };
   if (!getEffectiveCardDefinition(creature).cardTypes.includes('Creature')) return { state, valid: false, reason: 'not_creature' };
-  const power = getEffectivePowerToughness(creature, state)?.power;
+  const power = manualAmount ?? getEffectivePowerToughness(creature, state)?.power;
   if (typeof power !== 'number' || power <= 0) return { state, valid: false, reason: 'invalid_power' };
 
   let next = addCounter({
@@ -614,8 +721,16 @@ export function stationSpacecraft(
           stationThreshold: threshold,
           stationed,
           chargeCountersAddedByStation: (currentSpacecraft.spacecraft?.chargeCountersAddedByStation ?? 0) + power,
+          stationSourceIds: [...new Set([...(currentSpacecraft.spacecraft?.stationSourceIds ?? []), creatureId])],
         },
       },
+    },
+    turnTrackers: {
+      ...next.turnTrackers,
+      stationEventsThisTurn: [
+        ...(next.turnTrackers.stationEventsThisTurn ?? []),
+        { playerId, spacecraftId, creatureId, amount: power, manual: manualAmount !== undefined },
+      ],
     },
     lastUpdatedAt: Date.now(),
   };
@@ -648,11 +763,22 @@ export function getVividColorCount(state: GameState, playerId: string): number {
   const colors = new Set<string>();
   for (const card of Object.values(state.cards)) {
     if (card.zone !== 'battlefield' || card.controllerId !== playerId) continue;
-    for (const color of getEffectiveCardDefinition(card).colors) {
+    for (const color of getPermanentColors(card)) {
       colors.add(color);
     }
   }
   return colors.size;
+}
+
+export function getPermanentColors(card: CardState | undefined): ManaColor[] {
+  if (!card || card.zone !== 'battlefield') return [];
+  const def = getEffectiveCardDefinition(card);
+  if (Array.isArray(def.colors)) return [...def.colors];
+  return Array.isArray(def.colorIdentity) ? [...def.colorIdentity] : [];
+}
+
+export function hasVividCondition(state: GameState, playerId: string, requiredCount = 1): boolean {
+  return getVividColorCount(state, playerId) >= Math.max(0, Math.floor(requiredCount));
 }
 
 function addDamage(record: Record<string, number>, id: string, amount: number): void {
@@ -681,10 +807,14 @@ function unsupportedCombatWarnings(keywords: string[], subject: string): string[
   return warnings;
 }
 
-function hasCombatPreviewKeyword(card: CardState, keyword: string): boolean {
+export function hasKeyword(card: CardState, keyword: string): boolean {
   const lowerKeyword = keyword.toLowerCase();
   return getEffectiveCardDefinition(card).keywords.some(k => k.toLowerCase() === lowerKeyword) ||
     getEffectiveOracleText(card).toLowerCase().includes(lowerKeyword);
+}
+
+function hasCombatPreviewKeyword(card: CardState, keyword: string): boolean {
+  return hasKeyword(card, keyword);
 }
 
 function dealsCombatDamageInPreviewStep(card: CardState, step: 'firstStrike' | 'normal'): boolean {
@@ -701,6 +831,7 @@ export function generateCombatDamagePreview(state: GameState): CombatDamagePrevi
     : getAssignmentsFromLegacyCombat(state);
   const blockAssignments = state.combat.blockAssignments ?? [];
   const warnings: string[] = [];
+  const stepNotes: string[] = [];
   const damageToPlayers: Record<string, number> = {};
   const damageToPlaneswalkers: Record<string, number> = {};
   const damageToBattles: Record<string, number> = {};
@@ -715,6 +846,9 @@ export function generateCombatDamagePreview(state: GameState): CombatDamagePrevi
     hasCombatPreviewKeyword(card, 'first strike') || hasCombatPreviewKeyword(card, 'double strike')
   );
   const hasNormalDamageStep = true;
+  if (hasFirstStrikeDamageStep) {
+    stepNotes.push('First strike and double strike creatures deal damage before normal combat damage.');
+  }
 
   const buildStepAssignments = (
     step: 'firstStrike' | 'normal',
@@ -747,8 +881,14 @@ export function generateCombatDamagePreview(state: GameState): CombatDamagePrevi
     const notes: string[] = [];
     const damageToBlockers: Record<string, number> = {};
     const damageToAttackers: Record<string, number> = {};
+    const lethalDamageRequired: Record<string, number> = {};
     const blocked = blockerIds.length > 0;
     let damageToTarget = 0;
+    let trampleOverflow = 0;
+    let deathtouchLethal = false;
+    let manualAssignmentRequired = false;
+    const attackerHasTrample = attackersEligibleThisStep.some(card => hasCombatPreviewKeyword(card, 'trample'));
+    const attackerHasDeathtouch = attackersEligibleThisStep.some(card => hasCombatPreviewKeyword(card, 'deathtouch'));
 
     if (attackersEligibleThisStep.length === 0 && blockersEligibleThisStep.length === 0) {
       return [];
@@ -784,18 +924,27 @@ export function generateCombatDamagePreview(state: GameState): CombatDamagePrevi
       if (assignment.attackTarget.type === 'planeswalker') addDamage(damageToPlaneswalkers, assignment.attackTarget.permanentId, damageToTarget);
       if (assignment.attackTarget.type === 'battle') addDamage(damageToBattles, assignment.attackTarget.permanentId, damageToTarget);
     } else {
-      const attackerHasTrample = attackersEligibleThisStep.some(card => hasCombatPreviewKeyword(card, 'trample'));
-      const attackerHasDeathtouch = attackersEligibleThisStep.some(card => hasCombatPreviewKeyword(card, 'deathtouch'));
       const hasExactDamageCaveat = keywords.some(keyword => keyword === 'protection' || keyword === 'prevent' || keyword === 'indestructible');
 
       if (attackerHasDeathtouch) {
+        deathtouchLethal = totalPower > 0;
         notes.push('Deathtouch: 1 damage is lethal.');
       }
 
       if (attackerHasTrample && blockerIds.length > 1) {
         const warning = `${assignment.sourceName}: multiple blockers with trample need manual damage assignment order.`;
+        manualAssignmentRequired = true;
         notes.push('Multiple blockers with trample: verify assignment order manually.');
         warnings.push(warning);
+      }
+
+      if (keywords.includes('indestructible')) {
+        notes.push('Indestructible: lethal damage may be assigned, but the creature will not be destroyed by damage.');
+      }
+
+      if (keywords.includes('protection') || keywords.includes('prevent')) {
+        manualAssignmentRequired = true;
+        notes.push('Protection/prevention effect present: verify final damage manually.');
       }
 
       if (attackerHasTrample) {
@@ -805,8 +954,9 @@ export function generateCombatDamagePreview(state: GameState): CombatDamagePrevi
           const lethalDamage = attackerHasDeathtouch
             ? 1
             : typeof toughness === 'number'
-              ? Math.max(0, toughness - (blocker.markedForDamage ?? 0))
+              ? Math.max(1, toughness - (blocker.markedForDamage ?? 0))
               : remainingAttackerDamage;
+          lethalDamageRequired[blocker.instanceId] = lethalDamage;
           const assignedToBlocker = Math.min(remainingAttackerDamage, lethalDamage);
           damageToBlockers[blocker.instanceId] = assignedToBlocker;
           remainingAttackerDamage = Math.max(0, remainingAttackerDamage - assignedToBlocker);
@@ -820,6 +970,7 @@ export function generateCombatDamagePreview(state: GameState): CombatDamagePrevi
           }
         }
         damageToTarget = remainingAttackerDamage;
+        trampleOverflow = damageToTarget;
         if (assignment.attackTarget.type === 'player') addDamage(damageToPlayers, assignment.attackTarget.playerId, damageToTarget);
         if (assignment.attackTarget.type === 'planeswalker') addDamage(damageToPlaneswalkers, assignment.attackTarget.permanentId, damageToTarget);
         if (assignment.attackTarget.type === 'battle') addDamage(damageToBattles, assignment.attackTarget.permanentId, damageToTarget);
@@ -828,6 +979,7 @@ export function generateCombatDamagePreview(state: GameState): CombatDamagePrevi
         for (const blocker of blockers) {
           damageToBlockers[blocker.instanceId] = totalPower;
           const toughness = getEffectivePowerToughness(blocker, state)?.toughness;
+          lethalDamageRequired[blocker.instanceId] = attackerHasDeathtouch ? 1 : typeof toughness === 'number' ? Math.max(1, toughness - (blocker.markedForDamage ?? 0)) : totalPower;
           if (!hasExactDamageCaveat && totalPower > 0 && (
             attackerHasDeathtouch ||
             (typeof toughness === 'number' && (blocker.markedForDamage ?? 0) + totalPower >= toughness)
@@ -863,6 +1015,11 @@ export function generateCombatDamagePreview(state: GameState): CombatDamagePrevi
       damageToTarget,
       damageToBlockers,
       damageToAttackers,
+      trampleOverflow: attackerHasTrample ? trampleOverflow : undefined,
+      lethalDamageRequired,
+      deathtouchLethal,
+      manualAssignmentRequired,
+      combatMathNotes: notes,
       keywords,
       notes,
       damageStep: step,
@@ -891,6 +1048,9 @@ export function generateCombatDamagePreview(state: GameState): CombatDamagePrevi
     damageToBattles,
     likelyDestroyedCreatures: [...likelyDestroyed],
     likelyDestroyedAfterFirstStrike: [...likelyDestroyedAfterFirstStrike],
+    firstStrikeLikelyDestroyedCreatures: [...likelyDestroyedAfterFirstStrike],
+    normalLikelyDestroyedCreatures: [...likelyDestroyed],
+    stepNotes,
     warnings: [...new Set(warnings)],
   };
 }
@@ -1197,7 +1357,7 @@ export function clearCombatAssignments(state: GameState): GameState {
   };
 }
 
-// ─── Action Logging ────────────────────────────────────────────────────────────
+// â”€â”€â”€ Action Logging â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export function createAction(
   state: GameState,
@@ -1223,7 +1383,7 @@ export function createAction(
   };
 }
 
-// ─── Card Operations ──────────────────────────────────────────────────────────
+// â”€â”€â”€ Card Operations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export function getCard(state: GameState, instanceId: string): CardState | undefined {
   return state.cards[instanceId];
@@ -1399,11 +1559,12 @@ export function tapCard(state: GameState, instanceId: string, tapped: boolean): 
 export function applyCounterAnnihilation(card: CardState): CardState {
   const def = getEffectiveCardDefinition(card);
   if (!def.cardTypes.includes('Creature')) return card;
-  const plus = card.counters.find(counter => counter.type === '+1/+1')?.count ?? 0;
-  const minus = card.counters.find(counter => counter.type === '-1/-1')?.count ?? 0;
+  const sourceCounters = card.counters ?? [];
+  const plus = sourceCounters.find(counter => counter.type === '+1/+1')?.count ?? 0;
+  const minus = sourceCounters.find(counter => counter.type === '-1/-1')?.count ?? 0;
   const cancel = Math.min(plus, minus);
   if (cancel <= 0) return card;
-  const counters = card.counters
+  const counters = sourceCounters
     .map(counter => {
       if (counter.type === '+1/+1') return { ...counter, count: counter.count - cancel };
       if (counter.type === '-1/-1') return { ...counter, count: counter.count - cancel };
@@ -1429,14 +1590,15 @@ export function applyStateBasedCounterCleanup(state: GameState): GameState {
 export function addCounter(state: GameState, instanceId: string, counterType: string, amount = 1): GameState {
   const card = state.cards[instanceId];
   if (!card) return state;
-  const existing = card.counters.find(c => c.type === counterType);
+  const sourceCounters = card.counters ?? [];
+  const existing = sourceCounters.find(c => c.type === counterType);
   let newCounters: Counter[];
   if (existing) {
-    newCounters = card.counters.map(c =>
+    newCounters = sourceCounters.map(c =>
       c.type === counterType ? { ...c, count: c.count + amount } : c
     );
   } else {
-    newCounters = [...card.counters, { type: counterType, count: amount }];
+    newCounters = [...sourceCounters, { type: counterType, count: amount }];
   }
   const nextCard = applyCounterAnnihilation({ ...card, counters: newCounters });
   return {
@@ -1449,7 +1611,7 @@ export function addCounter(state: GameState, instanceId: string, counterType: st
 export function removeCounter(state: GameState, instanceId: string, counterType: string, amount = 1): GameState {
   const card = state.cards[instanceId];
   if (!card) return state;
-  const newCounters = card.counters
+  const newCounters = (card.counters ?? [])
     .map(c => c.type === counterType ? { ...c, count: Math.max(0, c.count - amount) } : c)
     .filter(c => c.count > 0);
   return {
@@ -1492,7 +1654,7 @@ export function addCommanderDamage(
   };
 }
 
-// ─── Phase Management ─────────────────────────────────────────────────────────
+// â”€â”€â”€ Phase Management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export function nextPhase(state: GameState): GameState {
   const currentIdx = PHASE_ORDER.indexOf(state.phase);
@@ -1508,7 +1670,7 @@ export function nextPhase(state: GameState): GameState {
       ? clearCombatAssignments(nextState)
       : nextState;
   }
-  // End of turn — advance to next player
+  // End of turn â€” advance to next player
   return nextTurn(state);
 }
 
@@ -1563,12 +1725,13 @@ export function nextTurn(state: GameState): GameState {
       waterbendEventsThisTurn: [],
       earthbentThisTurn: [],
       sneakCastsThisTurn: [],
+      stationEventsThisTurn: [],
     },
     lastUpdatedAt: Date.now(),
   };
 }
 
-// ─── Stack Operations ─────────────────────────────────────────────────────────
+// â”€â”€â”€ Stack Operations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export function pushToStack(state: GameState, item: StackObject): GameState {
   return {
@@ -1609,7 +1772,7 @@ export function resolveTopStack(state: GameState): GameState {
   return next;
 }
 
-// ─── Trigger Queue ────────────────────────────────────────────────────────────
+// â”€â”€â”€ Trigger Queue â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export function addTrigger(state: GameState, trigger: TriggerItem): GameState {
   return {
@@ -1629,7 +1792,7 @@ export function acknowledgeTrigger(state: GameState, triggerId: string): GameSta
   };
 }
 
-// ─── Deck Loading ─────────────────────────────────────────────────────────────
+// â”€â”€â”€ Deck Loading â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function loadDeckIntoPlayer(
   state: GameState,
@@ -1736,8 +1899,8 @@ function createCustomCardDef(card: CustomCardDefinition): CardDefinition {
     .filter(type => typeLine.includes(type)) as CardDefinition['superTypes'];
   const cardTypes = ['Creature', 'Instant', 'Sorcery', 'Artifact', 'Enchantment', 'Planeswalker', 'Land', 'Battle', 'Tribal']
     .filter(type => typeLine.includes(type)) as CardDefinition['cardTypes'];
-  const subTypes = typeLine.includes('—')
-    ? typeLine.split('—').slice(1).join('—').trim().split(/\s+/).filter(Boolean)
+  const subTypes = typeLine.includes('â€”')
+    ? typeLine.split('â€”').slice(1).join('â€”').trim().split(/\s+/).filter(Boolean)
     : [];
 
   return {
@@ -1830,7 +1993,7 @@ function shuffle<T>(arr: T[]): T[] {
 
 export { shuffle };
 
-// ─── Draw & Mulligan ──────────────────────────────────────────────────────────
+// â”€â”€â”€ Draw & Mulligan â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export function drawCards(state: GameState, playerId: string, count: number): GameState {
   const player = state.players.find(p => p.id === playerId);
@@ -2312,7 +2475,7 @@ export function removeAllCountersFromCard(
   };
 }
 
-// ─── Token Creation ────────────────────────────────────────────────────────────
+// â”€â”€â”€ Token Creation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export function createToken(
   state: GameState,
@@ -2384,13 +2547,13 @@ export function createTokens(
   };
 }
 
-// ─── State-Based Actions ──────────────────────────────────────────────────────
+// â”€â”€â”€ State-Based Actions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export function checkStateBasedActions(state: GameState): { newState: GameState; flags: AssistantFlag[] } {
   let newState = applyStateBasedCounterCleanup(state);
   const flags: AssistantFlag[] = [];
 
-  // Check creature death (toughness ≤ 0 or damage ≥ toughness)
+  // Check creature death (toughness â‰¤ 0 or damage â‰¥ toughness)
   for (const card of Object.values(newState.cards)) {
     if (card.zone !== 'battlefield') continue;
     const def = getEffectiveCardDefinition(card);
@@ -2446,7 +2609,7 @@ export function checkStateBasedActions(state: GameState): { newState: GameState;
   return { newState, flags };
 }
 
-// ─── Combat Operations ────────────────────────────────────────────────────────
+// â”€â”€â”€ Combat Operations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export function declareAttacker(
   state: GameState,
@@ -2471,7 +2634,7 @@ export function declareAttacker(
     ],
   };
 
-  // CR 702.20: Vigilance — attacking doesn't cause creature to tap
+  // CR 702.20: Vigilance â€” attacking doesn't cause creature to tap
   const def = getEffectiveCardDefinition(card);
   const hasVigilance =
     def.keywords.some(k => k.toLowerCase() === 'vigilance') ||
@@ -2532,7 +2695,7 @@ export function declareBlocker(
   };
 }
 
-// ─── Snapshot / Undo / Redo ───────────────────────────────────────────────────
+// â”€â”€â”€ Snapshot / Undo / Redo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export function takeSnapshot(state: GameState, label: string): GameState {
   const snapshotId = uuid();
@@ -2568,10 +2731,10 @@ export function undoAction(state: GameState): GameState {
   return state; // Nothing to undo
 }
 
-// ─── Myriad ───────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Myriad â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /**
- * CR 702.116 — Myriad
+ * CR 702.116 â€” Myriad
  *
  * When a Myriad creature attacks, for each OTHER opponent (not the declared
  * defender) create a token copy of that creature attacking that opponent.
@@ -2608,7 +2771,7 @@ export function triggerMyriad(
 
   for (const opponent of opponents) {
     for (let i = 0; i < copiesPerOpponent; i++) {
-      // Build token copy definition — mirrors original but flagged as copy
+      // Build token copy definition â€” mirrors original but flagged as copy
       const origDef = attackerCard.definition;
       const copyDefId = `copy-${origDef.id}-${uuid()}`;
       const copyDef: CardDefinition = {
@@ -2625,7 +2788,7 @@ export function triggerMyriad(
         definition: copyDef,
         zone: 'battlefield',
         tapped: true,           // Attacking creatures are tapped
-        summoningSick: false,   // Tokens entering via Myriad are attacking — no SS check
+        summoningSick: false,   // Tokens entering via Myriad are attacking â€” no SS check
         combatRole: 'attacker',
         attackTarget: opponent.id,
         markedForDamage: 0,
@@ -2697,12 +2860,14 @@ export function exileMyriadCopies(state: GameState): GameState {
     })),
   };
 
-  // Remove copy cards entirely (tokens cease to exist in exile — CR 702.116d)
+  // Remove copy cards entirely (tokens cease to exist in exile â€” CR 702.116d)
   const newCards = { ...g.cards };
   for (const id of copyIds) delete newCards[id];
 
   return { ...g, cards: newCards };
 }
+
+
 
 
 

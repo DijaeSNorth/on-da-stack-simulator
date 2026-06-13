@@ -2,7 +2,7 @@ import { useGameStore } from '../../store/gameStore';
 import { CardImage, ManaCost } from './CardImage';
 import type { CardState } from '../../types/game';
 import { getMechanicBadgesForCard, getMechanicHint, getMechanicsForCard } from '../../rules/mechanicsRegistry';
-import { getEffectivePowerToughness } from '../../engine/gameEngine';
+import { getEffectivePowerToughness, getKindredSubtypes, isChangeling, isKindred } from '../../engine/gameEngine';
 
 interface CardPreviewProps {
   card: CardState;
@@ -21,6 +21,8 @@ export function CardPreview({ card, anchor, onClose }: CardPreviewProps) {
   const minusCounters = card.counters.find(counter => counter.type === '-1/-1')?.count ?? 0;
   const chargeCounters = card.counters.find(counter => counter.type === 'charge')?.count ?? 0;
   const classLevel = card.classLevel;
+  const changeling = isChangeling(card);
+  const kindredSubtypes = isKindred(card) ? getKindredSubtypes(card) : [];
   const context = mechanics.some(mechanic => mechanic.id === 'waterbend') && card.zone === 'hand'
     ? 'cost_payment'
     : card.zone === 'exile' ? 'exile' : card.zone === 'graveyard' ? 'graveyard' : card.zone === 'battlefield' ? 'battlefield' : 'manual_prompt';
@@ -167,9 +169,10 @@ export function CardPreview({ card, anchor, onClose }: CardPreviewProps) {
               lineHeight: 1.35,
             }}>
               <strong>Spacecraft:</strong> {chargeCounters} charge counter(s)
-              {card.spacecraft.stationThreshold !== undefined && ` / station ${card.spacecraft.stationThreshold}`}
+              {card.spacecraft.stationThreshold !== undefined ? ` / station ${card.spacecraft.stationThreshold}` : ' / threshold unknown'}
               {card.spacecraft.stationed ? ' - stationed/unlocked' : ''}
               {card.spacecraft.chargeCountersAddedByStation !== undefined && ` (${card.spacecraft.chargeCountersAddedByStation} added by station)`}
+              <div>Tapped creature for station is not tapping for mana.</div>
             </div>
           )}
           {classLevel !== undefined && (
@@ -184,6 +187,21 @@ export function CardPreview({ card, anchor, onClose }: CardPreviewProps) {
               lineHeight: 1.35,
             }}>
               <strong>Class Level:</strong> {classLevel} unlocked. Class levels are tracked as state, not counters.
+            </div>
+          )}
+          {(changeling || kindredSubtypes.length > 0) && (
+            <div style={{
+              marginTop: 8,
+              fontSize: 10,
+              color: '#ddd6fe',
+              background: 'rgba(76, 29, 149, 0.22)',
+              border: '1px solid rgba(139, 92, 246, 0.28)',
+              borderRadius: 6,
+              padding: '5px 6px',
+              lineHeight: 1.35,
+            }}>
+              {changeling && <div><strong>Changeling:</strong> every creature type.</div>}
+              {kindredSubtypes.length > 0 && <div><strong>Kindred:</strong> creature subtype(s): {kindredSubtypes.join(', ')}.</div>}
             </div>
           )}
           {card.notes && <div style={{ marginTop: 8, fontSize: 10, color: '#facc15' }}>Note: {card.notes}</div>}

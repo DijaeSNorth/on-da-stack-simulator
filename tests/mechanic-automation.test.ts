@@ -6,12 +6,15 @@
 
 import { useGameStore } from '../client/src/store/gameStore';
 import {
+  applyCounterAnnihilation,
   applyStateBasedCounterCleanup,
   createCardState,
   createDefaultGameConfig,
   createEmptyGameState,
   createPlayer,
   getClassLevel,
+  getPermanentColors,
+  hasVividCondition,
 } from '../client/src/engine/gameEngine';
 import type { CardDefinition, GameState } from '../client/src/types/game';
 
@@ -645,6 +648,35 @@ test('Spacecraft marks stationed when threshold is met', () => {
   assert(card.definition.cardTypes.includes('Creature'), 'expected printed P/T spacecraft to become artifact creature when stationed');
 });
 
+test('Manual station amount works for unknown power', () => {
+  let game = makeGame();
+  const spacecraft = addBattlefieldCard(game, spacecraftDef, 'p1');
+  game = spacecraft.game;
+  const crew = addBattlefieldCard(game, { ...stationCreatureDef, id: 'unknown-station-crew', name: 'Unknown Station Crew', power: '*', toughness: '3' }, 'p1');
+  resetStore(crew.game);
+  assert(!useGameStore.getState().stationSpacecraft('p1', spacecraft.card.instanceId, crew.card.instanceId), 'expected automatic station rejected for unknown power');
+  assert(useGameStore.getState().stationSpacecraftManual('p1', spacecraft.card.instanceId, crew.card.instanceId, 4), 'expected manual station amount accepted');
+  const state = useGameStore.getState().game;
+  const counter = state.cards[spacecraft.card.instanceId].counters.find(c => c.type === 'charge');
+  assert(counter?.count === 4, `expected 4 manual charge counters, got ${counter?.count}`);
+  assert(state.cards[crew.card.instanceId].tapped, 'expected manual station creature tapped');
+});
+
+test('Station action logs notManaAbility and tracks source event', () => {
+  let game = makeGame();
+  const spacecraft = addBattlefieldCard(game, spacecraftDef, 'p1');
+  game = spacecraft.game;
+  const crew = addBattlefieldCard(game, stationCreatureDef, 'p1');
+  resetStore(crew.game);
+  assert(useGameStore.getState().stationSpacecraft('p1', spacecraft.card.instanceId, crew.card.instanceId), 'expected station action');
+  const state = useGameStore.getState().game;
+  const action = state.actionLog.at(-1);
+  const card = state.cards[spacecraft.card.instanceId];
+  assert(action?.data.notManaAbility === true, 'expected station action marked notManaAbility');
+  assert(state.turnTrackers.stationEventsThisTurn?.length === 1, 'expected station event tracked this turn');
+  assert(card.spacecraft?.stationSourceIds?.includes(crew.card.instanceId), 'expected station source id tracked');
+});
+
 test('Class enters and initializes at level 1', () => {
   const added = addBattlefieldCard(makeGame(), classDef, 'p1');
   assert(getClassLevel(added.game.cards[added.card.instanceId]) === 1, 'expected class level 1');
@@ -678,6 +710,37 @@ test('Judge mode can set Class level', () => {
   assert(useGameStore.getState().game.cards[added.card.instanceId].classLevel === 3, 'expected class level 3');
 });
 
+test('Judge mode can level opponent Class', () => {
+  const added = addBattlefieldCard(makeGame(), classDef, 'p1');
+  resetStore(added.game, 'p2', true);
+  assert(useGameStore.getState().levelUpClass('p1', added.card.instanceId), 'expected judge to level opponent class for controller');
+  assert(useGameStore.getState().game.cards[added.card.instanceId].classLevel === 2, 'expected opponent class level 2 after judge action');
+});
+
+test('Class level is not stored as a counter', () => {
+  const added = addBattlefieldCard(makeGame(), classDef, 'p1');
+  resetStore(added.game);
+  assert(useGameStore.getState().levelUpClass('p1', added.card.instanceId), 'expected class level up');
+  const card = useGameStore.getState().game.cards[added.card.instanceId];
+  assert(card.classLevel === 2, 'expected class level state 2');
+  assert(!card.counters.some(counter => counter.type.toLowerCase() === 'level'), 'expected no level counter');
+});
+
+test('Non-Class card cannot be leveled', () => {
+  const added = addBattlefieldCard(makeGame(), enchantmentDef, 'p1');
+  resetStore(added.game);
+  assert(!useGameStore.getState().levelUpClass('p1', added.card.instanceId), 'expected non-Class level up rejected');
+  assert(!useGameStore.getState().setClassLevel('p1', added.card.instanceId, 2), 'expected non-Class set level rejected');
+});
+
+test('Class helper reports current level after leveling', () => {
+  const added = addBattlefieldCard(makeGame(), classDef, 'p1');
+  resetStore(added.game);
+  useGameStore.getState().levelUpClass('p1', added.card.instanceId);
+  const card = useGameStore.getState().game.cards[added.card.instanceId];
+  assert(getClassLevel(card) === 2, `expected helper level 2, got ${getClassLevel(card)}`);
+});
+
 test('Counter annihilation leaves one +1/+1 from two plus and one minus', () => {
   const added = addBattlefieldCard(makeGame(), creatureDef, 'p1', {
     counters: [{ type: '+1/+1', count: 2 }, { type: '-1/-1', count: 1 }],
@@ -706,10 +769,25 @@ test('Counter annihilation removes equal +1/+1 and -1/-1 counters', () => {
   assert(cleaned.cards[added.card.instanceId].counters.length === 0, 'expected all paired counters removed');
 });
 
+test('applyCounterAnnihilation handles missing counters safely', () => {
+  const card = createCardState(creatureDef, 'p1', 'battlefield') as any;
+  delete card.counters;
+  const cleaned = applyCounterAnnihilation(card);
+  assert(!cleaned.counters, 'expected missing counters to remain safe and unchanged');
+});
+
 test('Blight 2 adds two -1/-1 counters', () => {
   const added = addBattlefieldCard(makeGame(), blightCreatureDef, 'p1');
   resetStore(added.game);
   assert(useGameStore.getState().applyBlight('p1', added.card.instanceId, 2), 'expected blight action');
+  const counter = useGameStore.getState().game.cards[added.card.instanceId].counters.find(c => c.type === '-1/-1');
+  assert(counter?.count === 2, `expected two -1/-1 counters, got ${counter?.count}`);
+});
+
+test('Blight can lethally reduce your own creature', () => {
+  const added = addBattlefieldCard(makeGame(), { ...blightCreatureDef, id: 'lethal-blight', name: 'Lethal Blight', power: '1', toughness: '1' }, 'p1');
+  resetStore(added.game);
+  assert(useGameStore.getState().applyBlight('p1', added.card.instanceId, 2), 'expected lethal blight allowed');
   const counter = useGameStore.getState().game.cards[added.card.instanceId].counters.find(c => c.type === '-1/-1');
   assert(counter?.count === 2, `expected two -1/-1 counters, got ${counter?.count}`);
 });
@@ -733,6 +811,12 @@ test('Cannot blight opponent creature unless judgeMode', () => {
   assert(useGameStore.getState().applyBlight('p1', added.card.instanceId, 1), 'expected judge mode blight allowed');
 });
 
+test('Cannot blight noncreature permanent', () => {
+  const added = addBattlefieldCard(makeGame(), artifactDef, 'p1');
+  resetStore(added.game);
+  assert(!useGameStore.getState().applyBlight('p1', added.card.instanceId, 1), 'expected noncreature blight rejected');
+});
+
 test('Vivid counts red, blue, and green permanents as three colors', () => {
   let game = makeGame();
   game = addBattlefieldCard(game, redPermanentDef, 'p1').game;
@@ -752,6 +836,39 @@ test('Vivid colorless permanent contributes zero colors', () => {
   const added = addBattlefieldCard(makeGame(), colorlessPermanentDef, 'p1');
   resetStore(added.game);
   assert(useGameStore.getState().getVividColorCount('p1') === 0, 'expected colorless permanent to count zero colors');
+});
+
+test('Vivid helper handles missing color data and color identity fallback', () => {
+  const missingColors = addBattlefieldCard(makeGame(), {
+    ...colorlessPermanentDef,
+    id: 'missing-vivid-colors',
+    name: 'Missing Vivid Colors',
+    colors: undefined as any,
+    colorIdentity: ['W', 'U'],
+  }, 'p1');
+  resetStore(missingColors.game);
+  const card = useGameStore.getState().game.cards[missingColors.card.instanceId];
+  assert(getPermanentColors(card).length === 2, 'expected color identity fallback when colors are missing');
+  assert(useGameStore.getState().getVividColorCount('p1') === 2, 'expected vivid count from fallback colors');
+});
+
+test('Vivid helper only counts permanents controlled by that player', () => {
+  let game = makeGame();
+  game = addBattlefieldCard(game, redPermanentDef, 'p1').game;
+  game = addBattlefieldCard(game, bluePermanentDef, 'p2').game;
+  resetStore(game);
+  assert(useGameStore.getState().getVividColorCount('p1') === 1, 'expected only p1 permanent colors');
+  assert(useGameStore.getState().getVividColorCount('p2') === 1, 'expected only p2 permanent colors');
+});
+
+test('hasVividCondition checks required vivid color count', () => {
+  let game = makeGame();
+  game = addBattlefieldCard(game, redPermanentDef, 'p1').game;
+  game = addBattlefieldCard(game, bluePermanentDef, 'p1').game;
+  resetStore(game);
+  const state = useGameStore.getState().game;
+  assert(hasVividCondition(state, 'p1', 2), 'expected vivid condition met for two colors');
+  assert(!hasVividCondition(state, 'p1', 3), 'expected vivid condition unmet for three colors');
 });
 
 console.log(`\nMechanic automation tests: ${passed} passed, ${failed} failed`);

@@ -7,6 +7,7 @@
 import { useGameStore } from '../client/src/store/gameStore';
 import {
   applyEarthbend,
+  applyStateBasedCounterCleanup,
   createCardState,
   createDefaultGameConfig,
   createEmptyGameState,
@@ -230,6 +231,24 @@ test('Earthbent 4/4 land previews 4 damage', () => {
   assert(preview.damageToPlayers.p2 === 4, `expected 4 damage, got ${preview.damageToPlayers.p2}`);
 });
 
+test('Counter-cleaned P/T is used by damage preview', () => {
+  const added = addPermanent(makeGame(), { ...creatureDef, id: 'counter-cleaned-preview', name: 'Counter Cleaned Preview' }, 'p1');
+  const withCounters = {
+    ...added.game,
+    cards: {
+      ...added.game.cards,
+      [added.card.instanceId]: {
+        ...added.game.cards[added.card.instanceId],
+        counters: [{ type: '+1/+1', count: 2 }, { type: '-1/-1', count: 1 }],
+      },
+    },
+  };
+  const cleaned = applyStateBasedCounterCleanup(withCounters);
+  const game = declareAttacker(cleaned, added.card.instanceId, 'p2');
+  const preview = generateCombatDamagePreview(game);
+  assert(preview.damageToPlayers.p2 === 4, `expected 4 damage after counter cleanup, got ${preview.damageToPlayers.p2}`);
+});
+
 test('Unknown P/T adds warning instead of crashing', () => {
   const unknown = addPermanent(makeGame(), { ...creatureDef, id: 'unknown-pt', name: 'Unknown P/T', power: '*', toughness: '*' }, 'p1');
   const game = declareAttacker(unknown.game, unknown.card.instanceId, 'p2');
@@ -266,6 +285,21 @@ test('First strike 2/2 vs normal 2/2 marks blocker likely destroyed before norma
   assert(preview.firstStrikeAssignments.length === 1, 'expected first strike assignment');
   assert(preview.normalDamageAssignments.length === 0, 'expected no normal damage after first strike death');
   assert(preview.likelyDestroyedAfterFirstStrike.includes(blocker.card.instanceId), 'expected blocker destroyed after first strike');
+  assert(preview.firstStrikeLikelyDestroyedCreatures.includes(blocker.card.instanceId), 'expected requested first strike destroyed alias');
+  assert(preview.stepNotes.some(note => note.toLowerCase().includes('first strike')), 'expected first strike step note');
+});
+
+test('Normal 2/2 blocked by first strike 2/2 is likely destroyed before normal damage', () => {
+  let game = makeGame();
+  const attacker = addPermanent(game, twoTwoDef, 'p1');
+  game = declareAttacker(attacker.game, attacker.card.instanceId, 'p2');
+  const blocker = addPermanent(game, { ...twoTwoDef, id: 'preview-first-strike-blocker', name: 'First Strike Blocker', keywords: ['First Strike'] }, 'p2');
+  game = declareBlocker(blocker.game, blocker.card.instanceId, attacker.card.instanceId);
+  const preview = generateCombatDamagePreview(game);
+  assert(preview.hasFirstStrikeDamageStep, 'expected first strike damage step');
+  assert(preview.firstStrikeAssignments.length === 1, 'expected first strike blocker assignment');
+  assert(preview.firstStrikeLikelyDestroyedCreatures.includes(attacker.card.instanceId), 'expected normal attacker destroyed before normal damage');
+  assert(preview.normalDamageAssignments.length === 0, 'expected destroyed normal attacker not to deal normal damage');
 });
 
 test('Double strike unblocked 2/2 previews 4 total damage', () => {
@@ -276,6 +310,20 @@ test('Double strike unblocked 2/2 previews 4 total damage', () => {
   assert(preview.firstStrikeAssignments.length === 1, 'expected first strike damage assignment');
   assert(preview.normalDamageAssignments.length === 1, 'expected normal damage assignment');
   assert(preview.assignments.some(assignment => assignment.notes.some(note => note.toLowerCase().includes('double strike'))), 'expected double strike note');
+});
+
+test('Double strike blocked by 2/2 shows first strike and normal step behavior', () => {
+  let game = makeGame();
+  const attacker = addPermanent(game, { ...twoTwoDef, id: 'preview-double-strike-blocked', name: 'Double Strike Blocked', keywords: ['Double Strike'] }, 'p1');
+  game = declareAttacker(attacker.game, attacker.card.instanceId, 'p2');
+  const blocker = addPermanent(game, twoTwoDef, 'p2');
+  game = declareBlocker(blocker.game, blocker.card.instanceId, attacker.card.instanceId);
+  const preview = generateCombatDamagePreview(game);
+  assert(preview.hasFirstStrikeDamageStep, 'expected first strike damage step');
+  assert(preview.firstStrikeAssignments.length === 1, 'expected double striker in first strike step');
+  assert(preview.firstStrikeLikelyDestroyedCreatures.includes(blocker.card.instanceId), 'expected blocker destroyed by first strike damage');
+  assert(preview.normalDamageAssignments.length === 1, 'expected double striker still represented in normal step');
+  assert(preview.normalDamageAssignments[0].notes.some(note => note.toLowerCase().includes('first-strike damage would destroy them')), 'expected normal step note about dead blocker');
 });
 
 test('Normal 3/3 unblocked still previews 3 damage in normal damage step only', () => {
@@ -301,6 +349,33 @@ test('Mixed first strike and normal attackers create two preview sections', () =
   assert(preview.damageToPlayers.p2 === 5, `expected 5 total damage, got ${preview.damageToPlayers.p2}`);
 });
 
+test('Token stack with first strike previews first strike damage from token keywords', () => {
+  const created = createTokens(makeGame(), 'p1', {
+    name: 'First Strike Soldier',
+    typeLine: 'Token Creature - Soldier',
+    cardTypes: ['Creature'],
+    subTypes: ['Soldier'],
+    keywords: ['First Strike'],
+    power: '1',
+    toughness: '1',
+  }, 5);
+  const game = {
+    ...created.state,
+    cards: Object.fromEntries(Object.entries(created.state.cards).map(([id, card]) => [
+      id,
+      created.tokenIds.includes(id) ? { ...card, summoningSick: false } : card,
+    ])),
+  };
+  const result = declareTokenStackAttack(game, 'p1', created.visualGroup, created.tokenIds, [
+    { count: 5, attackTarget: { type: 'player', playerId: 'p2' } },
+  ]);
+  const preview = generateCombatDamagePreview(result.state);
+  assert(preview.hasFirstStrikeDamageStep, 'expected first strike damage step for token stack');
+  assert(preview.firstStrikeAssignments.length === 1, 'expected first strike token stack assignment');
+  assert(preview.normalDamageAssignments.length === 0, 'expected no normal damage assignment for first strike-only tokens');
+  assert(preview.damageToPlayers.p2 === 5, `expected 5 first strike damage, got ${preview.damageToPlayers.p2}`);
+});
+
 test('6/6 trample blocked by 2/2 previews 4 overflow', () => {
   let game = makeGame();
   const attacker = addPermanent(game, { ...sixSixDef, id: 'six-six-trample', name: '6/6 Trample', keywords: ['Trample'] }, 'p1');
@@ -310,6 +385,8 @@ test('6/6 trample blocked by 2/2 previews 4 overflow', () => {
   const preview = generateCombatDamagePreview(game);
   assert(preview.damageToPlayers.p2 === 4, `expected 4 overflow, got ${preview.damageToPlayers.p2}`);
   assert(preview.normalDamageAssignments[0].damageToTarget === 4, 'expected assignment overflow 4');
+  assert(preview.normalDamageAssignments[0].trampleOverflow === 4, 'expected structured trample overflow 4');
+  assert(preview.normalDamageAssignments[0].lethalDamageRequired?.[blocker.card.instanceId] === 2, 'expected lethal damage requirement 2');
   assert(preview.normalDamageAssignments[0].notes.some(note => note.includes('Trample overflow: 4')), 'expected trample overflow note');
 });
 
@@ -321,6 +398,8 @@ test('6/6 trample blocked by 5/5 previews 1 overflow', () => {
   game = declareBlocker(blocker.game, blocker.card.instanceId, attacker.card.instanceId);
   const preview = generateCombatDamagePreview(game);
   assert(preview.damageToPlayers.p2 === 1, `expected 1 overflow, got ${preview.damageToPlayers.p2}`);
+  assert(preview.normalDamageAssignments[0].trampleOverflow === 1, 'expected structured trample overflow 1');
+  assert(preview.normalDamageAssignments[0].lethalDamageRequired?.[blocker.card.instanceId] === 5, 'expected lethal damage requirement 5');
 });
 
 test('6/6 trample deathtouch blocked by 5/5 previews 5 overflow', () => {
@@ -332,6 +411,9 @@ test('6/6 trample deathtouch blocked by 5/5 previews 5 overflow', () => {
   const preview = generateCombatDamagePreview(game);
   assert(preview.damageToPlayers.p2 === 5, `expected 5 overflow, got ${preview.damageToPlayers.p2}`);
   assert(preview.normalDamageAssignments[0].damageToBlockers[blocker.card.instanceId] === 1, 'expected one deathtouch damage assigned to blocker');
+  assert(preview.normalDamageAssignments[0].trampleOverflow === 5, 'expected structured trample overflow 5');
+  assert(preview.normalDamageAssignments[0].deathtouchLethal, 'expected structured deathtouch lethal flag');
+  assert(preview.normalDamageAssignments[0].lethalDamageRequired?.[blocker.card.instanceId] === 1, 'expected deathtouch lethal requirement 1');
   assert(preview.normalDamageAssignments[0].notes.some(note => note.includes('Deathtouch: 1 damage is lethal')), 'expected deathtouch note');
 });
 
@@ -343,6 +425,30 @@ test('Deathtouch 1/1 blocked by 10/10 marks blocker likely destroyed', () => {
   game = declareBlocker(blocker.game, blocker.card.instanceId, attacker.card.instanceId);
   const preview = generateCombatDamagePreview(game);
   assert(preview.likelyDestroyedCreatures.includes(blocker.card.instanceId), 'expected 10/10 blocker likely destroyed by deathtouch');
+  assert(preview.normalDamageAssignments[0].deathtouchLethal, 'expected deathtouch lethal flag');
+});
+
+test('0/1 deathtouch blocked by 10/10 does not mark blocker destroyed', () => {
+  let game = makeGame();
+  const attacker = addPermanent(game, { ...creatureDef, id: 'zero-one-deathtouch', name: '0/1 Deathtouch', keywords: ['Deathtouch'], power: '0', toughness: '1' }, 'p1');
+  game = declareAttacker(attacker.game, attacker.card.instanceId, 'p2');
+  const blocker = addPermanent(game, tenTenDef, 'p2');
+  game = declareBlocker(blocker.game, blocker.card.instanceId, attacker.card.instanceId);
+  const preview = generateCombatDamagePreview(game);
+  assert(!preview.likelyDestroyedCreatures.includes(blocker.card.instanceId), 'expected 10/10 blocker not destroyed by zero damage deathtouch');
+  assert(!preview.normalDamageAssignments[0].deathtouchLethal, 'expected deathtouch lethal flag false for zero power');
+});
+
+test('Indestructible blocker adds warning and is not confidently listed as likely destroyed', () => {
+  let game = makeGame();
+  const attacker = addPermanent(game, { ...sixSixDef, id: 'six-six-vs-indestructible', name: '6/6 Trample' }, 'p1');
+  game = declareAttacker(attacker.game, attacker.card.instanceId, 'p2');
+  const blocker = addPermanent(game, { ...twoTwoDef, id: 'indestructible-blocker', name: 'Indestructible Blocker', keywords: ['Indestructible'] }, 'p2');
+  game = declareBlocker(blocker.game, blocker.card.instanceId, attacker.card.instanceId);
+  const preview = generateCombatDamagePreview(game);
+  assert(preview.warnings.some(warning => warning.toLowerCase().includes('indestructible')), 'expected indestructible warning');
+  assert(!preview.likelyDestroyedCreatures.includes(blocker.card.instanceId), 'expected indestructible blocker not confidently listed as destroyed');
+  assert(preview.normalDamageAssignments[0].combatMathNotes?.some(note => note.toLowerCase().includes('indestructible')), 'expected indestructible combat math note');
 });
 
 test('Multiple blockers with trample shows manual assignment warning', () => {
@@ -355,6 +461,7 @@ test('Multiple blockers with trample shows manual assignment warning', () => {
   game = declareBlocker(blockerB.game, blockerB.card.instanceId, attacker.card.instanceId);
   const preview = generateCombatDamagePreview(game);
   assert(preview.warnings.some(warning => warning.toLowerCase().includes('multiple blockers with trample')), 'expected manual trample assignment warning');
+  assert(preview.normalDamageAssignments[0].manualAssignmentRequired, 'expected structured manual assignment flag');
 });
 
 console.log(`\nCombat damage preview tests: ${passed} passed, ${failed} failed`);
