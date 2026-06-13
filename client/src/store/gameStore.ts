@@ -4,7 +4,7 @@ import { v4 as uuid } from 'uuid';
 import type {
   GameState, Player, CardState, Phase, StackObject, TriggerItem, ManaPool,
   AssistantFlag, Deck, GameConfig, ActionRecord, PlayerAvatarImage, CardDefinition, TokenStackAttackInput, CombatDamagePreview,
-  PowerToughnessOverrideExpiration
+  PowerToughnessOverrideExpiration, HouseRule, DeckValidationResult, SoloDeckLabState, SoloModeTab, SoloTestMode, DummyOpponentConfig
 } from '../types/game';
 import {
   createEmptyGameState, createPlayer, createAction, moveCard, tapCard,
@@ -45,9 +45,38 @@ import {
   type DetectedTrigger,
 } from '../engine/assistantEngine';
 import { getEffectiveCardDefinition, getEffectiveCardName, getEffectiveOracleText } from '../engine/cardFaces';
-import { saveDeck, loadDecksFromStorage, normalizeCommanderDeck, prepareCommanderDeckForUse } from '../engine/deckImport';
+import { deleteDeck, importDecklist, saveDeck, loadDecksFromStorage, normalizeCommanderDeck, prepareCommanderDeckForUse } from '../engine/deckImport';
+import { createBlankDeck, validateCommanderDraft } from '../engine/soloDeckBuilder';
+import {
+  arrangeOpeningHandInGame,
+  createOpeningHandSession,
+  keepOpeningHandSession,
+  mulliganOpeningHandSession,
+  setOpeningHandCardsToBottom,
+} from '../engine/openingHand';
+import {
+  addDummyOpponentToGame,
+  advanceDummyTurn as advanceDummyTurnInEngine,
+  autoBlockForDummy as autoBlockForDummyInEngine,
+  normalizeDummyOpponentConfig,
+} from '../engine/dummyOpponentEngine';
 import { getBannedReason } from '../data/cardDatabase';
-import { createReplay, saveReplayToStorage } from '../engine/replayEngine';
+import {
+  createReplay,
+  createReplayCheckpointsWithWarnings,
+  createReplayFileFromGame,
+  createReplaySession,
+  DEFAULT_REPLAY_CHECKPOINT_INTERVAL,
+  applyReplayToIndex,
+  jumpReplayToAction,
+  jumpReplayToTurn,
+  saveReplayToStorage,
+  stepReplayBackward,
+  stepReplayForward,
+  validateReplayFile,
+} from '../engine/replayEngine';
+import { createAnimationsForAction, scaleReplayAnimations } from '../engine/replayAnimationEngine';
+import type { ExportReplayOptions, ReplayAnimationMode, ReplayCheckpoint, ReplayFile, ReplaySession, ReplaySpeed } from '../types/replay';
 import { getActiveProfile } from '../engine/profileStorage';
 import { canAccessPrivateCard, canControlPlayer, findCardOwner, isPrivateZone } from '../engine/playerPermissions';
 import {
@@ -85,7 +114,8 @@ export interface UISettings {
 }
 
 export interface UIState {
-  screen: 'lobby' | 'game';
+  screen: 'lobby' | 'game' | 'replay';
+  soloModeTab: SoloModeTab;
   selectedCardId: string | null;
   hoveredCardId: string | null;
   focusedPlayerId: string | null;
@@ -316,6 +346,28 @@ export function buildStartedGame(game: GameState, now = Date.now()): GameState {
   };
 }
 
+function withReplayAnimations(session: ReplaySession, actionIndex: number): ReplaySession {
+  if (!session.animationEnabled || session.animationMode === 'off' || session.speed === 'instant') {
+    return { ...session, currentAnimations: [], animationQueue: [] };
+  }
+  const action = session.replayFile.actionLog[actionIndex];
+  if (!action) return { ...session, currentAnimations: [], animationQueue: [] };
+  const before = applyReplayFrame(session.replayFile, actionIndex - 1, session.checkpoints);
+  const animations = scaleReplayAnimations(
+    createAnimationsForAction(action, before.currentGameState, session.currentGameState, session.replayFile.privacy, session.animationMode),
+    session.animationSpeed,
+  );
+  return { ...session, currentAnimations: animations, animationQueue: animations };
+}
+
+function applyReplayFrame(
+  replayFile: ReplayFile,
+  actionIndex: number,
+  checkpoints?: ReplayCheckpoint[],
+): { currentGameState: GameState } {
+  return applyReplayToIndex(replayFile, actionIndex, checkpoints);
+}
+
 export function getRequiredStartAckPeerIds(
   peers: Record<string, RoomPresence>,
   hostPeerId: string | null,
@@ -393,6 +445,7 @@ function debugStoreMultiplayer(event: string, data?: Record<string, unknown>): v
 
 const DEFAULT_UI: UIState = {
   screen: 'lobby',
+  soloModeTab: 'builder',
   selectedCardId: null,
   hoveredCardId: null,
   focusedPlayerId: null,
@@ -422,6 +475,7 @@ const DEFAULT_UI: UIState = {
 };
 
 function shouldRouteToHostAuthoritativeAction(state: GameStore): boolean {
+  if (state.ui.screen === 'replay') return false;
   return state.multiplayer.status === 'joined' && !applyingRemoteMultiplayerGame;
 }
 
@@ -544,8 +598,11 @@ export function applyHostAuthoritativeGameActionRequest(
 export interface GameStore {
   game: GameState;
   ui: UIState;
+  replay: ReplaySession | null;
+  replayLiveGame: GameState | null;
   multiplayer: MultiplayerState;
   decks: Deck[];
+  soloDeckLab: SoloDeckLabState;
   localPlayerId: string;
 
   // ── Multiplayer actions ──────────────────────────────────────────────────
@@ -737,6 +794,22 @@ export interface GameStore {
   setUiSettingsOpen: (open: boolean) => void;
   updateUISettings: (settings: Partial<UISettings>) => void;
   saveReplay: (name?: string) => void;
+  exportReplayFile: (options: ExportReplayOptions) => ReplayFile;
+  loadReplayFile: (file: File | string | unknown) => Promise<boolean>;
+  startReplay: () => void;
+  exitReplay: () => void;
+  replayStepForward: () => void;
+  replayStepBackward: () => void;
+  replayJumpToAction: (actionIndex: number) => void;
+  replayJumpToTurn: (turnNumber: number) => void;
+  replayPlay: () => void;
+  replayPause: () => void;
+  replaySetSpeed: (speed: ReplaySpeed) => void;
+  replaySetAnimationMode: (mode: ReplayAnimationMode) => void;
+  replaySetAnimationSpeed: (speed: number) => void;
+  replayPlayCurrentAnimation: () => void;
+  replaySkipAnimation: () => void;
+  replayClearAnimations: () => void;
   setJudgeMode: (on: boolean) => void;
   setTableViewMode: (mode: UIState['tableViewMode']) => void;
   toggleBattlefieldView: () => void;
@@ -744,6 +817,122 @@ export interface GameStore {
   enterGameScreen: () => void;
   setLobbyOpen: (open: boolean) => void;
   setDeckBuilderOpen: (open: boolean) => void;
+  openSoloDeckLab: () => void;
+  setSoloModeTab: (tab: SoloModeTab) => void;
+  loadSoloDeck: (deck: Deck) => void;
+  createSoloDraftDeck: (name?: string) => void;
+  setSoloDraftDeck: (deck: Deck, options?: { unsaved?: boolean }) => void;
+  saveSoloDraftDeck: () => boolean;
+  importSoloDeckText: (text: string, name?: string) => Promise<boolean>;
+  renameSoloDeck: (deckId: string, name: string) => boolean;
+  deleteSoloDeck: (deckId: string) => boolean;
+  duplicateSoloDeck: (deckId: string) => string | undefined;
+  drawSoloOpeningHand: () => boolean;
+  mulliganSoloOpeningHand: () => boolean;
+  setSoloOpeningHandCardsToBottom: (cardIds: string[]) => boolean;
+  keepSoloOpeningHand: (cardIdsToBottom?: string[]) => boolean;
+  newSoloOpeningHand: () => boolean;
+  startSoloGoldfishGame: (
+    options?: {
+      player?: {
+        id?: string;
+        name?: string;
+        color?: string;
+        avatarInitial?: string;
+        avatarStyle?: Player['avatarStyle'];
+        avatarImage?: PlayerAvatarImage;
+      };
+      startingLife?: number;
+      houseRules?: HouseRule[];
+      randomOpeningHand?: boolean;
+      fromKeptHand?: boolean;
+    },
+  ) => Promise<boolean>;
+  resetSoloGoldfishGame: (
+    options?: {
+      player?: {
+        id?: string;
+        name?: string;
+        color?: string;
+        avatarInitial?: string;
+        avatarStyle?: Player['avatarStyle'];
+        avatarImage?: PlayerAvatarImage;
+      };
+      startingLife?: number;
+      houseRules?: HouseRule[];
+    },
+  ) => Promise<boolean>;
+  canUseSoloSandboxTools: () => boolean;
+  sandboxDrawCards: (count?: number) => boolean;
+  sandboxRevealTopCards: (count?: number) => boolean;
+  sandboxSearchLibrary: () => boolean;
+  sandboxShuffleLibrary: () => boolean;
+  sandboxCreateToken: (name?: string, count?: number, power?: string, toughness?: string) => string[];
+  sandboxSetLifeTotal: (life: number) => boolean;
+  sandboxAddCounter: (instanceId: string, counterType: string, amount?: number) => boolean;
+  sandboxRemoveCounter: (instanceId: string, counterType: string, amount?: number) => boolean;
+  sandboxSetPowerToughnessOverride: (
+    instanceIds: string[],
+    power?: string,
+    toughness?: string,
+    reason?: string,
+    expires?: PowerToughnessOverrideExpiration,
+  ) => boolean;
+  sandboxClearPowerToughnessOverride: (instanceIds: string[]) => boolean;
+  sandboxMoveCardToZone: (instanceId: string, zone: CardState['zone']) => boolean;
+  sandboxAddManaNote: (text: string) => boolean;
+  sandboxForcePhase: (phase: Phase) => boolean;
+  sandboxAdvanceTurn: () => boolean;
+  sandboxResetBoard: () => boolean;
+  sandboxAddManualTrigger: (instanceId: string, text: string) => boolean;
+  sandboxSetCardNote: (instanceId: string, note: string) => boolean;
+  startSoloDummyPracticeGame: (
+    dummyOpponents: Partial<DummyOpponentConfig>[],
+    options?: {
+      player?: {
+        id?: string;
+        name?: string;
+        color?: string;
+        avatarInitial?: string;
+        avatarStyle?: Player['avatarStyle'];
+        avatarImage?: PlayerAvatarImage;
+      };
+      startingLife?: number;
+      houseRules?: HouseRule[];
+    },
+  ) => Promise<boolean>;
+  removeDummyOpponent: (dummyPlayerId: string) => boolean;
+  autoBlockForDummy: (dummyPlayerId: string) => boolean;
+  advanceDummyTurn: (dummyPlayerId: string) => boolean;
+  startSoloGameFromOpeningHand: (
+    options?: {
+      player?: {
+        id?: string;
+        name?: string;
+        color?: string;
+        avatarInitial?: string;
+        avatarStyle?: Player['avatarStyle'];
+        avatarImage?: PlayerAvatarImage;
+      };
+      startingLife?: number;
+      houseRules?: HouseRule[];
+    },
+  ) => Promise<boolean>;
+  startSoloDeckLabGame: (
+    mode?: SoloTestMode,
+    options?: {
+      player?: {
+        id?: string;
+        name?: string;
+        color?: string;
+        avatarInitial?: string;
+        avatarStyle?: Player['avatarStyle'];
+        avatarImage?: PlayerAvatarImage;
+      };
+      startingLife?: number;
+      houseRules?: HouseRule[];
+    },
+  ) => Promise<boolean>;
   addAssistantMessage: (msg: Omit<AssistantMessage, 'id' | 'timestamp' | 'turn' | 'phase'>) => void;
 
   loadDecks: () => void;
@@ -785,6 +974,23 @@ function makeMsg(game: GameState, flag: AssistantFlag): AssistantMessage {
     ruleRef: flag.ruleRef,
     cardRef: flag.cardRef,
   };
+}
+
+function canUseSoloSandboxToolsState(state: GameStore): boolean {
+  if (state.ui.screen === 'replay') return false;
+  if (state.ui.judgeMode) return true;
+  return state.ui.screen === 'game'
+    && state.multiplayer.status === 'disconnected'
+    && state.game.config.playerCount === 1
+    && state.game.players.length === 1;
+}
+
+function getSoloSandboxPlayer(state: GameStore): Player | undefined {
+  return state.game.players.find(player => player.id === state.localPlayerId) ?? state.game.players[0];
+}
+
+function sanitizeSandboxCount(count: number | undefined, fallback = 1): number {
+  return Math.max(0, Math.floor(Number.isFinite(count ?? NaN) ? Number(count) : fallback));
 }
 
 const PLAYER_COLORS = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899'];
@@ -1202,8 +1408,11 @@ export function ensureGameHasSeatsForPresence(game: GameState, peers: Record<str
 export const useGameStore = create<GameStore>()((set, get) => ({
   game: createEmptyGameState(createDefaultGameConfig(4)),
   ui: DEFAULT_UI,
+  replay: null,
+  replayLiveGame: null,
   multiplayer: { ...DEFAULT_MULTIPLAYER, configured: isConfigured() },
   decks: loadDecksFromStorage(),
+  soloDeckLab: {},
   localPlayerId: '',
 
   // ── Multiplayer ────────────────────────────────────────────────────────
@@ -1809,6 +2018,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   startGame: () => {
+    if (get().ui.screen === 'replay') return;
     const g = buildStartedGame(get().game);
     set({
       game: g,
@@ -3271,6 +3481,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   // ── Phase / Turn ──────────────────────────────────────────────────────────
 
   advancePhase: () => {
+    if (get().ui.screen === 'replay') return;
     let g = get().game;
     const reviewFlags: AssistantFlag[] = [];
     if (g.stack.length > 0) {
@@ -3307,6 +3518,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   goToPhase: (phase) => {
+    if (get().ui.screen === 'replay') return;
     let g = get().game;
     g = setPhase(g, phase);
     if (phase === 'cleanup') {
@@ -3317,6 +3529,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   advanceTurn: () => {
+    if (get().ui.screen === 'replay') return;
     let g = get().game;
     g = clearExpiredPowerToughnessOverrides(g, 'endOfTurn');
     g = nextTurn(g);
@@ -3326,6 +3539,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   passPriority: () => {
+    if (get().ui.screen === 'replay') return;
     const g = get().game;
     if (g.players.length === 0) return;
     const ids = g.players.map(p => p.id);
@@ -4050,6 +4264,125 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const replay = createReplay(game, name);
     saveReplayToStorage(replay);
   },
+  exportReplayFile: (options) => {
+    const state = get();
+    return createReplayFileFromGame(state.game, options, {
+      gameName: state.game.id,
+      appVersion: import.meta.env.VITE_APP_VERSION ?? 'dev',
+      buildCommit: import.meta.env.VITE_COMMIT_SHA ?? 'dev',
+      mode: state.multiplayer.status === 'disconnected' ? 'solo' : 'multiplayer',
+    });
+  },
+  loadReplayFile: async (file) => {
+    let raw: unknown = file;
+    if (typeof File !== 'undefined' && file instanceof File) {
+      raw = await file.text();
+    }
+    if (typeof raw === 'string') {
+      try {
+        raw = JSON.parse(raw);
+      } catch {
+        set(s => ({
+          replay: s.replay
+            ? { ...s.replay, status: 'error', warnings: [...s.replay.warnings, 'Replay file is not valid JSON.'] }
+            : null,
+        }));
+        return false;
+      }
+    }
+    const validation = validateReplayFile(raw);
+    if (!validation.ok || !validation.replayFile) {
+      const fallback = createReplaySession(createReplayFileFromGame(get().game, {
+        includePrivateZones: false,
+        includeFinalSnapshot: false,
+        redacted: true,
+      }));
+      set({
+        replay: { ...fallback, status: 'error', warnings: validation.errors },
+        ui: { ...get().ui, screen: 'replay', lobbyOpen: false, replayOpen: false },
+      });
+      return false;
+    }
+    const checkpointInterval = DEFAULT_REPLAY_CHECKPOINT_INTERVAL;
+    const checkpointResult = validation.replayFile.actionLog.length >= checkpointInterval
+      ? createReplayCheckpointsWithWarnings(validation.replayFile, checkpointInterval)
+      : { checkpoints: undefined, warnings: [] as string[] };
+    const session = {
+      ...createReplaySession(validation.replayFile),
+      checkpoints: checkpointResult.checkpoints,
+      checkpointInterval,
+    };
+    const liveGame = get().ui.screen === 'replay' ? get().replayLiveGame : get().game;
+    set({
+      replay: { ...session, warnings: [...session.warnings, ...validation.warnings, ...checkpointResult.warnings] },
+      replayLiveGame: liveGame,
+      game: session.currentGameState,
+      ui: { ...get().ui, screen: 'replay', lobbyOpen: false, replayOpen: false, rightPanelTab: 'log' },
+      multiplayer: { ...get().multiplayer, startHandshake: null },
+    });
+    return true;
+  },
+  startReplay: () => {
+    const replay = get().replay;
+    if (!replay) return;
+    set({ game: replay.currentGameState, ui: { ...get().ui, screen: 'replay', lobbyOpen: false, replayOpen: false } });
+  },
+  exitReplay: () => {
+    const liveGame = get().replayLiveGame;
+    set({
+      game: liveGame ?? createEmptyGameState(createDefaultGameConfig(4)),
+      replay: null,
+      replayLiveGame: null,
+      ui: { ...get().ui, screen: liveGame ? 'game' : 'lobby', lobbyOpen: !liveGame, replayOpen: false },
+    });
+  },
+  replayStepForward: () => {
+    const replay = get().replay;
+    if (!replay) return;
+    const advanced = stepReplayForward(replay);
+    const next = withReplayAnimations(advanced, advanced.currentActionIndex);
+    set({ replay: next, game: next.currentGameState });
+  },
+  replayStepBackward: () => {
+    const replay = get().replay;
+    if (!replay) return;
+    const next = { ...stepReplayBackward(replay), currentAnimations: [], animationQueue: [] };
+    set({ replay: next, game: next.currentGameState });
+  },
+  replayJumpToAction: (actionIndex) => {
+    const replay = get().replay;
+    if (!replay) return;
+    const next = { ...jumpReplayToAction(replay, actionIndex), currentAnimations: [], animationQueue: [] };
+    set({ replay: next, game: next.currentGameState });
+  },
+  replayJumpToTurn: (turnNumber) => {
+    const replay = get().replay;
+    if (!replay) return;
+    const next = { ...jumpReplayToTurn(replay, turnNumber), currentAnimations: [], animationQueue: [] };
+    set({ replay: next, game: next.currentGameState });
+  },
+  replayPlay: () => set(s => s.replay ? { replay: { ...s.replay, status: 'playing' } } : s),
+  replayPause: () => set(s => s.replay ? { replay: { ...s.replay, status: 'paused' } } : s),
+  replaySetSpeed: (speed) => set(s => s.replay ? { replay: { ...s.replay, speed, currentAnimations: speed === 'instant' ? [] : s.replay.currentAnimations } } : s),
+  replaySetAnimationMode: (mode) => set(s => s.replay ? {
+    replay: {
+      ...s.replay,
+      animationMode: mode,
+      animationEnabled: mode !== 'off',
+      currentAnimations: mode === 'off' ? [] : s.replay.currentAnimations,
+      animationQueue: mode === 'off' ? [] : s.replay.animationQueue,
+    },
+  } : s),
+  replaySetAnimationSpeed: (speed) => set(s => s.replay ? {
+    replay: { ...s.replay, animationSpeed: Math.max(0.25, Math.min(4, speed)) },
+  } : s),
+  replayPlayCurrentAnimation: () => set(s => {
+    if (!s.replay || s.replay.currentActionIndex < 0) return s;
+    const replay = withReplayAnimations(s.replay, s.replay.currentActionIndex);
+    return { replay };
+  }),
+  replaySkipAnimation: () => set(s => s.replay ? { replay: { ...s.replay, currentAnimations: [], animationQueue: [] } } : s),
+  replayClearAnimations: () => set(s => s.replay ? { replay: { ...s.replay, currentAnimations: [], animationQueue: [] } } : s),
   setJudgeMode: (on) => set(s => ({ ui: { ...s.ui, judgeMode: on } })),
   setTableViewMode: (mode) => set(s => ({ ui: { ...s.ui, tableViewMode: mode } })),
   toggleBattlefieldView: () => set(s => ({ ui: { ...s.ui, battlefieldView: s.ui.battlefieldView === 'normal' ? 'overview' : 'normal' } })),
@@ -4057,6 +4390,709 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   enterGameScreen: () => set(s => ({ ui: { ...s.ui, screen: 'game', lobbyOpen: false } })),
   setLobbyOpen: (open) => set(s => ({ ui: { ...s.ui, screen: open ? 'lobby' : 'game', lobbyOpen: open } })),
   setDeckBuilderOpen: (open) => set(s => ({ ui: { ...s.ui, deckBuilderOpen: open } })),
+  openSoloDeckLab: () => set(s => ({
+    ui: {
+      ...s.ui,
+      screen: 'lobby',
+      lobbyOpen: true,
+      soloModeTab: s.ui.soloModeTab ?? 'builder',
+      deckBuilderOpen: false,
+    },
+  })),
+  setSoloModeTab: (tab) => set(s => ({ ui: { ...s.ui, soloModeTab: tab } })),
+  loadSoloDeck: (deck) => {
+    const prepared = prepareCommanderDeckForUse(deck);
+    const validation = validateCommanderDraft(prepared.deck);
+    set(s => ({
+      soloDeckLab: {
+        ...s.soloDeckLab,
+        activeDeckId: prepared.deck.id,
+        draftDeck: prepared.deck,
+        lastValidation: validation,
+        unsavedChanges: false,
+      },
+      ui: { ...s.ui, soloModeTab: s.ui.soloModeTab ?? 'builder' },
+    }));
+  },
+  createSoloDraftDeck: (name = 'Untitled Solo Deck') => {
+    const deck = createBlankDeck(name);
+    set(s => ({
+      soloDeckLab: {
+        ...s.soloDeckLab,
+        activeDeckId: deck.id,
+        draftDeck: deck,
+        lastValidation: validateCommanderDraft(deck),
+        unsavedChanges: true,
+      },
+      ui: { ...s.ui, soloModeTab: 'builder' },
+    }));
+  },
+  setSoloDraftDeck: (deck, options = {}) => {
+    const validation = validateCommanderDraft(deck);
+    set(s => ({
+      soloDeckLab: {
+        ...s.soloDeckLab,
+        activeDeckId: deck.id,
+        draftDeck: deck,
+        lastValidation: validation,
+        unsavedChanges: options.unsaved ?? true,
+      },
+    }));
+  },
+  saveSoloDraftDeck: () => {
+    const draft = get().soloDeckLab.draftDeck;
+    if (!draft) return false;
+    const saved = { ...draft, importedAt: Date.now() };
+    saveDeck(saved);
+    set(s => ({
+      decks: loadDecksFromStorage(),
+      soloDeckLab: {
+        ...s.soloDeckLab,
+        activeDeckId: saved.id,
+        draftDeck: saved,
+        lastValidation: validateCommanderDraft(saved),
+        unsavedChanges: false,
+      },
+    }));
+    return true;
+  },
+  importSoloDeckText: async (text, name = 'Solo Deck Lab Import') => {
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+    const result = await importDecklist(trimmed, name, undefined, undefined, undefined, {
+      allowBannedCards: true,
+      captureFetchedCardData: true,
+    });
+    set(s => ({
+      soloDeckLab: {
+        ...s.soloDeckLab,
+        activeDeckId: result.deck.id,
+        draftDeck: result.deck,
+        lastValidation: validateCommanderDraft(result.deck),
+        unsavedChanges: true,
+      },
+      ui: { ...s.ui, soloModeTab: s.ui.soloModeTab ?? 'builder' },
+    }));
+    return result.cardCount > 0 && result.errors.length === 0;
+  },
+  renameSoloDeck: (deckId, name) => {
+    const trimmed = name.trim();
+    if (!deckId || !trimmed) return false;
+    const state = get();
+    const current = state.soloDeckLab.draftDeck?.id === deckId
+      ? state.soloDeckLab.draftDeck
+      : state.decks.find(deck => deck.id === deckId);
+    if (!current) return false;
+    const renamed = { ...current, name: trimmed, importedAt: Date.now() };
+    saveDeck(renamed);
+    set(s => ({
+      decks: loadDecksFromStorage(),
+      soloDeckLab: {
+        ...s.soloDeckLab,
+        draftDeck: s.soloDeckLab.draftDeck?.id === deckId ? renamed : s.soloDeckLab.draftDeck,
+        lastValidation: s.soloDeckLab.draftDeck?.id === deckId ? validateCommanderDraft(renamed) : s.soloDeckLab.lastValidation,
+        unsavedChanges: s.soloDeckLab.draftDeck?.id === deckId ? false : s.soloDeckLab.unsavedChanges,
+      },
+    }));
+    return true;
+  },
+  deleteSoloDeck: (deckId) => {
+    if (!deckId) return false;
+    deleteDeck(deckId);
+    set(s => ({
+      decks: loadDecksFromStorage(),
+      soloDeckLab: s.soloDeckLab.activeDeckId === deckId
+        ? {
+          ...s.soloDeckLab,
+          activeDeckId: undefined,
+          draftDeck: undefined,
+          lastValidation: undefined,
+          unsavedChanges: false,
+        }
+        : s.soloDeckLab,
+    }));
+    return true;
+  },
+  duplicateSoloDeck: (deckId) => {
+    const state = get();
+    const source = state.soloDeckLab.draftDeck?.id === deckId
+      ? state.soloDeckLab.draftDeck
+      : state.decks.find(deck => deck.id === deckId);
+    if (!source) return undefined;
+    const copy: Deck = {
+      ...source,
+      id: uuid(),
+      name: `${source.name} Copy`,
+      importedAt: Date.now(),
+    };
+    saveDeck(copy);
+    set(s => ({
+      decks: loadDecksFromStorage(),
+      soloDeckLab: {
+        ...s.soloDeckLab,
+        activeDeckId: copy.id,
+        draftDeck: copy,
+        lastValidation: validateCommanderDraft(copy),
+        unsavedChanges: false,
+      },
+      ui: { ...s.ui, soloModeTab: s.ui.soloModeTab ?? 'builder' },
+    }));
+    return copy.id;
+  },
+  drawSoloOpeningHand: () => {
+    const state = get();
+    const deck = state.soloDeckLab.draftDeck
+      ?? state.decks.find(candidate => candidate.id === state.soloDeckLab.activeDeckId);
+    if (!deck) return false;
+    const opening = createOpeningHandSession(deck);
+    set(s => ({
+      soloDeckLab: {
+        ...s.soloDeckLab,
+        activeDeckId: deck.id,
+        draftDeck: deck,
+        testSession: {
+          id: uuid(),
+          deckId: deck.id,
+          startedAt: Date.now(),
+          mode: 'test_hand',
+          ...opening,
+        },
+      },
+      ui: { ...s.ui, soloModeTab: 'test_hand' },
+    }));
+    return true;
+  },
+  mulliganSoloOpeningHand: () => {
+    const state = get();
+    const deck = state.soloDeckLab.draftDeck
+      ?? state.decks.find(candidate => candidate.id === state.soloDeckLab.activeDeckId);
+    const session = state.soloDeckLab.testSession;
+    if (!deck || !session?.currentHand) return false;
+    const opening = mulliganOpeningHandSession(deck, session);
+    set(s => ({
+      soloDeckLab: {
+        ...s.soloDeckLab,
+        testSession: {
+          ...session,
+          ...opening,
+        },
+      },
+    }));
+    return true;
+  },
+  setSoloOpeningHandCardsToBottom: (cardIds) => {
+    const session = get().soloDeckLab.testSession;
+    if (!session?.currentHand) return false;
+    const next = setOpeningHandCardsToBottom(session, cardIds);
+    set(s => ({
+      soloDeckLab: {
+        ...s.soloDeckLab,
+        testSession: {
+          ...session,
+          ...next,
+        },
+      },
+    }));
+    return true;
+  },
+  keepSoloOpeningHand: (cardIdsToBottom) => {
+    const session = get().soloDeckLab.testSession;
+    if (!session?.currentHand) return false;
+    const next = keepOpeningHandSession(session, cardIdsToBottom);
+    set(s => ({
+      soloDeckLab: {
+        ...s.soloDeckLab,
+        testSession: {
+          ...session,
+          ...next,
+        },
+      },
+    }));
+    return true;
+  },
+  newSoloOpeningHand: () => get().drawSoloOpeningHand(),
+  startSoloGoldfishGame: async (options = {}) => {
+    if (options.fromKeptHand && get().soloDeckLab.testSession?.currentHand?.length) {
+      const started = await get().startSoloGameFromOpeningHand(options);
+      if (started) {
+        set(s => ({
+          soloDeckLab: {
+            ...s.soloDeckLab,
+            testSession: s.soloDeckLab.testSession
+              ? { ...s.soloDeckLab.testSession, mode: 'goldfish', kept: true }
+              : s.soloDeckLab.testSession,
+          },
+        }));
+      }
+      return started;
+    }
+    if (options.randomOpeningHand) {
+      const drew = get().drawSoloOpeningHand();
+      if (!drew) return false;
+      get().keepSoloOpeningHand([]);
+      const started = await get().startSoloGameFromOpeningHand(options);
+      if (started) {
+        set(s => ({
+          soloDeckLab: {
+            ...s.soloDeckLab,
+            testSession: s.soloDeckLab.testSession
+              ? { ...s.soloDeckLab.testSession, mode: 'goldfish', kept: true }
+              : s.soloDeckLab.testSession,
+          },
+        }));
+      }
+      return started;
+    }
+    return get().startSoloDeckLabGame('goldfish', options);
+  },
+  resetSoloGoldfishGame: async (options = {}) => get().startSoloGoldfishGame({ ...options, randomOpeningHand: true }),
+  canUseSoloSandboxTools: () => canUseSoloSandboxToolsState(get()),
+  sandboxDrawCards: (count = 1) => {
+    const state = get();
+    if (!canUseSoloSandboxToolsState(state)) return false;
+    const player = getSoloSandboxPlayer(state);
+    const amount = sanitizeSandboxCount(count);
+    if (!player || amount <= 0) return false;
+    get().drawCard(player.id, amount);
+    return true;
+  },
+  sandboxRevealTopCards: (count = 1) => {
+    const state = get();
+    if (!canUseSoloSandboxToolsState(state)) return false;
+    const player = getSoloSandboxPlayer(state);
+    const amount = sanitizeSandboxCount(count);
+    if (!player || amount <= 0) return false;
+    get().lookAtTopCards(player.id, amount, player.id);
+    get().logAction(player.id, 'SEARCH_LIBRARY', `${player.name} revealed the top ${amount} card(s) in sandbox.`);
+    return true;
+  },
+  sandboxSearchLibrary: () => {
+    const state = get();
+    if (!canUseSoloSandboxToolsState(state)) return false;
+    const player = getSoloSandboxPlayer(state);
+    if (!player) return false;
+    get().openZoneDrawer('library', player.id, { mode: 'search', viewerId: player.id, private: true });
+    get().logAction(player.id, 'SEARCH_LIBRARY', `${player.name} opened sandbox library search.`);
+    return true;
+  },
+  sandboxShuffleLibrary: () => {
+    const state = get();
+    if (!canUseSoloSandboxToolsState(state)) return false;
+    const player = getSoloSandboxPlayer(state);
+    if (!player) return false;
+    get().shuffleLibrary(player.id);
+    get().logAction(player.id, 'SHUFFLE', `${player.name} shuffled their library in sandbox.`);
+    return true;
+  },
+  sandboxCreateToken: (name = 'Sandbox Token', count = 1, power = '1', toughness = '1') => {
+    const state = get();
+    if (!canUseSoloSandboxToolsState(state)) return [];
+    const player = getSoloSandboxPlayer(state);
+    const amount = sanitizeSandboxCount(count);
+    const tokenName = name.trim() || 'Sandbox Token';
+    if (!player || amount <= 0) return [];
+    const tokenDef: Parameters<typeof createToken>[2] = {
+      name: tokenName,
+      typeLine: `Token Creature - ${tokenName}`,
+      power: power.trim() || '1',
+      toughness: toughness.trim() || '1',
+      colors: [],
+      colorIdentity: [],
+      cardTypes: ['Creature'],
+      subTypes: [tokenName],
+      keywords: [],
+      oracleText: '',
+    };
+    return get().createTokenCards(player.id, tokenDef, amount);
+  },
+  sandboxSetLifeTotal: (life) => {
+    const state = get();
+    if (!canUseSoloSandboxToolsState(state)) return false;
+    const player = getSoloSandboxPlayer(state);
+    if (!player || !Number.isFinite(life)) return false;
+    const nextLife = Math.floor(life);
+    const nextGame: GameState = {
+      ...state.game,
+      players: state.game.players.map(current =>
+        current.id === player.id ? { ...current, life: nextLife } : current
+      ),
+      lastUpdatedAt: Date.now(),
+    };
+    const action = createAction(
+      nextGame,
+      player.id,
+      'CHANGE_LIFE',
+      `Sandbox set ${player.name} life to ${nextLife}.`,
+      [],
+      { sandbox: true, previousLife: player.life, life: nextLife },
+    );
+    set({ game: { ...nextGame, actionLog: [...nextGame.actionLog, action] } });
+    return true;
+  },
+  sandboxAddCounter: (instanceId, counterType, amount = 1) => {
+    const state = get();
+    if (!canUseSoloSandboxToolsState(state)) return false;
+    const card = state.game.cards[instanceId];
+    const safeType = counterType.trim() || '+1/+1';
+    const safeAmount = sanitizeSandboxCount(amount);
+    if (!card || safeAmount <= 0) return false;
+    get().addCounterToCard(instanceId, safeType, safeAmount);
+    return true;
+  },
+  sandboxRemoveCounter: (instanceId, counterType, amount = 1) => {
+    const state = get();
+    if (!canUseSoloSandboxToolsState(state)) return false;
+    const card = state.game.cards[instanceId];
+    const safeType = counterType.trim() || '+1/+1';
+    const safeAmount = sanitizeSandboxCount(amount);
+    if (!card || safeAmount <= 0) return false;
+    get().removeCounterFromCard(instanceId, safeType, safeAmount);
+    return true;
+  },
+  sandboxSetPowerToughnessOverride: (instanceIds, power, toughness, reason = 'Solo sandbox override', expires = 'manual') => {
+    if (!canUseSoloSandboxToolsState(get())) return false;
+    return get().setPowerToughnessOverride(instanceIds, power, toughness, expires, reason);
+  },
+  sandboxClearPowerToughnessOverride: (instanceIds) => {
+    if (!canUseSoloSandboxToolsState(get())) return false;
+    return get().clearPowerToughnessOverride(instanceIds);
+  },
+  sandboxMoveCardToZone: (instanceId, zone) => {
+    const state = get();
+    if (!canUseSoloSandboxToolsState(state)) return false;
+    const card = state.game.cards[instanceId];
+    if (!card) return false;
+    get().moveCardToZone(instanceId, zone, card.controllerId);
+    return true;
+  },
+  sandboxAddManaNote: (text) => {
+    const state = get();
+    if (!canUseSoloSandboxToolsState(state)) return false;
+    const player = getSoloSandboxPlayer(state);
+    const trimmed = text.trim();
+    if (!player || !trimmed) return false;
+    get().logAction(player.id, 'NOTE', `Sandbox resource note: ${trimmed}`);
+    return true;
+  },
+  sandboxForcePhase: (phase) => {
+    const state = get();
+    if (!canUseSoloSandboxToolsState(state)) return false;
+    const player = getSoloSandboxPlayer(state);
+    get().goToPhase(phase);
+    if (player) {
+      get().logAction(player.id, 'OTHER', `Sandbox forced phase to ${phase}.`);
+    }
+    return true;
+  },
+  sandboxAdvanceTurn: () => {
+    const state = get();
+    if (!canUseSoloSandboxToolsState(state)) return false;
+    const player = getSoloSandboxPlayer(state);
+    get().advanceTurn();
+    if (player) {
+      get().logAction(player.id, 'OTHER', 'Sandbox advanced to the next turn.');
+    }
+    return true;
+  },
+  sandboxResetBoard: () => {
+    const state = get();
+    if (!canUseSoloSandboxToolsState(state)) return false;
+    const player = getSoloSandboxPlayer(state);
+    if (!player) return false;
+    const resetZones = new Set<CardState['zone']>(['battlefield', 'graveyard', 'exile', 'stack']);
+    const affectedIds = Object.values(state.game.cards)
+      .filter(card => card.controllerId === player.id && resetZones.has(card.zone))
+      .map(card => card.instanceId);
+    if (affectedIds.length === 0) {
+      get().logAction(player.id, 'OTHER', 'Sandbox reset board: nothing to reset.');
+      return true;
+    }
+    const tokenIds = new Set(affectedIds.filter(id => state.game.cards[id]?.token));
+    const returningIds = affectedIds.filter(id => !tokenIds.has(id));
+    const nextCards = { ...state.game.cards };
+    for (const id of affectedIds) {
+      const card = nextCards[id];
+      if (!card) continue;
+      if (tokenIds.has(id)) {
+        delete nextCards[id];
+        continue;
+      }
+      nextCards[id] = {
+        ...card,
+        zone: 'library',
+        tapped: false,
+        counters: [],
+        markedForDamage: 0,
+        combatRole: 'none',
+        attackTarget: undefined,
+        blockTarget: undefined,
+        powerToughnessOverride: undefined,
+      };
+    }
+    const nextGame: GameState = {
+      ...state.game,
+      cards: nextCards,
+      players: state.game.players.map(current => {
+        if (current.id !== player.id) return current;
+        return {
+          ...current,
+          battlefield: current.battlefield.filter(id => !affectedIds.includes(id)),
+          graveyard: current.graveyard.filter(id => !affectedIds.includes(id)),
+          exile: current.exile.filter(id => !affectedIds.includes(id)),
+          library: [...current.library.filter(id => !affectedIds.includes(id)), ...returningIds],
+        };
+      }),
+      lastUpdatedAt: Date.now(),
+    };
+    const action = createAction(
+      nextGame,
+      player.id,
+      'OTHER',
+      `Sandbox reset board: returned ${returningIds.length} card(s) to library and removed ${tokenIds.size} token(s).`,
+      affectedIds,
+      { sandbox: true, returnedToLibrary: returningIds.length, removedTokens: tokenIds.size },
+    );
+    set({ game: { ...nextGame, actionLog: [...nextGame.actionLog, action] } });
+    return true;
+  },
+  sandboxAddManualTrigger: (instanceId, text) => {
+    if (!canUseSoloSandboxToolsState(get())) return false;
+    return get().addManualTriggerForCard(instanceId, text);
+  },
+  sandboxSetCardNote: (instanceId, note) => {
+    if (!canUseSoloSandboxToolsState(get())) return false;
+    return get().setCardTemporaryNote(instanceId, note);
+  },
+  startSoloDummyPracticeGame: async (dummyOpponents, options = {}) => {
+    const before = get();
+    if (before.ui.screen === 'replay') return false;
+    if (before.multiplayer.status !== 'disconnected') return false;
+    const configs = (dummyOpponents.length ? dummyOpponents : [{ profile: 'training' as const }])
+      .slice(0, 5)
+      .map(config => normalizeDummyOpponentConfig(config));
+    const started = await get().startSoloDeckLabGame('dummy', options);
+    if (!started) return false;
+    let nextGame = get().game;
+    const blockerIds: string[] = [];
+    for (const config of configs) {
+      const added = addDummyOpponentToGame(nextGame, config);
+      nextGame = added.state;
+      blockerIds.push(...added.blockerIds);
+    }
+    const action = createAction(
+      nextGame,
+      nextGame.activePlayerId,
+      'OTHER',
+      `Started solo dummy practice with ${configs.map(config => config.name).join(', ')}.`,
+      blockerIds,
+      { dummyPractice: true, dummyOpponents: configs },
+    );
+    nextGame = { ...nextGame, actionLog: [...nextGame.actionLog, action], lastUpdatedAt: Date.now() };
+    set(s => ({
+      game: nextGame,
+      soloDeckLab: {
+        ...s.soloDeckLab,
+        testSession: s.soloDeckLab.testSession
+          ? { ...s.soloDeckLab.testSession, mode: 'dummy', dummyOpponents: configs }
+          : { id: uuid(), startedAt: Date.now(), mode: 'dummy', gameId: nextGame.id, dummyOpponents: configs },
+      },
+    }));
+    return true;
+  },
+  removeDummyOpponent: (dummyPlayerId) => {
+    const state = get();
+    if (state.multiplayer.status !== 'disconnected') return false;
+    const dummy = state.game.players.find(player => player.id === dummyPlayerId && player.isDummy);
+    if (!dummy) return false;
+    const removedCardIds = Object.values(state.game.cards)
+      .filter(card => card.ownerId === dummy.id || card.controllerId === dummy.id)
+      .map(card => card.instanceId);
+    const removedSet = new Set(removedCardIds);
+    const nextCards = Object.fromEntries(Object.entries(state.game.cards).filter(([id]) => !removedSet.has(id)));
+    const remainingPlayers = state.game.players.filter(player => player.id !== dummy.id);
+    const nextGame: GameState = {
+      ...state.game,
+      cards: nextCards,
+      players: remainingPlayers,
+      config: { ...state.game.config, playerCount: Math.max(1, remainingPlayers.length) as GameConfig['playerCount'] },
+      combat: clearCombatAssignments(state.game).combat,
+      lastUpdatedAt: Date.now(),
+    };
+    const action = createAction(nextGame, state.localPlayerId || nextGame.activePlayerId, 'OTHER', `Removed dummy opponent ${dummy.name}.`, removedCardIds, { dummyPractice: true });
+    set(s => ({
+      game: { ...nextGame, actionLog: [...nextGame.actionLog, action] },
+      soloDeckLab: {
+        ...s.soloDeckLab,
+        testSession: s.soloDeckLab.testSession
+          ? {
+            ...s.soloDeckLab.testSession,
+            dummyOpponents: s.soloDeckLab.testSession.dummyOpponents?.filter(config => config.id !== dummy.id),
+          }
+          : s.soloDeckLab.testSession,
+      },
+    }));
+    return true;
+  },
+  autoBlockForDummy: (dummyPlayerId) => {
+    const state = get();
+    if (state.multiplayer.status !== 'disconnected') return false;
+    const result = autoBlockForDummyInEngine(state.game, dummyPlayerId);
+    if (!result.blocked) return false;
+    const dummy = result.state.players.find(player => player.id === dummyPlayerId);
+    const blocker = result.blockerId ? result.state.cards[result.blockerId] : undefined;
+    const attacker = result.attackerId ? result.state.cards[result.attackerId] : undefined;
+    const action = createAction(
+      result.state,
+      dummyPlayerId,
+      'DECLARE_BLOCKER',
+      `${dummy?.name ?? 'Dummy'} auto-blocks ${attacker?.definition.name ?? 'attacker'} with ${blocker?.definition.name ?? 'blocker'}.`,
+      [result.blockerId, result.attackerId].filter((id): id is string => Boolean(id)),
+      { dummyPractice: true, autoBlock: true },
+    );
+    set({ game: { ...result.state, actionLog: [...result.state.actionLog, action], lastUpdatedAt: Date.now() } });
+    return true;
+  },
+  advanceDummyTurn: (dummyPlayerId) => {
+    const state = get();
+    if (state.multiplayer.status !== 'disconnected') return false;
+    const dummy = state.game.players.find(player => player.id === dummyPlayerId && player.isDummy);
+    if (!dummy) return false;
+    const nextGame = advanceDummyTurnInEngine(state.game, dummyPlayerId);
+    set({ game: nextGame });
+    return nextGame !== state.game;
+  },
+  startSoloGameFromOpeningHand: async (options = {}) => {
+    if (get().ui.screen === 'replay') return false;
+    const state = get();
+    const session = state.soloDeckLab.testSession;
+    const activeDeck = state.soloDeckLab.draftDeck
+      ?? state.decks.find(deck => deck.id === state.soloDeckLab.activeDeckId);
+    if (!activeDeck || !session?.currentHand?.length) return false;
+    const prepared = prepareCommanderDeckForUse(activeDeck);
+    const playerInput = options.player;
+    const activeProfile = (!playerInput?.name?.trim() || !playerInput?.color) ? getActiveProfile() : null;
+    const playerId = playerInput?.id || state.localPlayerId || state.game.players[0]?.id || uuid();
+    const config: GameConfig = {
+      ...createDefaultGameConfig(1),
+      startingLife: options.startingLife ?? state.game.config.startingLife ?? 40,
+      houseRules: options.houseRules ?? [],
+    };
+    const soloPlayer = createPlayer(
+      playerId,
+      playerInput?.name?.trim() || activeProfile?.displayName || 'Solo Player',
+      0,
+      playerInput?.color || activeProfile?.color || PLAYER_COLORS[0],
+      config,
+      {
+        initial: playerInput?.avatarInitial,
+        style: playerInput?.avatarStyle,
+        image: playerInput?.avatarImage,
+      },
+    );
+    let nextGame: GameState = {
+      ...createEmptyGameState(config),
+      players: [soloPlayer],
+      activePlayerId: soloPlayer.id,
+      priorityPlayerId: soloPlayer.id,
+    };
+    nextGame = await loadDeckIntoPlayer(nextGame, soloPlayer.id, prepared.deck);
+    nextGame = arrangeOpeningHandInGame(nextGame, soloPlayer.id, {
+      ...session,
+      kept: session.kept ?? true,
+    });
+    const startedGame = buildStartedGame(nextGame);
+    set(s => ({
+      game: startedGame,
+      localPlayerId: soloPlayer.id,
+      soloDeckLab: {
+        ...s.soloDeckLab,
+        activeDeckId: prepared.deck.id,
+        draftDeck: prepared.deck,
+        lastValidation: validateCommanderDraft(prepared.deck),
+        testSession: {
+          ...session,
+          deckId: prepared.deck.id,
+          gameId: startedGame.id,
+          mode: 'test_hand',
+          kept: true,
+        },
+      },
+      ui: {
+        ...s.ui,
+        screen: 'game',
+        lobbyOpen: false,
+        deckBuilderOpen: true,
+      },
+    }));
+    return true;
+  },
+  startSoloDeckLabGame: async (mode = 'goldfish', options = {}) => {
+    if (get().ui.screen === 'replay') return false;
+
+    const state = get();
+    const activeDeck = state.soloDeckLab.draftDeck
+      ?? state.decks.find(deck => deck.id === state.soloDeckLab.activeDeckId);
+    const prepared = activeDeck ? prepareCommanderDeckForUse(activeDeck) : null;
+    const playerInput = options.player;
+    const activeProfile = (!playerInput?.name?.trim() || !playerInput?.color) ? getActiveProfile() : null;
+    const playerId = playerInput?.id || state.localPlayerId || state.game.players[0]?.id || uuid();
+    const config: GameConfig = {
+      ...createDefaultGameConfig(1),
+      startingLife: options.startingLife ?? state.game.config.startingLife ?? 40,
+      houseRules: options.houseRules ?? [],
+    };
+    const soloPlayer = createPlayer(
+      playerId,
+      playerInput?.name?.trim() || activeProfile?.displayName || 'Solo Player',
+      0,
+      playerInput?.color || activeProfile?.color || PLAYER_COLORS[0],
+      config,
+      {
+        initial: playerInput?.avatarInitial,
+        style: playerInput?.avatarStyle,
+        image: playerInput?.avatarImage,
+      },
+    );
+    let nextGame: GameState = {
+      ...createEmptyGameState(config),
+      players: [soloPlayer],
+      activePlayerId: soloPlayer.id,
+      priorityPlayerId: soloPlayer.id,
+    };
+
+    if (prepared) {
+      nextGame = await loadDeckIntoPlayer(nextGame, soloPlayer.id, prepared.deck);
+    }
+
+    const startedGame = buildStartedGame(nextGame);
+    const validation: DeckValidationResult | undefined = prepared
+      ? validateCommanderDraft(prepared.deck)
+      : state.soloDeckLab.lastValidation;
+    set(s => ({
+      game: startedGame,
+      localPlayerId: soloPlayer.id,
+      soloDeckLab: {
+        ...s.soloDeckLab,
+        activeDeckId: prepared?.deck.id ?? s.soloDeckLab.activeDeckId,
+        draftDeck: prepared?.deck ?? s.soloDeckLab.draftDeck,
+        lastValidation: validation,
+        testSession: {
+          id: uuid(),
+          deckId: prepared?.deck.id ?? s.soloDeckLab.activeDeckId,
+          startedAt: Date.now(),
+          gameId: startedGame.id,
+          mode,
+        },
+      },
+      ui: {
+        ...s.ui,
+        screen: 'game',
+        lobbyOpen: false,
+        deckBuilderOpen: true,
+      },
+    }));
+    return true;
+  },
   addAssistantMessage: (msg) => set(s => {
     const g = s.game;
     const msgs = [...s.ui.assistantMessages, { ...msg, id: uuid(), timestamp: Date.now(), turn: g.turn, phase: g.phase }];
@@ -4327,6 +5363,7 @@ useGameStore.subscribe(
     const game = state.game;
     const prevGame = prevState.game;
     const { multiplayer } = useGameStore.getState();
+    if (state.ui.screen === 'replay') return;
     // Only broadcast if we’re in a room and it’s a real change
     if (multiplayer.status === 'host') {
       // Don’t broadcast if this was an incoming remote update (same lastUpdatedAt)

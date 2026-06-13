@@ -263,6 +263,9 @@ export interface Player {
   battlefield: string[];
   connected: boolean;
   isSpectator: boolean;
+  isDummy?: boolean;
+  dummyProfile?: DummyOpponentProfile;
+  dummyConfig?: DummyOpponentConfig;
   settings: PlayerSettings;
 }
 
@@ -333,6 +336,149 @@ export interface Deck {
   importSource?: string;
   importedAt: number;
   logicFile?: DeckLogic;
+}
+
+export type SoloModeTab = 'builder' | 'test_hand' | 'goldfish' | 'stats' | 'sandbox' | 'dummy' | 'reports' | 'export';
+
+export type SoloTestMode = 'test_hand' | 'goldfish' | 'sandbox' | 'dummy';
+
+export type DummyOpponentProfile =
+  | 'training'
+  | 'blocker'
+  | 'aggro'
+  | 'value'
+  | 'combo_clock';
+
+export type DummyDeckMode = 'none' | 'generated' | 'decklist';
+export type DummyDeckArchetype = 'aggro' | 'midrange' | 'control' | 'tokens';
+export type DummyDeckPower = 'low' | 'medium' | 'high';
+
+export interface DummyOpponentConfig {
+  id: string;
+  name: string;
+  profile: DummyOpponentProfile;
+  startingLife: number;
+  startingBlockers?: number;
+  pressurePerTurn?: number;
+  comboTurn?: number;
+  autoBlock?: boolean;
+  autoAttack?: boolean;
+  dummyDeckMode?: DummyDeckMode;
+  dummyDeckArchetype?: DummyDeckArchetype;
+  dummyDeckPower?: DummyDeckPower;
+  dummyDeckId?: string;
+  startingHandSize?: number;
+  autoPlayLand?: boolean;
+  autoCastCreature?: boolean;
+}
+
+export interface DeckValidationResult {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+  cardCount: number;
+  commanders: string[];
+}
+
+export interface SoloTestSession {
+  id: string;
+  deckId?: string;
+  startedAt: number;
+  gameId?: string;
+  mode: SoloTestMode;
+  shuffledLibrary?: SoloOpeningHandCard[];
+  currentHand?: SoloOpeningHandCard[];
+  mulligansTaken?: number;
+  cardsToBottom?: string[];
+  kept?: boolean;
+  handHistory?: SoloOpeningHandSnapshot[];
+  dummyOpponents?: DummyOpponentConfig[];
+}
+
+export interface SoloPerformanceReport {
+  id: string;
+  deckId?: string;
+  deckName?: string;
+  sessionType: 'goldfish' | 'dummy';
+  generatedAt: number;
+  turnsPlayed: number;
+  actionsCount: number;
+  openingHand?: {
+    landCount: number;
+    nonlandCount: number;
+    averageManaValue?: number;
+    mulligansTaken?: number;
+    keptHandSize?: number;
+  };
+  manaDevelopment: {
+    landsPlayed: number;
+    turnsMissedLandDrop: number[];
+    firstThreeTurnsLandDrops: number;
+  };
+  boardDevelopment: {
+    firstPermanentTurn?: number;
+    firstCreatureTurn?: number;
+    creaturesPlayed: number;
+    noncreatureSpellsPlayed: number;
+    tokensCreated: number;
+  };
+  combat: {
+    totalDamageDealt: number;
+    totalDamageTaken: number;
+    turnOfFirstAttack?: number;
+    turnOfLethal?: number;
+    attacksDeclared: number;
+    blockersDeclared: number;
+  };
+  cardFlow: {
+    cardsDrawn: number;
+    cardsDiscarded: number;
+    cardsTutoredOrSearched: number;
+    cardsInHandAtEnd: number;
+  };
+  dummy?: {
+    profile?: string;
+    archetype?: string;
+    pressureTaken?: number;
+    survivedToTurn?: number;
+    comboClockTurn?: number;
+    dummyActionsCount?: number;
+  };
+  warnings: string[];
+  suggestions: string[];
+}
+
+export interface SavedSoloReport {
+  id: string;
+  savedAt: number;
+  deckId?: string;
+  deckName?: string;
+  sessionType: 'goldfish' | 'dummy';
+  report: SoloPerformanceReport;
+  tags?: string[];
+  notes?: string;
+}
+
+export interface SoloOpeningHandCard {
+  id: string;
+  name: string;
+  libraryIndex: number;
+}
+
+export interface SoloOpeningHandSnapshot {
+  id: string;
+  hand: SoloOpeningHandCard[];
+  mulligansTaken: number;
+  cardsToBottom: string[];
+  createdAt: number;
+}
+
+export interface SoloDeckLabState {
+  activeDeckId?: string;
+  draftDeck?: Deck;
+  testSession?: SoloTestSession;
+  lastValidation?: DeckValidationResult;
+  unsavedChanges?: boolean;
 }
 
 export interface DeckLogic {

@@ -13,13 +13,14 @@ import { LobbyScreen } from './components/lobby/LobbyScreen';
 import { CommandInput } from './components/command/CommandInput';
 import { CommanderCastMoment } from './components/commander/CommanderCastMoment';
 import { UISettingsPanel } from './components/settings/UISettingsPanel';
+import { ReplayControls } from './components/replay/ReplayControls';
+import { ReplayTimeline } from './components/replay/ReplayTimeline';
+import { ReplayInfoPanel } from './components/replay/ReplayInfoPanel';
+import { ReplayAnimationOverlay } from './components/replay/ReplayAnimationOverlay';
 import { useIsMobile } from './hooks/use-mobile';
 
 const CardSearchPanel = lazy(() =>
   import('./components/panels/CardSearchPanel').then(module => ({ default: module.CardSearchPanel }))
-);
-const ReplayPanel = lazy(() =>
-  import('./components/replay/ReplayPanel').then(module => ({ default: module.ReplayPanel }))
 );
 const ProfilePanel = lazy(() =>
   import('./components/profile/ProfilePanel').then(module => ({ default: module.ProfilePanel }))
@@ -74,7 +75,7 @@ export default function App() {
   }, [isMobile, rightPanelOpen, toggleRightPanel]);
 
   useEffect(() => {
-    if (game.status === 'playing' && ui.screen !== 'game') {
+    if (game.status === 'playing' && ui.screen !== 'game' && ui.screen !== 'replay') {
       if (import.meta.env.DEV === true || localStorage.getItem('on-da-stack-debug') === '1') {
         console.debug('[multiplayer] App safety switching playing game to game screen', {
           gameId: game.id,
@@ -108,6 +109,51 @@ export default function App() {
           Build: {BUILD_STAMP.commit} · {BUILD_STAMP.builtAt}
         </div>}
         <Suspense fallback={null}>
+          <ProfilePanel />
+          <TutorialOverlay />
+          <GlobalHelpTooltip />
+        </Suspense>
+      </div>
+    );
+  }
+
+  if (ui.screen === 'replay') {
+    return (
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        width: '100vw',
+        height: '100vh',
+        background: '#080d11',
+        overflow: 'hidden',
+        fontFamily: '"Inter", "SF Pro Display", system-ui, sans-serif',
+      }}>
+        <TopBar />
+        <ReplayControls />
+        <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
+          <div style={{ flex: 1, minWidth: 0, position: 'relative' }}>
+            <CommanderTable />
+            <ReplayAnimationOverlay />
+          </div>
+          <div style={{
+            width: isMobile ? 320 : 380,
+            maxWidth: '48vw',
+            minWidth: 260,
+            borderLeft: '1px solid #26323a',
+            background: '#080d11',
+            display: 'flex',
+            flexDirection: 'column',
+            minHeight: 0,
+          }}>
+            <ReplayTimeline />
+            <ReplayInfoPanel />
+          </div>
+        </div>
+        <FloatingCardPreview />
+        <CardContextMenu />
+        <UISettingsPanel />
+        <Suspense fallback={null}>
+          <CardSearchPanel />
           <ProfilePanel />
           <TutorialOverlay />
           <GlobalHelpTooltip />
@@ -242,7 +288,6 @@ export default function App() {
       )}
       <Suspense fallback={null}>
         <CardSearchPanel />
-        <ReplayPanel />
         <ProfilePanel />
         <TutorialOverlay />
         <GlobalHelpTooltip />

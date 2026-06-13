@@ -9,6 +9,7 @@ import {
   type ActionLogFilter,
   type ActionLogRow,
 } from './actionLogUiModel';
+import { formatReplayFileName } from '../../engine/replayFileUtils';
 
 const SEVERITY_COLORS: Record<string, string> = {
   legal: '#22c55e',
@@ -139,6 +140,21 @@ function AssistantTab() {
     const text = serializeVisibleActionLog(actionLogView.groups);
     if (!text.trim() || typeof navigator === 'undefined' || !navigator.clipboard) return;
     void navigator.clipboard.writeText(text);
+  };
+
+  const exportPublicReplay = () => {
+    const replay = store.exportReplayFile({
+      includePrivateZones: false,
+      includeFinalSnapshot: true,
+      redacted: true,
+    });
+    const blob = new Blob([JSON.stringify(replay, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = formatReplayFileName(replay, 'public');
+    anchor.click();
+    URL.revokeObjectURL(url);
   };
 
   const renderActionRow = (row: ActionLogRow) => {
@@ -300,6 +316,24 @@ function AssistantTab() {
               }}
             >
               Copy
+            </button>
+            <button
+              type="button"
+              data-testid="action-log-export-replay"
+              onClick={exportPublicReplay}
+              title="Export public replay"
+              style={{
+                fontSize: 9,
+                padding: '5px 7px',
+                background: '#332511',
+                color: '#fde68a',
+                border: '1px solid #92400e',
+                borderRadius: 5,
+                cursor: 'pointer',
+                flexShrink: 0,
+              }}
+            >
+              Export
             </button>
           </div>
           <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>

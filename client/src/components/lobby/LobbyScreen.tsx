@@ -25,6 +25,8 @@ import {
 } from '../../engine/lobbyReadiness';
 import type { Deck, PlayerAvatarImage } from '../../types/game';
 import { DeckHealthPanel } from './DeckHealthPanel';
+import { ReplayLoader } from '../replay/ReplayLoader';
+import { SoloDeckLab } from '../solo/SoloDeckLab';
 
 interface PlayerSetup {
   id: string;
@@ -36,7 +38,7 @@ interface PlayerSetup {
   deckId?: string;
 }
 
-type GameMode = 'solo' | 'table';
+type GameMode = 'solo' | 'table' | 'replay';
 type PlayerCount = 1 | 2 | 3 | 4 | 5 | 6;
 
 const DEFAULT_COLORS = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899'];
@@ -210,7 +212,7 @@ export function LobbyScreen() {
 
   function updateMode(mode: GameMode) {
     setGameMode(mode);
-    updateCount(mode === 'solo' ? 1 : (Math.max(2, playerCount) as PlayerCount));
+    updateCount(mode === 'table' ? (Math.max(2, playerCount) as PlayerCount) : 1);
   }
 
   function updateCount(n: PlayerCount) {
@@ -370,6 +372,17 @@ export function LobbyScreen() {
     };
   }
 
+  function getSelectedHouseRules() {
+    return HOUSE_RULE_PRESETS
+      .filter(rule => houseRules.has(rule.id))
+      .map(rule => ({
+        ...rule,
+        votes: Object.fromEntries(players.map(player => [player.id, true])),
+        approved: true,
+        appliesTo: 'all' as const,
+      }));
+  }
+
   function getPlayersForGame() {
     if (gameMode !== 'table') {
       return players.map(p => ({
@@ -510,7 +523,7 @@ export function LobbyScreen() {
             padding: 16,
           }}>
             <div style={{ fontSize: 11, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 12, fontWeight: 700 }}>
-              {gameMode === 'solo' ? 'Solo Deck Lab' : 'Game Setup'}
+              {gameMode === 'solo' ? 'Solo Deck Lab' : gameMode === 'replay' ? 'Replay Mode' : 'Game Setup'}
             </div>
 
             {/* Game mode */}
@@ -518,7 +531,7 @@ export function LobbyScreen() {
               <label style={{ fontSize: 11, color: '#94a3b8', display: 'block', marginBottom: 6 }}>
                 Mode
               </label>
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 6 }}>
                 <button
                   data-testid="btn-mode-solo"
                   data-help-title="Solo Lab"
@@ -551,8 +564,30 @@ export function LobbyScreen() {
                 >
                   Commander Table
                 </button>
+                <button
+                  data-testid="btn-mode-replay"
+                  data-help-title="Replay Mode"
+                  data-help-body="Loads a replay JSON file and opens a read-only timeline viewer with action-log scrubbing."
+                  data-help-placement="bottom"
+                  onClick={() => updateMode('replay')}
+                  style={{
+                    padding: '8px 10px',
+                    background: gameMode === 'replay' ? '#2a2414' : '#182127',
+                    color: gameMode === 'replay' ? '#fde68a' : '#94a3b8',
+                    border: `1px solid ${gameMode === 'replay' ? '#f59e0b' : '#34414a'}`,
+                    borderRadius: 5, cursor: 'pointer', fontSize: 12, fontWeight: 700,
+                  }}
+                >
+                  Replay
+                </button>
               </div>
             </div>
+
+            {gameMode === 'replay' && (
+              <div style={{ marginBottom: 14 }}>
+                <ReplayLoader />
+              </div>
+            )}
 
             {/* Player count */}
             {gameMode === 'table' && (
@@ -811,6 +846,18 @@ export function LobbyScreen() {
             </div>
             )}
           </div>
+
+          {gameMode === 'solo' && (
+            <div style={{ flex: '1 1 420px' }}>
+              <SoloDeckLab
+                startOptions={{
+                  player: players[activePlayerTab],
+                  startingLife,
+                  houseRules: getSelectedHouseRules(),
+                }}
+              />
+            </div>
+          )}
 
           {shouldShowDeckImportPanel(gameMode) && (
           /* Right: Deck import */
@@ -1289,11 +1336,11 @@ export function LobbyScreen() {
         )}
 
         {/* Start button */}
-        {!showJoinerStartFallback && (
+        {!showJoinerStartFallback && gameMode !== 'replay' && gameMode !== 'solo' && (
         <button
           data-testid="btn-start-game"
-          data-help-title={gameMode === 'solo' ? 'Start Solo Lab' : 'Start Commander Game'}
-          data-help-body={gameMode === 'solo' ? 'Starts the practice table. Solo mode can begin without a loaded deck so you can build and test freely.' : 'Starts the Commander table after players, decks, and connection updates have stayed stable for a short sync check.'}
+          data-help-title="Start Commander Game"
+          data-help-body="Starts the Commander table after players, decks, and connection updates have stayed stable for a short sync check."
           data-help-example={gameMode === 'table'
             ? startHandshakeActive
               ? 'Start sync: waiting for each connected player to confirm their seat and deck snapshot.'
@@ -1318,9 +1365,7 @@ export function LobbyScreen() {
           onMouseEnter={e => { (e.target as HTMLElement).style.opacity = '0.9'; }}
           onMouseLeave={e => { (e.target as HTMLElement).style.opacity = '1'; }}
         >
-          {gameMode === 'solo'
-            ? 'Start Deck Lab'
-            : !isInTableRoom
+          {!isInTableRoom
               ? 'Create Room to Start'
               : !isTableHost
                 ? 'Waiting for Host to Start'

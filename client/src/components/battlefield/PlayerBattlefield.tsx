@@ -120,6 +120,7 @@ function getBattlefieldCardDensity(cardCount: number, compact: boolean): ScaledC
 export function PlayerBattlefield({ player, isLocal, isActive, compact }: PlayerBattlefieldProps) {
   const store = useGameStore();
   const { game, ui, localPlayerId } = store;
+  const readOnly = ui.screen === 'replay';
   const drag = useDragCombatContext();
   const [expandedClouds, setExpandedClouds] = useState<Set<string>>(new Set());
   const [cloudSplits, setCloudSplits] = useState<Record<string, number>>({});
@@ -177,6 +178,7 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
   }
 
   function toggleTapped(card: CardState) {
+    if (readOnly) return;
     if (!isLocal || card.zone !== 'battlefield') return;
     if (card.tapped) store.untapCard(card.instanceId);
     else store.tapCard(card.instanceId);
@@ -263,7 +265,7 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
 
     // Determine if this card is a valid attacker to glow during drag
     const def = card.definition;
-    const isValidAttacker = isLocal && isDraggingAttack
+    const isValidAttacker = !readOnly && isLocal && isDraggingAttack
       && def.cardTypes.includes('Creature')
       && !card.tapped
       && !def.keywords.includes('Defender')
@@ -274,7 +276,7 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
       && game.combat.attackers.some(a => a.instanceId === card.instanceId);
 
     // Drag handlers for own cards
-    const dragHandlers = isLocal ? drag.cardDragHandlers(card.instanceId) : {};
+    const dragHandlers = !readOnly && isLocal ? drag.cardDragHandlers(card.instanceId) : {};
     // Block drop handlers for opponent's active attackers
     const blockDropHandlers = isActiveAttacker ? drag.attackerDropHandlers(card.instanceId) : {};
 
@@ -293,7 +295,7 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
         data-card-instance={card.instanceId}
         style={{
           position: 'relative',
-          cursor: isLocal ? 'grab' : isActiveAttacker ? 'crosshair' : 'pointer',
+          cursor: !readOnly && isLocal ? 'grab' : isActiveAttacker ? 'crosshair' : 'pointer',
           outline: outlineColor ? `${outlineWidth}px solid ${outlineColor}` : 'none',
           outlineOffset: isDropTarget ? 3 : 0,
           borderRadius: 4,
@@ -457,6 +459,7 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
   }
 
   function attackTokenBatch(cards: CardState[], clusterKey: string) {
+    if (readOnly) return;
     if (!isLocal) return;
     const untapped = cards.filter(card => !card.tapped);
     if (untapped.length === 0) return;
@@ -525,7 +528,7 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
         {counters.map(counter => (
           <div key={counter.type} style={{ fontSize: 8, color: '#6ee7b7' }}>{counter.type}:{counter.total}</div>
         ))}
-        {isLocal && (
+        {isLocal && !readOnly && (
           <div style={{ display: 'flex', gap: 3, marginTop: 4, flexWrap: 'wrap', justifyContent: 'center' }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: 2, fontSize: 8, color: '#94a3b8' }}>
               <span style={{ opacity: 0.85 }}>atk:</span>
@@ -933,6 +936,23 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
             background: '#14532d44', borderRadius: 3, padding: '1px 5px',
           }}>ACTIVE</span>
         )}
+        {player.isDummy && !compact && (
+          <span
+            title={`Dummy profile: ${player.dummyProfile ?? 'training'}`}
+            style={{
+              fontSize: 9,
+              fontWeight: 800,
+              color: '#fde68a',
+              background: '#713f123f',
+              border: '1px solid #92400e88',
+              borderRadius: 3,
+              padding: '1px 5px',
+              textTransform: 'uppercase',
+            }}
+          >
+            {player.dummyProfile ?? 'dummy'}
+          </span>
+        )}
         {!compact && (
           <span style={{ marginLeft: 'auto', fontSize: 10, color: '#64748b' }}>
             {cards.length} permanent{cards.length !== 1 ? 's' : ''}
@@ -1103,7 +1123,7 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
         </div>
       )}
       </div>
-      {tokenStackModal && (
+      {!readOnly && tokenStackModal && (
         <TokenStackAttackModal
           playerId={player.id}
           sourceGroupId={tokenStackModal.sourceGroupId}
