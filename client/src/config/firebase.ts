@@ -11,6 +11,7 @@ export interface FirebaseClientConfig {
 
 let warnedMissingFirebaseConfig = false;
 let cachedDatabase: Database | null = null;
+let loggedFirebaseRecoveryStatus = false;
 
 function env(name: string): string {
   return ((import.meta as unknown as { env?: Record<string, string | undefined> }).env?.[name] ?? '').trim();
@@ -26,13 +27,24 @@ export function getFirebaseClientConfig(): FirebaseClientConfig | null {
   };
   const missing = Object.entries(config).filter(([, value]) => !value).map(([key]) => key);
   if (missing.length > 0) {
+    logFirebaseRecoveryStatus(false, missing);
     if (((import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV ?? false) && !warnedMissingFirebaseConfig) {
       warnedMissingFirebaseConfig = true;
       console.warn('[firebase] multiplayer recovery disabled; missing VITE_FIREBASE_* config', { missing });
     }
     return null;
   }
+  logFirebaseRecoveryStatus(true);
   return config;
+}
+
+function logFirebaseRecoveryStatus(enabled: boolean, missing: string[] = []): void {
+  if (loggedFirebaseRecoveryStatus) return;
+  loggedFirebaseRecoveryStatus = true;
+  console.info('[firebase] multiplayer recovery status', {
+    enabled,
+    missing,
+  });
 }
 
 export function isFirebaseRecoveryConfigured(): boolean {
