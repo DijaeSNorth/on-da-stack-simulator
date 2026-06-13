@@ -14,6 +14,7 @@ import {
 } from '../client/src/engine/gameEngine';
 import { getEffectiveCardDefinition } from '../client/src/engine/cardFaces';
 import { parseCommand } from '../client/src/engine/nlpParser';
+import { clearHostSeatDeckState } from '../client/src/engine/multiplayerSync';
 import type { CardDefinition, GameState, StackObject, TriggerItem } from '../client/src/types/game';
 import type { RoomPresence } from '../client/src/engine/multiplayerSync';
 
@@ -395,6 +396,35 @@ test('prepareLoadedTableGame preserves loaded occupied-seat decks', () => {
   assert(Boolean(next.cards[p3Card.instanceId]), 'expected p3 library card to remain');
   assert(Boolean(next.cards[p1Card.instanceId]), 'expected p1 library card to remain');
   assert(!next.cards[p2Card.instanceId], 'expected unoccupied p2 card to be removed');
+});
+
+test('leaving multiplayer lobby clears that seat deck information', () => {
+  const game = makeGame(2);
+  const p1Card = createCardState({ ...vanillaCreature, id: 'host-card', name: 'Host Card' }, 'p1', 'library');
+  const p2Card = createCardState({ ...vanillaCreature, id: 'guest-card', name: 'Guest Card' }, 'p2', 'library');
+  const lobbyGame: GameState = {
+    ...game,
+    status: 'lobby',
+    cards: {
+      [p1Card.instanceId]: p1Card,
+      [p2Card.instanceId]: p2Card,
+    },
+    players: game.players.map(player => {
+      if (player.id === 'p1') return { ...player, deckId: 'deck-host', library: [p1Card.instanceId] };
+      if (player.id === 'p2') return { ...player, deckId: 'deck-guest', library: [p2Card.instanceId] };
+      return player;
+    }),
+  };
+  const guestPresence = makePresence('guest-peer', 1);
+
+  const next = clearHostSeatDeckState(lobbyGame, guestPresence);
+
+  assert(next !== null, 'expected guest seat deck cleanup to return updated game state');
+  assert(next.players[0].deckId === 'deck-host', 'expected host deck to remain loaded');
+  assert(next.players[1].deckId === undefined, 'expected leaving guest deck id to be cleared');
+  assert(next.players[1].library.length === 0, 'expected leaving guest library to be cleared');
+  assert(Boolean(next.cards[p1Card.instanceId]), 'expected host card to remain');
+  assert(!next.cards[p2Card.instanceId], 'expected leaving guest cards to be removed');
 });
 
 test('passPriority updates lastUpdatedAt for multiplayer broadcasting', () => {

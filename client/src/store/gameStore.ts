@@ -950,6 +950,9 @@ export const useGameStore = create<GameStore>()((set, get) => ({
                 lobby: { ...s.multiplayer.lobby, status: 'playing', updatedAt: Date.now() },
               }
               : s.multiplayer,
+            ui: syncedGame.status === 'lobby'
+              ? { ...s.ui, screen: 'lobby', lobbyOpen: true }
+              : s.ui,
           }));
           if (syncedGame.status === 'playing') get().enterGameScreen();
           applyingRemoteMultiplayerGame = false;
@@ -1091,12 +1094,13 @@ export const useGameStore = create<GameStore>()((set, get) => ({
 
   createMultiplayerRoom: async (hostName, hostColor, seatIndex, avatar, asSpectator = false) => {
     const { game, decks } = get();
+    const lobbyGame: GameState = { ...game, status: 'lobby' };
     const sessionId = createSessionId();
     const identityPlayerId = getOrCreateStablePlayerId();
     const peerId = `pending-host-${crypto.randomUUID()}`;
     const assignedSeatIndex = asSpectator ? -1 : Math.max(0, seatIndex);
-    const localGamePlayerId = game.players[assignedSeatIndex]?.id ?? '';
-    const code = await createRoom(game, {
+    const localGamePlayerId = lobbyGame.players[assignedSeatIndex]?.id ?? '';
+    const code = await createRoom(lobbyGame, {
       playerId: identityPlayerId,
       peerId,
       sessionId,
@@ -1107,11 +1111,12 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       avatarImage: avatar?.image,
       seatIndex: assignedSeatIndex,
       isSpectator: asSpectator,
-      deck: asSpectator ? undefined : findLoadedDeckSummary(localGamePlayerId, game, decks),
+      deck: asSpectator ? undefined : findLoadedDeckSummary(localGamePlayerId, lobbyGame, decks),
     });
     const actualPeerId = getPeerId() ?? peerId;
     set(s => ({
-      localPlayerId: asSpectator ? '' : (game.players[assignedSeatIndex]?.id ?? game.players[0]?.id ?? ''),
+      game: lobbyGame,
+      localPlayerId: asSpectator ? '' : (lobbyGame.players[assignedSeatIndex]?.id ?? lobbyGame.players[0]?.id ?? ''),
       multiplayer: {
         ...s.multiplayer,
         status: 'host',
@@ -1123,6 +1128,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         isSpectator: asSpectator,
         configured: true,
       },
+      ui: { ...s.ui, screen: 'lobby', lobbyOpen: true },
     }));
     return code;
   },
@@ -1174,6 +1180,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         isSpectator: self?.isSpectator ?? isSpectator,
         configured: true,
       },
+      ui: { ...s.ui, screen: 'lobby', lobbyOpen: true },
     }));
   },
 

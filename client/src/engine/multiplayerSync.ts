@@ -436,6 +436,36 @@ function markPeerOffline(conn: DataConnection): void {
   cleanupConnection(conn);
   _connections.delete(conn.peer);
   broadcastPresence();
+  broadcastLobbyState();
+}
+
+function removePeerFromHostLobby(peerId: string, removePresence = true): RoomPresence | null {
+  const presence = _peers.get(peerId);
+  if (!presence) return null;
+
+  _deckSubmissions.delete(presence.playerId);
+  if (_latestGame) {
+    const nextGame = clearHostSeatDeckState(_latestGame, presence);
+    if (nextGame) {
+      _latestGame = nextGame;
+      _onGameUpdate?.(nextGame);
+    }
+  }
+
+  if (removePresence) {
+    _peers.delete(peerId);
+  } else {
+    _peers.set(peerId, {
+      ...presence,
+      deck: undefined,
+      deckStatus: 'none',
+      ready: false,
+      online: false,
+      lastSeen: Date.now(),
+    });
+  }
+
+  return presence;
 }
 
 function cleanupAllConnections(): void {
@@ -623,6 +653,28 @@ function broadcastLobbyState(status?: LobbyState['status']): void {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function resolveSelfPresenceFromPeers(
+  peers: Record<string, RoomPresence>,
+  playerId: string,
+  sessionId: string,
+  preferredPeerId?: string,
+): { peerId: string; presence: RoomPresence } | null {
+  const preferred = preferredPeerId ? peers[preferredPeerId] : undefined;
+  if (preferredPeerId && preferred && preferred.playerId === playerId && preferred.sessionId === sessionId) {
+    return { peerId: preferredPeerId, presence: preferred };
+  }
+
+  const matchedEntries = Object.entries(peers)
+    .filter(([, presence]) => presence.playerId === playerId && presence.sessionId === sessionId);
+  if (matchedEntries.length === 0) return null;
+
+  const fallback = matchedEntries.find(([peerId]) => peerId === preferredPeerId)
+    ?? matchedEntries.find(([, presence]) => !presence.isSpectator)
+    ?? matchedEntries[0];
+
+  return fallback ? { peerId: fallback[0], presence: fallback[1] } : null;
 }
 
 function clamp(ms: number, min: number, max: number): number {
@@ -845,11 +897,7 @@ async function pollFirebaseRoom(): Promise<void> {
           _onStartAck?.(parsed.message.payload as StartGameAck);
         }
         if (parsed.message.type === 'LEAVE_ROOM') {
-          const p = _peers.get(peerId);
-          if (p) {
-            _peers.set(peerId, { ...p, online: false, lastSeen: Date.now() });
-            changed = true;
-          }
+          if (removePeerFromHostLobby(peerId)) changed = true;
         }
       }
       if (changed) await writeFirebaseRoomSnapshot();
@@ -1187,7 +1235,7 @@ function reconcilePeerDeckSummaryFromGame(peerId: string, game: GameState): bool
   return true;
 }
 
-function clearHostSeatDeckState(hostGame: GameState, presence: RoomPresence): GameState | null {
+export function clearHostSeatDeckState(hostGame: GameState, presence: RoomPresence): GameState | null {
   if (hostGame.status !== 'lobby') return null;
   const hostPlayer = hostGame.players[presence.seatIndex];
   if (!hostPlayer || !playerHasLoadedDeck(hostPlayer)) return null;
@@ -1425,6 +1473,7 @@ function handleDeckSubmitted(submission: DeckSubmission, presence: RoomPresence)
   void _onDeckSubmitted?.(submission, _peers.get(authoritativePresence.peerId)!);
   sendDeckValidationToPeer(authoritativePresence.peerId, summary, validation.valid);
   broadcastPresence();
+  broadcastLobbyState();
   return summary;
 }
 
@@ -1502,6 +1551,7 @@ function applyReadyChange(playerId: string, ready: boolean): boolean {
     lastSeen: Date.now(),
   });
   broadcastPresence();
+  broadcastLobbyState();
   return canReady;
 }
 
@@ -1535,13 +1585,16 @@ function attachHostConnectionHandlers(peer: Peer): void {
         const assignment = autoAssignSeat(presence);
         upsertPresenceFromPeer(presence, assignment);
         broadcastPresence();
+        broadcastLobbyState();
+        sendSanitizedGamePatch(conn);
       }
       if (msg.type === 'LEAVE_ROOM') {
         cleanupConnection(conn);
-        _peers.delete(conn.peer);
+        removePeerFromHostLobby(conn.peer);
         _connections.delete(conn.peer);
         conn.close();
         broadcastPresence();
+        broadcastLobbyState();
       }
       if (msg.type === 'GAME_STATE') {
         // Legacy full-state messages from joiners are intentionally ignored.
@@ -1923,13 +1976,16 @@ export async function createRoom(
           const assignment = autoAssignSeat(presence);
           upsertPresenceFromPeer(presence, assignment);
           broadcastPresence();
+          broadcastLobbyState();
+          sendSanitizedGamePatch(conn);
         }
         if (msg.type === 'LEAVE_ROOM') {
           cleanupConnection(conn);
-          _peers.delete(conn.peer);
+          removePeerFromHostLobby(conn.peer);
           _connections.delete(conn.peer);
           conn.close();
           broadcastPresence();
+          broadcastLobbyState();
         }
         if (msg.type === 'GAME_STATE') {
           // Legacy full-state messages from joiners are intentionally ignored.
@@ -2069,9 +2125,15 @@ export async function joinRoom(
           _onPresenceUpdate?.(players);
 
           // First PRESENCE_BROADCAST resolves the join promise
-          // We detect our own spectator status from what the host assigned us
-          const myEntry = players[_peerId!];
-          if (!myEntry) return;
+          // We detect our own spectator status from what the host assigned us.
+          // Resolve by identity if peer ID has shifted.
+          if (!actualPresence.sessionId) return;
+          const selfEntry = resolveSelfPresenceFromPeers(players, actualPresence.playerId, actualPresence.sessionId, _peerId ?? undefined);
+          if (!selfEntry) return;
+          if (selfEntry.peerId !== _peerId) {
+            _peerId = selfEntry.peerId;
+          }
+          const myEntry = selfEntry.presence;
           const isSpectator = myEntry?.isSpectator ?? false;
           const assignedSeatIndex = myEntry?.seatIndex ?? actualPresence.seatIndex;
 
@@ -2417,7 +2479,7 @@ export function updatePresence(fields: Partial<RoomPresence>): void {
 
 export function kickPeer(peerId: string, reason = 'Removed by host.'): boolean {
   if (!_isHost || !_peerId || peerId === _peerId) return false;
-  const hadPresence = _peers.delete(peerId);
+  const hadPresence = Boolean(removePeerFromHostLobby(peerId));
   if (_transportMode === 'firebase') {
     void firebaseRequest(`${firebaseRoomPath()}/peers/${peerId}`, 'PATCH', {
       online: false,
@@ -2436,6 +2498,7 @@ export function kickPeer(peerId: string, reason = 'Removed by host.'): boolean {
   if (conn) cleanupConnection(conn);
   _connections.delete(peerId);
   broadcastPresence();
+  broadcastLobbyState();
   return hadPresence || Boolean(conn);
 }
 

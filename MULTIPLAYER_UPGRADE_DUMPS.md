@@ -2,6 +2,24 @@
 
 Use this file as a compact handoff ledger so we can continue multiplayer debugging without depending on chat history.
 
+## 2026-06-13 -- Transport lobby-state resync and leave cleanup
+
+- Root cause found:
+  - Store-level tests passed, but the real transport flow did not rebuild/broadcast `LOBBY_STATE` after host received a joiner `PRESENCE`.
+  - Result: joiner could be connected (`multiplayer.status: joined`) while the lobby model stayed stale and did not reliably show them as a lobby participant.
+- Fixes:
+  - `client/src/engine/multiplayerSync.ts` now broadcasts refreshed lobby state and a sanitized host game patch immediately after joiner presence is accepted.
+  - Deck submit, ready changes, disconnect, leave, and kick now also refresh lobby state.
+  - Explicit leave/kick now removes the player deck submission and clears that seat's loaded deck/cards from the host lobby game.
+  - `client/src/store/gameStore.ts` now forces host create and join flows onto `ui.screen: lobby` / `lobbyOpen: true`.
+- Regression:
+  - `tests/store-flow.test.ts` adds `leaving multiplayer lobby clears that seat deck information`.
+- Verification:
+  - `cmd /c npx tsx tests/store-flow.test.ts` (35 passed)
+  - `cmd /c npx tsx tests/multiplayer-sync.test.ts`
+  - `cmd /c npx tsx tests/multiplayer-protocol.test.ts`
+  - `cmd /c npm run check`
+
 ## 2026-06-13 -- Multiplayer branch start-vote visibility pass
 
 - Branch workflow established:
