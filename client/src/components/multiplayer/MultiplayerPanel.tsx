@@ -16,6 +16,7 @@ import { getActiveProfile } from '../../engine/profileStorage';
 import { getTableDeckStatus } from '../../engine/lobbyReadiness';
 import { PlayerAvatar } from '../profile/PlayerAvatar';
 import type { PlayerAvatarImage } from '../../types/game';
+import { ReportButton } from '../report/ReportButton';
 
 const DEFAULT_COLORS = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899'];
 
@@ -687,6 +688,14 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
               : 'Joined — receiving live game state from host.'
           }
         </div>
+
+        <ReportButton
+          defaultType={relayHealth?.lastPollError ? 'multiplayer_connection' : 'multiplayer_desync'}
+          defaultTitle={relayHealth?.lastPollError ? 'Multiplayer connection issue' : 'Multiplayer desync report'}
+          defaultComponent="MultiplayerPanel"
+          defaultActionType="multiplayer"
+          label="Report Multiplayer Issue"
+        />
 
         {/* Leave */}
         <button

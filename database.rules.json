@@ -61,6 +61,26 @@
           ".write": "auth != null && root.child('rooms').child($roomCode).child('control').child('hostUid').val() === auth.uid"
         }
       }
+    },
+    "reports": {
+      ".read": false,
+      ".indexOn": ["createdAt", "expiresAt", "status", "fingerprint", "clusterId"],
+      "$reportId": {
+        ".write": "auth != null && !data.exists() && newData.exists() && newData.child('reportId').val() === $reportId && newData.child('privacyMode').val() !== 'local_export_only'"
+      }
+    },
+    "reportClusters": {
+      ".read": false,
+      ".indexOn": ["lastSeenAt", "expiresAt", "status", "fingerprint"],
+      "$clusterId": {
+        ".write": "auth != null && newData.exists() && newData.child('clusterId').val() === $clusterId"
+      }
+    },
+    "reportCleanupLog": {
+      ".read": false,
+      "$cleanupRunId": {
+        ".write": "auth != null && newData.exists()"
+      }
     }
   }
 }

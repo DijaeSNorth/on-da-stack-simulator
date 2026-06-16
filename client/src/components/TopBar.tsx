@@ -10,6 +10,7 @@ import { getPhaseLabel } from '../engine/phaseMeta';
 import { BrandMark } from './branding/BrandMark';
 import { PlayerAvatar } from './profile/PlayerAvatar';
 import { ExitGameModal } from './exit/ExitGameModal';
+import { ReportButton } from './report/ReportButton';
 
 export function TopBar() {
   const store = useGameStore();
@@ -228,6 +229,12 @@ export function TopBar() {
           title="Replay — save & review game history"
           style={topBtnStyle(ui.replayOpen ? '#1e293b' : 'none', ui.replayOpen ? '#a78bfa' : '#64748b')}
         >⏺</button>
+        <ReportButton
+          variant="topbar"
+          defaultType="bug"
+          defaultComponent="TopBar"
+          label="Report"
+        />
         {game.config.playerCount === 1 && (
           <button
             data-testid="btn-deck-lab"
