@@ -245,7 +245,7 @@ export function ReplayPanel() {
           )}
           <div style={{ flex: 1 }}>
             <span style={{ fontSize: 13, fontWeight: 700, color: '#e2e8f0' }}>
-              {view === 'list' ? 'Replays' : activeReplay?.meta.name}
+              {view === 'list' ? 'Replay Viewer' : activeReplay?.meta.name}
             </span>
             {view === 'viewer' && activeReplay && (
               <span style={{ fontSize: 10, color: '#475569', marginLeft: 8 }}>

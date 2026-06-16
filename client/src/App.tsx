@@ -17,6 +17,9 @@ import { ReplayControls } from './components/replay/ReplayControls';
 import { ReplayTimeline } from './components/replay/ReplayTimeline';
 import { ReplayInfoPanel } from './components/replay/ReplayInfoPanel';
 import { ReplayAnimationOverlay } from './components/replay/ReplayAnimationOverlay';
+import { ReplayLoader } from './components/replay/ReplayLoader';
+import { NextStepPanel } from './components/navigation/NextStepPanel';
+import { getBreadcrumb, getReplayViewerNextStep } from './components/navigation/navigationFlowModel';
 import { useIsMobile } from './hooks/use-mobile';
 
 const CardSearchPanel = lazy(() =>
@@ -50,6 +53,7 @@ const BUILD_STAMP = {
 export default function App() {
   const ui = useGameStore(s => s.ui);
   const game = useGameStore(s => s.game);
+  const replay = useGameStore(s => s.replay);
   const localPlayerId = useGameStore(s => s.localPlayerId);
   const initMultiplayerListeners = useGameStore(s => s.initMultiplayerListeners);
   const enterGameScreen = useGameStore(s => s.enterGameScreen);
@@ -129,26 +133,56 @@ export default function App() {
         fontFamily: '"Inter", "SF Pro Display", system-ui, sans-serif',
       }}>
         <TopBar />
-        <ReplayControls />
-        <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
-          <div style={{ flex: 1, minWidth: 0, position: 'relative' }}>
-            <CommanderTable />
-            <ReplayAnimationOverlay />
-          </div>
-          <div style={{
-            width: isMobile ? 320 : 380,
-            maxWidth: '48vw',
-            minWidth: 260,
-            borderLeft: '1px solid #26323a',
-            background: '#080d11',
-            display: 'flex',
-            flexDirection: 'column',
-            minHeight: 0,
-          }}>
-            <ReplayTimeline />
-            <ReplayInfoPanel />
-          </div>
+        <div style={{ padding: '10px 12px 0' }}>
+          <NextStepPanel
+            breadcrumb={getBreadcrumb(['Replay Viewer', replay ? 'Loaded' : 'Library'])}
+            step={getReplayViewerNextStep({ hasReplay: Boolean(replay) })}
+          />
         </div>
+        {replay ? (
+          <>
+            <ReplayControls />
+            <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
+              <div style={{ flex: 1, minWidth: 0, position: 'relative' }}>
+                <CommanderTable />
+                <ReplayAnimationOverlay />
+              </div>
+              <div style={{
+                width: isMobile ? 320 : 380,
+                maxWidth: '48vw',
+                minWidth: 260,
+                borderLeft: '1px solid #26323a',
+                background: '#080d11',
+                display: 'flex',
+                flexDirection: 'column',
+                minHeight: 0,
+              }}>
+                <ReplayTimeline />
+                <ReplayInfoPanel />
+              </div>
+            </div>
+          </>
+        ) : (
+          <div
+            data-testid="empty-no-replay"
+            style={{ flex: 1, display: 'grid', placeItems: 'center', padding: 24 }}
+          >
+            <section style={{
+              width: 'min(560px, 100%)',
+              border: '1px solid #26323a',
+              background: '#10161a',
+              borderRadius: 12,
+              padding: 20,
+              color: '#cbd5e1',
+            }}>
+              <h2 style={{ margin: '0 0 8px', color: '#f8fafc' }}>No replay loaded</h2>
+              <p style={{ margin: '0 0 14px', color: '#94a3b8' }}>
+                Load a saved replay file to review turns, actions, and board states.
+              </p>
+              <ReplayLoader />
+            </section>
+          </div>
+        )}
         <FloatingCardPreview />
         <CardContextMenu />
         <UISettingsPanel />
