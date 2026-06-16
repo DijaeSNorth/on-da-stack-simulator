@@ -73,6 +73,8 @@ interface PlayerBattlefieldProps {
   isLocal?: boolean;
   isActive?: boolean;
   compact?: boolean;
+  boardLabel?: string;
+  editLayoutMode?: boolean;
 }
 
 type ScaledCardSize = {
@@ -120,7 +122,7 @@ function getBattlefieldCardDensity(cardCount: number, compact: boolean): ScaledC
   };
 }
 
-export function PlayerBattlefield({ player, isLocal, isActive, compact }: PlayerBattlefieldProps) {
+export function PlayerBattlefield({ player, isLocal, isActive, compact, boardLabel, editLayoutMode = false }: PlayerBattlefieldProps) {
   const store = useGameStore();
   const { game, ui, localPlayerId } = store;
   const readOnly = ui.screen === 'replay';
@@ -279,7 +281,7 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
       && game.combat.attackers.some(a => a.instanceId === card.instanceId);
 
     // Drag handlers for own cards
-    const dragHandlers = !readOnly && isLocal ? drag.cardDragHandlers(card.instanceId) : {};
+    const dragHandlers = !readOnly && isLocal && !editLayoutMode ? drag.cardDragHandlers(card.instanceId) : {};
     // Block drop handlers for opponent's active attackers
     const blockDropHandlers = isActiveAttacker ? drag.attackerDropHandlers(card.instanceId) : {};
 
@@ -298,7 +300,7 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
         data-card-instance={card.instanceId}
         style={{
           position: 'relative',
-          cursor: !readOnly && isLocal ? 'grab' : isActiveAttacker ? 'crosshair' : 'pointer',
+          cursor: editLayoutMode && isLocal ? 'move' : !readOnly && isLocal ? 'grab' : isActiveAttacker ? 'crosshair' : 'pointer',
           outline: outlineColor ? `${outlineWidth}px solid ${outlineColor}` : 'none',
           outlineOffset: isDropTarget ? 3 : 0,
           borderRadius: 4,
@@ -955,6 +957,26 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
         }}>
           {player.name}
         </span>
+        {boardLabel && !compact && (
+          <span style={{
+            fontSize: 9,
+            fontWeight: 900,
+            color: isLocal ? '#bfdbfe' : '#cbd5e1',
+            background: isLocal ? 'rgba(37,99,235,0.24)' : 'rgba(15,23,42,0.78)',
+            border: `1px solid ${isLocal ? '#60a5fa66' : '#47556966'}`,
+            borderRadius: 999,
+            padding: '1px 7px',
+            textTransform: 'uppercase',
+            letterSpacing: '0.06em',
+          }}>
+            {boardLabel}
+          </span>
+        )}
+        {editLayoutMode && isLocal && !compact && (
+          <span style={{ fontSize: 9, color: '#fbbf24', fontWeight: 900 }}>
+            EDIT LAYOUT - combat drag disabled
+          </span>
+        )}
         {isActive && !compact && (
           <span style={{
             fontSize: 9, fontWeight: 700, color: '#22c55e',

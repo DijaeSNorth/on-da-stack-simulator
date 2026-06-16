@@ -157,6 +157,13 @@ import {
   getCommanderCastDisabledReason,
   getCommanderTax,
 } from '../engine/commanderCasting';
+import {
+  DEFAULT_BOARD_LAYOUT_PREFERENCES,
+  normalizeBoardLayoutPreferences,
+  normalizeTableViewMode,
+  type BoardLayoutPreferences,
+  type TableViewMode,
+} from '../components/battlefield/tableViewUiModel';
 
 // ─── UI State ─────────────────────────────────────────────────────────────────
 
@@ -203,7 +210,8 @@ export interface UIState {
   uiSettingsOpen: boolean;
   judgeMode: boolean;
   battlefieldView: 'normal' | 'overview';
-  tableViewMode: 'table' | 'focused' | 'combat' | 'compact';
+  tableViewMode: TableViewMode;
+  boardLayoutPreferences: BoardLayoutPreferences;
   settings: UISettings;
   assistantMessages: AssistantMessage[];
   actionFilter: string;
@@ -289,6 +297,7 @@ function deriveAdaptivePerformance(
 
 const PANEL_SIZES_KEY = 'mtg_sim_panel_sizes';
 const UI_SETTINGS_KEY = 'mtg_sim_ui_settings_v1';
+const BOARD_LAYOUT_PREFERENCES_KEY = 'mtg_sim_board_layout_preferences_v1';
 const COMBAT_PHASES_FOR_CLEANUP = new Set<Phase>([
   'beginningOfCombat',
   'declareAttackers',
@@ -416,6 +425,24 @@ function saveUISettings(settings: UISettings): void {
     localStorage.setItem(UI_SETTINGS_KEY, JSON.stringify(settings));
   } catch {
     // Settings persistence should never block gameplay.
+  }
+}
+
+export function loadBoardLayoutPreferences(): BoardLayoutPreferences {
+  if (typeof localStorage === 'undefined') return DEFAULT_BOARD_LAYOUT_PREFERENCES;
+  try {
+    return normalizeBoardLayoutPreferences(JSON.parse(localStorage.getItem(BOARD_LAYOUT_PREFERENCES_KEY) || '{}') as Partial<BoardLayoutPreferences>);
+  } catch {
+    return DEFAULT_BOARD_LAYOUT_PREFERENCES;
+  }
+}
+
+function saveBoardLayoutPreferences(preferences: BoardLayoutPreferences): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(BOARD_LAYOUT_PREFERENCES_KEY, JSON.stringify(preferences));
+  } catch {
+    // Board layout preferences are local-only and should never block play.
   }
 }
 
@@ -575,7 +602,8 @@ const DEFAULT_UI: UIState = {
   uiSettingsOpen: false,
   judgeMode: false,
   battlefieldView: 'normal',
-  tableViewMode: 'table',
+  tableViewMode: loadBoardLayoutPreferences().mode,
+  boardLayoutPreferences: loadBoardLayoutPreferences(),
   settings: loadUISettings(),
   assistantMessages: [],
   actionFilter: '',
@@ -935,6 +963,8 @@ export interface GameStore {
   setProfileOpen: (open: boolean) => void;
   setUiSettingsOpen: (open: boolean) => void;
   updateUISettings: (settings: Partial<UISettings>) => void;
+  updateBoardLayoutPreferences: (preferences: Partial<BoardLayoutPreferences>) => void;
+  resetBoardLayoutPreferences: () => void;
   saveReplay: (name?: string) => void;
   exportReplayFile: (options: ExportReplayOptions) => ReplayFile;
   loadReplayFile: (file: File | string | unknown) => Promise<boolean>;
@@ -4991,7 +5021,21 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   replaySkipAnimation: () => set(s => s.replay ? { replay: { ...s.replay, currentAnimations: [], animationQueue: [] } } : s),
   replayClearAnimations: () => set(s => s.replay ? { replay: { ...s.replay, currentAnimations: [], animationQueue: [] } } : s),
   setJudgeMode: (on) => set(s => ({ ui: { ...s.ui, judgeMode: on } })),
-  setTableViewMode: (mode) => set(s => ({ ui: { ...s.ui, tableViewMode: mode } })),
+  setTableViewMode: (mode) => set(s => {
+    const nextMode = normalizeTableViewMode(mode);
+    const preferences = normalizeBoardLayoutPreferences({ ...s.ui.boardLayoutPreferences, mode: nextMode });
+    saveBoardLayoutPreferences(preferences);
+    return { ui: { ...s.ui, tableViewMode: nextMode, boardLayoutPreferences: preferences } };
+  }),
+  updateBoardLayoutPreferences: (preferences) => set(s => {
+    const next = normalizeBoardLayoutPreferences({ ...s.ui.boardLayoutPreferences, ...preferences });
+    saveBoardLayoutPreferences(next);
+    return { ui: { ...s.ui, tableViewMode: next.mode, boardLayoutPreferences: next } };
+  }),
+  resetBoardLayoutPreferences: () => set(s => {
+    saveBoardLayoutPreferences(DEFAULT_BOARD_LAYOUT_PREFERENCES);
+    return { ui: { ...s.ui, tableViewMode: DEFAULT_BOARD_LAYOUT_PREFERENCES.mode, boardLayoutPreferences: DEFAULT_BOARD_LAYOUT_PREFERENCES } };
+  }),
   toggleBattlefieldView: () => set(s => ({ ui: { ...s.ui, battlefieldView: s.ui.battlefieldView === 'normal' ? 'overview' : 'normal' } })),
   toggleCombatMode: () => set(s => ({ ui: { ...s.ui, combatMode: !s.ui.combatMode } })),
   enterGameScreen: () => set(s => ({ ui: { ...s.ui, screen: 'game', lobbyOpen: false } })),
