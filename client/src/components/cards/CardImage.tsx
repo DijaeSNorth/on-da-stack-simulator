@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import React, { useState } from 'react';
 import type { CardState } from '../../types/game';
 import { getCardPlaceholderStyle } from '../../data/cardDatabase';
 import { getActiveProfile, getArtOverride } from '../../engine/profileStorage';
-import { getMechanicBadgesForCard } from '../../rules/mechanicsRegistry';
 import { useGameStore } from '../../store/gameStore';
+import { KeywordBadge } from '../icons/KeywordBadge';
+import { getCardSurfaceKeywordIconIds, getKeywordIconIdsForCard } from '../icons/keywordIconRegistry';
 
 interface CardImageProps {
   card: CardState;
@@ -32,7 +33,9 @@ export function CardImage({ card, size = 'normal', showArt = true, className = '
   const artOverride = getArtOverride(activeProfile, def.name);
   const imageUrl = artOverride?.imageUrl ?? (card.transformed ? def.imageUrlBack : def.imageUrl);
   const placeholder = getCardPlaceholderStyle(def);
-  const mechanicBadges = !showMechanicBadges || size === 'tiny' ? [] : getMechanicBadgesForCard(card).slice(0, size === 'compact' ? 2 : 3);
+  const allKeywordIconIds = showMechanicBadges && size !== 'tiny' ? getKeywordIconIdsForCard(card) : [];
+  const keywordIconIds = getCardSurfaceKeywordIconIds(card, showMechanicBadges, size);
+  const hiddenKeywordCount = Math.max(0, allKeywordIconIds.length - keywordIconIds.length);
 
   const containerStyle: React.CSSProperties = {
     width: dims.width,
@@ -134,32 +137,35 @@ export function CardImage({ card, size = 'normal', showArt = true, className = '
           }}>T</div>
         )}
 
-        {/* Mechanic metadata badges */}
-        {mechanicBadges.length > 0 && (
+        {/* Keyword/mechanic icons */}
+        {keywordIconIds.length > 0 && (
           <div style={{
             position: 'absolute',
             top: 2,
             left: card.summoningSick && card.definition.cardTypes.includes('Creature') ? 10 : 2,
             display: 'flex',
             gap: 2,
-            maxWidth: '72%',
+            maxWidth: '78%',
             overflow: 'hidden',
-          }}>
-            {mechanicBadges.map(badge => (
-              <span key={badge.id} title={badge.title} style={{
-                background: badge.manual ? 'rgba(245, 158, 11, 0.88)' : 'rgba(14, 165, 233, 0.88)',
-                color: '#fff',
-                fontSize: size === 'compact' ? 6 : 7,
-                fontWeight: 800,
-                borderRadius: 2,
-                padding: '1px 3px',
-                lineHeight: 1,
-                textTransform: 'uppercase',
-                whiteSpace: 'nowrap',
-              }}>
-                {badge.label}
-              </span>
+          }} data-testid={`card-keyword-icons-${card.instanceId}`}>
+            {keywordIconIds.map(id => (
+              <KeywordBadge key={id} id={id} size={size === 'compact' ? 10 : 12} emphasis="strong" />
             ))}
+            {hiddenKeywordCount > 0 && (
+              <span title={`${hiddenKeywordCount} more keyword or mechanic icon${hiddenKeywordCount === 1 ? '' : 's'}`} style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                height: size === 'compact' ? 16 : 18,
+                borderRadius: 999,
+                padding: '0 4px',
+                background: 'rgba(15,23,42,0.82)',
+                border: '1px solid rgba(148,163,184,0.28)',
+                color: '#cbd5e1',
+                fontSize: size === 'compact' ? 7 : 8,
+                fontWeight: 900,
+                lineHeight: 1,
+              }}>+{hiddenKeywordCount}</span>
+            )}
           </div>
         )}
       </div>

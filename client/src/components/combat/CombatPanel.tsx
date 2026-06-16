@@ -16,6 +16,8 @@ import { useState, useCallback, useMemo } from 'react';
 import { useGameStore } from '../../store/gameStore';
 import type { AttackDefenderTarget, CardState, Player, GameState } from '../../types/game';
 import { getFirebendingAmount, getMechanicHint, getMechanicsForCard } from '../../rules/mechanicsRegistry';
+import { KeywordBadge } from '../icons/KeywordBadge';
+import { getImportantKeywordIconIds, getKeywordIconIdsForCard, type KeywordIconId } from '../icons/keywordIconRegistry';
 import {
   buildCombatAssignmentSummaries,
   classifyCombatWarning,
@@ -69,6 +71,30 @@ function hasMyriadKeyword(card: CardState): boolean {
 
 /** Clamp a number between min and max */
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
+const COMBAT_KEYWORD_ICONS = new Set<KeywordIconId>([
+  'deathtouch',
+  'double_strike',
+  'first_strike',
+  'menace',
+  'flying',
+  'reach',
+  'trample',
+  'lifelink',
+  'vigilance',
+  'indestructible',
+  'protection',
+  'firebending',
+]);
+
+function CombatKeywordIcons({ card, limit = 5 }: { card: CardState; limit?: number }) {
+  const ids = getImportantKeywordIconIds(getKeywordIconIdsForCard(card).filter(id => COMBAT_KEYWORD_ICONS.has(id)), limit);
+  if (ids.length === 0) return null;
+  return (
+    <span className="inline-flex items-center gap-1" data-testid={`combat-keyword-icons-${card.instanceId}`}>
+      {ids.map(id => <KeywordBadge key={id} id={id} size={12} />)}
+    </span>
+  );
+}
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -1034,6 +1060,7 @@ function AttackerRow({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <p className="text-white font-semibold text-sm truncate">{card.definition.name}</p>
+          <CombatKeywordIcons card={card} />
           {isMyriad && <span className="bg-yellow-700 text-yellow-200 text-xs px-1.5 py-0.5 rounded font-semibold shrink-0">MYRIAD</span>}
         </div>
         <p className="text-gray-400 text-xs">{power}/{toughness}</p>
@@ -1120,6 +1147,7 @@ function BlockerAssignRow({
           <p className="text-white font-bold text-sm">
             {attacker.card.definition.name.replace(' (Myriad copy)', '')}{' '}
             <span className="text-gray-400 font-normal">({power}/{toughness})</span>
+            <span className="ml-2"><CombatKeywordIcons card={attacker.card} limit={4} /></span>
             <span className={`ml-2 rounded-full px-2 py-0.5 text-[10px] font-black uppercase tracking-wide ${blockBadge === 'blocked' ? 'bg-blue-900/60 text-blue-200 border border-blue-700' : 'bg-red-950/60 text-red-200 border border-red-800'}`}>
               {blockBadge}
             </span>

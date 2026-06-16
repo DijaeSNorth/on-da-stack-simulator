@@ -4,6 +4,9 @@ import { CardImage } from '../cards/CardImage';
 import type { CardState } from '../../types/game';
 import { getAllMechanics, hasMechanic } from '../../engine/mechanicResolver';
 import { canControlPlayer } from '../../engine/playerPermissions';
+import { CommanderQuickCastPanel } from '../commander/CommanderQuickCastPanel';
+import { KeywordBadge } from '../icons/KeywordBadge';
+import { getImportantKeywordIconIds, getKeywordIconIdsForCard, type KeywordIconId } from '../icons/keywordIconRegistry';
 import {
   buildZoneDrawerView,
   canViewZoneCards,
@@ -87,6 +90,7 @@ export function ZoneDrawer() {
   const privacyLabel = getZonePrivacyLabel(zone, allZoneCardIds.length, canViewCards);
   const headerNote = getHeaderNote(zone, mode, isOwnZone, zoneCards.length);
   const showControls = canViewCards && zoneCards.length > 0;
+  const commanderIds = player.commanders;
 
   function CardActions({ card }: { card: CardState }) {
     const isPermanent = ['Creature', 'Artifact', 'Enchantment', 'Planeswalker', 'Land', 'Battle']
@@ -98,6 +102,7 @@ export function ZoneDrawer() {
       return (
         <ActionRow>
           <ActionBtn label="Cast" color="#7c3aed" title="Cast from graveyard" onClick={() => { store.castFromZone(localPlayerId, card.instanceId, 'graveyard'); store.closeZoneDrawer(); }} />
+          {commanderIds.includes(card.instanceId) && <ActionBtn label="To Command" color="#f59e0b" title="Move Commander to Command Zone" onClick={() => { store.moveCommanderToCommandZone(playerId, card.instanceId, 'graveyard'); store.closeZoneDrawer(); }} />}
           {isPermanent && <ActionBtn label="Reanimate" color="#16a34a" title="Put directly onto battlefield under your control" onClick={() => { store.reanimateCard(card.instanceId, localPlayerId); store.closeZoneDrawer(); }} />}
           <ActionBtn label="To Hand" color="#2563eb" title="Return to hand" onClick={() => { store.moveCardToZone(card.instanceId, 'hand'); store.closeZoneDrawer(); }} />
           <ActionBtn label="To Library" color="#0891b2" title="Put on bottom of library" onClick={() => { store.moveCardToZone(card.instanceId, 'library'); store.closeZoneDrawer(); }} />
@@ -109,12 +114,20 @@ export function ZoneDrawer() {
     if (zone === 'exile') {
       const labels = getExilePermissionLabels(card);
       const permission = card.exilePermission;
+      const permissionIconIds: KeywordIconId[] = permission?.sourceMechanic === 'airbend'
+        ? ['airbend']
+        : permission?.sourceMechanic === 'warp' || card.warpedThisTurn
+          ? ['warp']
+          : permission?.sourceMechanic === 'manual'
+            ? ['manual']
+            : [];
       const canUsePermission = Boolean(permission && (permission.ownerId === localPlayerId || ui.judgeMode));
       return (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 3, alignItems: 'center', marginTop: 2 }}>
           {labels.length > 0 && (
-            <div style={badgeStyle} title={getExilePermissionTitle(card)}>
-              {labels.slice(0, 2).join(' / ')}
+            <div style={{ ...badgeStyle, display: 'inline-flex', alignItems: 'center', gap: 3 }} title={getExilePermissionTitle(card)}>
+              {permissionIconIds.map(id => <KeywordBadge key={id} id={id} size={10} />)}
+              <span>{labels.slice(0, 2).join(' / ')}</span>
             </div>
           )}
           <ActionRow>
@@ -128,6 +141,7 @@ export function ZoneDrawer() {
                 store.closeZoneDrawer();
               }}
             />
+            {commanderIds.includes(card.instanceId) && <ActionBtn label="To Command" color="#f59e0b" title="Move Commander to Command Zone" onClick={() => { store.moveCommanderToCommandZone(playerId, card.instanceId, 'exile'); store.closeZoneDrawer(); }} />}
             {isPermanent && <ActionBtn label="To BF" color="#16a34a" title="Put onto battlefield under your control" onClick={() => { store.reanimateCard(card.instanceId, localPlayerId); store.closeZoneDrawer(); }} />}
             <ActionBtn label="To Hand" color="#2563eb" title="Return to hand" onClick={() => { store.moveCardToZone(card.instanceId, 'hand'); store.closeZoneDrawer(); }} />
             <ActionBtn label="To GY" color="#b45309" title="Move to graveyard" onClick={() => { store.moveCardToZone(card.instanceId, 'graveyard'); store.closeZoneDrawer(); }} />
@@ -185,7 +199,7 @@ export function ZoneDrawer() {
     if (zone === 'command') {
       return (
         <ActionRow>
-          <ActionBtn label="Cast" color="#7c3aed" title="Cast from command zone" onClick={() => { store.castFromZone(localPlayerId, card.instanceId, 'command'); store.closeZoneDrawer(); }} />
+          <ActionBtn label="Cast Commander" color="#f59e0b" title="Cast from command zone" onClick={() => { store.castCommanderFromCommandZone(playerId, card.instanceId); store.closeZoneDrawer(); }} />
           {isPermanent && <ActionBtn label="To BF" color="#16a34a" title="Put onto battlefield" onClick={() => { store.reanimateCard(card.instanceId, localPlayerId); store.closeZoneDrawer(); }} />}
         </ActionRow>
       );
@@ -262,6 +276,11 @@ export function ZoneDrawer() {
         </div>
 
         <div style={bodyStyle}>
+          {zone === 'command' && canViewCards && (
+            <div style={{ marginBottom: 12 }}>
+              <CommanderQuickCastPanel playerId={playerId} showSuggestions />
+            </div>
+          )}
           {!canViewCards ? (
             <div style={emptyStyle}>{privacyLabel}</div>
           ) : view.visibleCards.length === 0 ? (
@@ -303,10 +322,12 @@ export function ZoneDrawer() {
   );
 
   function GridZoneCard({ card, actions }: { card: CardState; actions: React.ReactNode }) {
+    const keywordIconIds = getImportantKeywordIconIds(getKeywordIconIdsForCard(card), 4);
     return (
       <div data-testid={`zone-card-${card.instanceId}`} style={gridCardStyle} onMouseEnter={e => handleCardEnter(e, card)} onMouseMove={e => store.setCardPreviewAnchor({ x: e.clientX, y: e.clientY })} onMouseLeave={handleCardLeave} onClick={e => store.setCardPreview(card.instanceId, { x: e.clientX, y: e.clientY })} onContextMenu={e => { e.preventDefault(); store.openCardContextMenu(card.instanceId, e.clientX, e.clientY); }} title={card.definition.name}>
         <CardImage card={card} size="compact" />
         <div style={cardNameStyle}>{card.definition.name}</div>
+        <KeywordStrip ids={keywordIconIds} />
         {card.zone === 'exile' && card.exileReason && <div style={exileReasonStyle}>{card.exileReason.slice(0, 18)}</div>}
         {actions}
       </div>
@@ -314,12 +335,14 @@ export function ZoneDrawer() {
   }
 
   function CompactZoneCard({ card, actions }: { card: CardState; actions: React.ReactNode }) {
+    const keywordIconIds = getImportantKeywordIconIds(getKeywordIconIdsForCard(card), 4);
     return (
       <div data-testid={`zone-card-${card.instanceId}`} style={compactCardStyle} onMouseEnter={e => handleCardEnter(e, card)} onMouseMove={e => store.setCardPreviewAnchor({ x: e.clientX, y: e.clientY })} onMouseLeave={handleCardLeave} onClick={e => store.setCardPreview(card.instanceId, { x: e.clientX, y: e.clientY })} onContextMenu={e => { e.preventDefault(); store.openCardContextMenu(card.instanceId, e.clientX, e.clientY); }} title={card.definition.name}>
         <CardImage card={card} size="tiny" />
         <div style={{ minWidth: 0, flex: 1 }}>
           <div style={{ fontSize: 11, color: '#e2e8f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{card.definition.name}</div>
           <div style={{ fontSize: 9, color: '#64748b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{card.definition.typeLine}</div>
+          <KeywordStrip ids={keywordIconIds} />
         </div>
         <div style={{ flexShrink: 0 }}>{actions}</div>
       </div>
@@ -337,6 +360,14 @@ export function ZoneDrawer() {
     e.currentTarget.style.background = 'rgba(255,255,255,0.02)';
     store.setCardPreview(null);
   }
+}
+function KeywordStrip({ ids }: { ids: KeywordIconId[] }) {
+  if (ids.length === 0) return null;
+  return (
+    <div style={{ display: 'flex', gap: 2, flexWrap: 'wrap', justifyContent: 'center', marginTop: 2 }}>
+      {ids.map(id => <KeywordBadge key={id} id={id} size={10} />)}
+    </div>
+  );
 }
 
 function getHeaderNote(zone: ZoneDrawerZone, mode: string, isOwnZone: boolean, visibleCount: number): string {

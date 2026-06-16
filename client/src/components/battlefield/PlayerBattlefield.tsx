@@ -4,6 +4,9 @@ import { CardImage } from '../cards/CardImage';
 import { useDragCombatContext } from '../../hooks/DragCombatContext';
 import { PlayerAvatar } from '../profile/PlayerAvatar';
 import { TokenStackAttackModal } from '../combat/TokenStackAttackModal';
+import { CommanderQuickCastPanel } from '../commander/CommanderQuickCastPanel';
+import { KeywordBadge } from '../icons/KeywordBadge';
+import { getImportantKeywordIconIds, getKeywordIconIdsForCards } from '../icons/keywordIconRegistry';
 import type { CardState, Player } from '../../types/game';
 import {
   buildBattlefieldView,
@@ -503,6 +506,9 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
       splitDraftDefault,
       Math.max(1, cards.length - 1),
     );
+    const stackKeywordIcons = getKeywordIconIdsForCards(cards);
+    const sharedKeywordIcons = getImportantKeywordIconIds(stackKeywordIcons.shared, 3);
+    const mixedKeywordCount = stackKeywordIcons.mixed.length;
     const targetPlayerId = resolveAttackTarget(clusterKey);
     return (
       <div
@@ -523,6 +529,25 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
           ×{cards.length}{iconLabel}
         </div>
         <div style={{ fontSize: 9, color: '#94a3b8' }}>{cloud.name}</div>
+        {(sharedKeywordIcons.length > 0 || mixedKeywordCount > 0) && (
+          <div data-testid={`token-stack-keyword-icons-${clusterKey}`} style={{ display: 'flex', gap: 2, flexWrap: 'wrap', justifyContent: 'center', marginTop: 2 }}>
+            {sharedKeywordIcons.map(id => <KeywordBadge key={id} id={id} size={10} />)}
+            {mixedKeywordCount > 0 && (
+              <span title={`${mixedKeywordCount} mixed keyword or mechanic icon${mixedKeywordCount === 1 ? '' : 's'}`} style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                height: 16,
+                borderRadius: 999,
+                padding: '0 5px',
+                border: '1px solid rgba(148,163,184,0.22)',
+                background: 'rgba(15,23,42,0.72)',
+                color: '#cbd5e1',
+                fontSize: 8,
+                fontWeight: 900,
+              }}>mixed</span>
+            )}
+          </div>
+        )}
         <div style={{ fontSize: 9, color: '#94a3b8' }}>{cloud.power}/{cloud.toughness}</div>
         {tappedIds.length > 0 && <div style={{ fontSize: 9, color: '#f59e0b' }}>â†»{tappedIds.length}</div>}
         {counters.map(counter => (
@@ -989,6 +1014,10 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact }: Player
           </span>
         )}
       </div>
+
+      {!compact && player.commanders.length > 0 && (
+        <CommanderQuickCastPanel playerId={player.id} compact showSuggestions={isLocal} />
+      )}
 
       {!compact && (
         <div style={{

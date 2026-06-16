@@ -11,6 +11,8 @@ import { getTokenEntry, getTokensFromOracleText } from '../../engine/tokenRegist
 import { getLandFaceIndex } from '../../engine/cardFaces';
 import { canAccessPrivateCard, canControlPlayer, findCardOwner } from '../../engine/playerPermissions';
 import { getMechanicHint, getMechanicsForCard } from '../../rules/mechanicsRegistry';
+import { KeywordBadge } from '../icons/KeywordBadge';
+import { getImportantKeywordIconIds, getKeywordIconIdsForCard } from '../icons/keywordIconRegistry';
 
 interface MenuAction {
   label: string;
@@ -57,9 +59,12 @@ export function CardContextMenu() {
   const inGraveyard = card.zone === 'graveyard';
   const inExile = card.zone === 'exile';
   const inLibrary = card.zone === 'library';
+  const inCommand = card.zone === 'command';
+  const isCommanderCard = game.players.some(player => player.id === ownerId && player.commanders.includes(instanceId));
   const isPermanent = ['Creature', 'Artifact', 'Enchantment', 'Planeswalker', 'Land', 'Battle']
     .some(t => def.cardTypes.includes(t as typeof def.cardTypes[number]));
   const rulesMechanics = getMechanicsForCard(card);
+  const keywordIconIds = getImportantKeywordIconIds(getKeywordIconIdsForCard(card), 6);
   const hintContext = rulesMechanics.some(mechanic => mechanic.id === 'waterbend') && inHand
     ? 'cost_payment'
     : inExile ? 'exile' : inGraveyard ? 'graveyard' : onBattlefield ? 'battlefield' : 'manual_prompt';
@@ -196,6 +201,14 @@ export function CardContextMenu() {
       action: () => { store.castFromZone(localPlayerId, instanceId, 'graveyard'); close(); },
       tooltip: 'Flashback, Escape, Unearth, Encore, etc.',
     });
+    if (isCommanderCard) {
+      actions.push({
+        label: 'Move Commander to Command Zone',
+        tier: 1,
+        action: () => { store.moveCommanderToCommandZone(ownerId, instanceId, 'graveyard'); close(); },
+        tooltip: 'Move this commander from graveyard to the command zone without increasing commander tax.',
+      });
+    }
     if (isPermanent) {
       actions.push({
         label: 'Reanimate (onto Battlefield)',
@@ -229,6 +242,14 @@ export function CardContextMenu() {
       action: () => { if (exilePermission && canUseExilePermission) store.castExiledWithPermission(localPlayerId, instanceId); else store.castFromZone(localPlayerId, instanceId, 'exile'); close(); },
       tooltip: exilePermission?.sourceMechanic === 'airbend' ? 'Airbended - owner may cast this for {2}; normal timing applies.' : 'Foretell, Adventure, Suspend, Rebound, etc.',
     });
+    if (isCommanderCard) {
+      actions.push({
+        label: 'Move Commander to Command Zone',
+        tier: 1,
+        action: () => { store.moveCommanderToCommandZone(ownerId, instanceId, 'exile'); close(); },
+        tooltip: 'Move this commander from exile to the command zone without increasing commander tax.',
+      });
+    }
     if (isPermanent) {
       actions.push({
         label: 'Put onto Battlefield',
@@ -237,6 +258,15 @@ export function CardContextMenu() {
         tooltip: 'Directly move this permanent onto the battlefield.',
       });
     }
+  }
+
+  if (canControlThisCard && inCommand && isCommanderCard) {
+    actions.push({
+      label: 'Cast Commander',
+      tier: 1,
+      action: () => { store.castCommanderFromCommandZone(ownerId, instanceId); close(); },
+      tooltip: 'Cast this commander from the command zone and apply commander tax.',
+    });
   }
 
   // ─── Battlefield actions ────────────────────────────────────────────────────
@@ -760,6 +790,11 @@ export function CardContextMenu() {
         <span style={{ fontSize: 9, color: '#4b5563', marginLeft: 6, fontWeight: 400 }}>
           {def.keywords.length > 0 ? def.keywords.slice(0, 3).join(' · ') : def.typeLine}
         </span>
+        {keywordIconIds.length > 0 && (
+          <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap', marginTop: 5 }}>
+            {keywordIconIds.map(id => <KeywordBadge key={id} id={id} size={12} />)}
+          </div>
+        )}
         {rulesMechanics.length > 0 && (
           <div style={{ marginTop: 5, display: 'flex', flexDirection: 'column', gap: 3, textTransform: 'none', letterSpacing: 0 }}>
             {rulesMechanics.slice(0, 2).map(mechanic => (

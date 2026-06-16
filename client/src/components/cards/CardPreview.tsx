@@ -1,8 +1,11 @@
+import React from 'react';
 import { useGameStore } from '../../store/gameStore';
 import { CardImage, ManaCost } from './CardImage';
 import type { CardState } from '../../types/game';
-import { getMechanicBadgesForCard, getMechanicHint, getMechanicsForCard } from '../../rules/mechanicsRegistry';
+import { getMechanicHint, getMechanicsForCard } from '../../rules/mechanicsRegistry';
 import { getEffectivePowerToughness, getKindredSubtypes, isChangeling, isKindred } from '../../engine/gameEngine';
+import { KeywordBadge } from '../icons/KeywordBadge';
+import { getKeywordIconDefinition, getKeywordIconIdsForCard } from '../icons/keywordIconRegistry';
 
 interface CardPreviewProps {
   card: CardState;
@@ -13,7 +16,7 @@ interface CardPreviewProps {
 export function CardPreview({ card, anchor, onClose }: CardPreviewProps) {
   const def = card.definition;
   const mechanics = getMechanicsForCard(card);
-  const badges = getMechanicBadgesForCard(card);
+  const keywordIconIds = getKeywordIconIdsForCard(card, undefined, { includeManualFallback: true });
   const effectivePT = getEffectivePowerToughness(card);
   const hasPrintedPT = def.power !== undefined || def.toughness !== undefined;
   const hasPTOverride = Boolean(card.powerToughnessOverride);
@@ -59,20 +62,12 @@ export function CardPreview({ card, anchor, onClose }: CardPreviewProps) {
             {def.manaCost && <ManaCost cost={def.manaCost.raw} />}
           </div>
           <div style={{ fontSize: 11, color: '#94a3b8', marginBottom: 6 }}>{def.typeLine}</div>
-          {badges.length > 0 && (
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
-              {badges.map(badge => (
-                <span key={badge.id} title={badge.title} style={{
-                  fontSize: 9,
-                  fontWeight: 800,
-                  borderRadius: 999,
-                  padding: '2px 6px',
-                  background: badge.manual ? '#92400e' : '#075985',
-                  color: badge.manual ? '#fed7aa' : '#bae6fd',
-                }}>
-                  {badge.label}
-                </span>
-              ))}
+          {keywordIconIds.length > 0 && (
+            <div data-testid={`card-preview-keyword-icons-${card.instanceId}`} style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
+              {keywordIconIds.map(id => {
+                const definition = getKeywordIconDefinition(id);
+                return <KeywordBadge key={id} id={id} labelMode="full" tooltip={`${definition.label}: ${definition.description}`} size={13} />;
+              })}
             </div>
           )}
           {def.oracleText && (
