@@ -27,6 +27,8 @@ function presence(peerId: string, name: string, seatIndex: number, isSpectator =
     isSpectator,
     online: true,
     lastSeen: Date.now(),
+    ready: !isSpectator,
+    deckStatus: isSpectator ? 'none' : 'valid',
   };
 }
 
@@ -212,7 +214,10 @@ assert(hostWaitingForActualDeckSync.missingDeckPlayers.includes('Guest'), 'expec
 
 const missingGuest = canStartCommanderTable({
   isHost: true,
-  peers,
+  peers: {
+    ...peers,
+    guest: { ...peers.guest, deckStatus: 'none', ready: false },
+  },
   playerCount: 2,
   seats: staleLocalSeats,
   gamePlayers: [hostPlayer, { ...guestPlayer, deckId: undefined, commandZone: [] }],
@@ -260,7 +265,14 @@ for (const count of [2, 3, 4] as const) {
   const missingSeatIndex = count - 1;
   const tableMissing = canStartCommanderTable({
     isHost: true,
-    peers: tablePeers,
+    peers: {
+      ...tablePeers,
+      [`peer-${missingSeatIndex + 1}`]: {
+        ...tablePeers[`peer-${missingSeatIndex + 1}`],
+        deckStatus: 'none',
+        ready: false,
+      },
+    },
     playerCount: count,
     seats: tablePlayers.map(player => ({ id: player.id, name: player.name })),
     gamePlayers: tablePlayers.map((player, index) => index === missingSeatIndex

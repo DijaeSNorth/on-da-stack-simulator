@@ -26,10 +26,45 @@ interface MultiplayerPanelProps {
   seatCount?: number;
   seats?: { id: string; name: string; deckId?: string }[];
   onPrepareRoom?: () => void;
+  onChooseDeck?: () => void;
   onExitRoom?: () => void;
 }
 
-export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: configuredSeats, onPrepareRoom, onExitRoom }: MultiplayerPanelProps) {
+export type SimpleDeckStatus = 'none' | 'submitted' | 'valid' | 'rejected';
+
+export function getFriendlyDeckLabel(status: SimpleDeckStatus | undefined): string {
+  if (status === 'valid') return 'Deck Checked';
+  if (status === 'submitted') return 'Checking Deck';
+  if (status === 'rejected') return 'Deck Rejected';
+  return 'Needs Deck';
+}
+
+export function getLocalPlayerCtaLabel({
+  connected,
+  isHost,
+  localDeckStatus,
+  localReady,
+  joinerCanEnterStartedGame,
+  joinerNeedsGamePatch,
+}: {
+  connected: boolean;
+  isHost: boolean;
+  localDeckStatus: SimpleDeckStatus;
+  localReady: boolean;
+  joinerCanEnterStartedGame: boolean;
+  joinerNeedsGamePatch: boolean;
+}): string {
+  if (!connected) return isHost ? 'Create Room' : 'Join Room';
+  if (joinerCanEnterStartedGame) return 'Enter Game';
+  if (joinerNeedsGamePatch) return 'Sync From Host';
+  if (localDeckStatus === 'none') return 'Choose Deck';
+  if (localDeckStatus === 'submitted') return 'Checking Deck...';
+  if (localDeckStatus === 'rejected') return 'Fix Deck';
+  if (!localReady) return 'Mark Ready';
+  return isHost ? 'Ready' : 'Ready - waiting for host';
+}
+
+export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: configuredSeats, onPrepareRoom, onChooseDeck, onExitRoom }: MultiplayerPanelProps) {
   const store = useGameStore();
   const { multiplayer, game } = store;
 
@@ -56,9 +91,20 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
     : 'PeerJS/WebRTC';
   const relayStatusLabel = transportMode === 'firebase'
     ? relayHealth?.lastPollError
-      ? `degraded relay: ${relayHealth.lastPollError}`
+      ? `Recovery connection needs attention: ${relayHealth.lastPollError}`
       : 'healthy relay'
     : '';
+  const connectionStatusLabel = isMigrating
+    ? 'Reconnecting'
+    : transportMode === 'firebase'
+      ? relayHealth?.lastPollError
+        ? 'Recovery available'
+        : 'Connected - recovery available'
+      : connected
+        ? 'Connected'
+        : busy
+          ? 'Syncing'
+          : 'Disconnected';
 
   function applyActiveProfile() {
     const profile = getActiveProfile();
@@ -98,7 +144,7 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
     if (!joinCode.trim()) { setError('Enter the room code.'); return; }
     setBusy(true);
     try {
-      await store.joinMultiplayerRoom(joinCode.trim(), peerName.trim(), peerColor, role === 'spectator' ? -1 : 0, {
+      await store.joinMultiplayerRoom(joinCode.trim().toUpperCase(), peerName.trim(), peerColor, role === 'spectator' ? -1 : 0, {
         initial: avatarInitial,
         style: avatarStyle,
         image: avatarImage,
@@ -134,7 +180,7 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
   const localPlayerId = localPeer?.playerId;
   const authoritativeDeckSummary = localPlayerId ? multiplayer.lobby?.submittedDecks?.[localPlayerId] : undefined;
   const authoritativeDeckStatus = authoritativeDeckSummary?.status;
-  const localDeckStatus = authoritativeDeckStatus ?? localPeer?.deck?.status ?? localPeer?.deckStatus ?? 'none';
+  const localDeckStatus = (authoritativeDeckStatus ?? localPeer?.deck?.status ?? localPeer?.deckStatus ?? 'none') as SimpleDeckStatus;
   const localDeckReason = authoritativeDeckSummary?.errors?.join(' ') || localPeer?.deck?.errors?.join(' ') || '';
   const localReady = Boolean(localPeer?.ready);
   const canToggleReady = !isSpectator && localDeckStatus === 'valid';
@@ -184,6 +230,16 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
     deckId: game.players[i]?.deckId,
   }));
   const activeSeatIndex = localPeer && localPeer.seatIndex >= 0 ? localPeer.seatIndex : -1;
+  const joinerCanEnterStartedGame = connected && !isHost && game.status === 'playing' && store.ui.screen === 'lobby';
+  const joinerNeedsGamePatch = connected && !isHost && multiplayer.lobby?.status === 'playing' && game.status !== 'playing';
+  const localPrimaryCtaLabel = getLocalPlayerCtaLabel({
+    connected,
+    isHost,
+    localDeckStatus,
+    localReady,
+    joinerCanEnterStartedGame,
+    joinerNeedsGamePatch,
+  });
   const deckStatusByPeer = new Map(
     getTableDeckStatus({
       peers: multiplayer.peers,
@@ -220,6 +276,24 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
     store.kickMultiplayerPeer(peerId);
   }
 
+  function handlePrimaryPlayerAction() {
+    if (joinerCanEnterStartedGame) {
+      store.enterGameScreen();
+      return;
+    }
+    if (joinerNeedsGamePatch) {
+      store.requestMultiplayerGamePatch('joiner-clicked-sync');
+      return;
+    }
+    if (localDeckStatus === 'none' || localDeckStatus === 'rejected') {
+      onChooseDeck?.();
+      return;
+    }
+    if (localDeckStatus === 'valid' && !localReady) {
+      store.setMultiplayerReady(true);
+    }
+  }
+
   // ─── Connected state ──────────────────────────────────────────────────────
 
   if (connected) {
@@ -234,14 +308,13 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
         }}>
           <div>
             <div style={{ fontSize: 10, color: '#64748b', fontWeight: 700, letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 }}>
-              {isHost ? 'Room Code (share this)' : 'Connected to Room'}
+              {isHost ? 'Room Code' : 'Connected Room'}
             </div>
             <div style={{ fontSize: 32, fontWeight: 800, letterSpacing: 6, color: isHost ? '#4ade80' : '#60a5fa', fontFamily: 'monospace' }}>
               {multiplayer.roomCode}
             </div>
             <div style={{ fontSize: 10, marginTop: 4, color: '#64748b' }}>
-              {relayModeLabel}
-              {relayStatusLabel && ` • ${relayStatusLabel}`}
+              {connectionStatusLabel}
             </div>
           </div>
           {isHost && (
@@ -260,10 +333,27 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
                 transition: 'all 0.15s',
               }}
             >
-              {copied ? '✓ Copied' : 'Copy'}
+              {copied ? 'Copied' : 'Copy Invite'}
             </button>
           )}
         </div>
+
+        <LobbyProgressChecklist
+          isHost={isHost}
+          connected={connected}
+          roomCreated={Boolean(multiplayer.roomCode)}
+          seatAssigned={Boolean(localPeer && !localPeer.isSpectator && localPeer.seatIndex >= 0)}
+          occupiedPlayers={peers.filter(p => p.online && !p.isSpectator && p.seatIndex >= 0).length}
+          allDecksChecked={peers.filter(p => p.online && !p.isSpectator).every(p => {
+            const summary = multiplayer.lobby?.submittedDecks?.[p.playerId];
+            const status = summary?.status ?? p.deckStatus ?? p.deck?.status ?? deckStatusByPeer.get(p.peerId)?.deckStatus ?? 'none';
+            return status === 'valid';
+          })}
+          allPlayersReady={peers.filter(p => p.online && !p.isSpectator).every(p => p.ready)}
+          localDeckStatus={localDeckStatus}
+          localReady={localReady}
+          gameStarted={game.status === 'playing' || multiplayer.lobby?.status === 'playing'}
+        />
 
         {/* Players in room */}
         <div>
@@ -380,6 +470,44 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
           </div>
         </div>
 
+        {!isSpectator && (
+          <button
+            type="button"
+            data-testid="btn-local-lobby-primary"
+            onClick={handlePrimaryPlayerAction}
+            disabled={localDeckStatus === 'submitted' || localReady}
+            style={{
+              width: '100%',
+              padding: '11px 12px',
+              borderRadius: 8,
+              cursor: localDeckStatus === 'submitted' || localReady ? 'default' : 'pointer',
+              border: `1px solid ${localReady ? '#22c55e' : localDeckStatus === 'valid' ? '#0f766e' : '#f59e0b'}`,
+              background: localReady ? '#113a2b' : localDeckStatus === 'valid' ? '#042f2e' : '#332511',
+              color: localReady ? '#bbf7d0' : localDeckStatus === 'valid' ? '#5eead4' : '#fde68a',
+              fontSize: 13,
+              fontWeight: 900,
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+            }}
+          >
+            {localPrimaryCtaLabel}
+          </button>
+        )}
+
+        <details style={{
+          background: '#0f1720',
+          border: '1px solid #26323a',
+          borderRadius: 8,
+          padding: 12,
+        }}>
+          <summary style={{ color: '#94a3b8', cursor: 'pointer', fontSize: 12, fontWeight: 800 }}>
+            Advanced multiplayer options
+          </summary>
+          <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 12 }}>
+            <div style={{ fontSize: 10, color: '#64748b', lineHeight: 1.5 }}>
+              Transport: {relayModeLabel}{relayStatusLabel ? ` - ${relayStatusLabel}` : ''}
+            </div>
+
         {/* Player / spectator role */}
         <div style={{
           background: '#0f1720',
@@ -463,10 +591,10 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
                   fontWeight: 800,
                 }}
               >
-                {localReady ? 'Ready' : localDeckStatus === 'valid' ? 'Mark Ready' : 'Load Valid Deck First'}
+                {localReady ? 'Ready' : localDeckStatus === 'valid' ? 'Mark Ready' : localDeckStatus === 'submitted' ? 'Checking deck...' : localDeckStatus === 'rejected' ? 'Deck needs fixing' : 'Choose Deck'}
               </button>
               <div style={{ fontSize: 10, color: '#64748b', marginTop: 5 }}>
-                Deck status: {localDeckStatus}
+                Deck status: {getFriendlyDeckLabel(localDeckStatus)}
                 {localDeckStatus === 'submitted' && ' - Checking deck against Commander rules...'}
                 {localDeckStatus === 'rejected' && localDeckReason ? ` - ${localDeckReason}` : ''}
               </div>
@@ -474,7 +602,7 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
           )}
           {!isSpectator && !isHost && (
             <div style={{ marginTop: 10, fontSize: 10, color: '#64748b', lineHeight: 1.5 }}>
-              Deck status: {localDeckStatus}
+              Deck status: {getFriendlyDeckLabel(localDeckStatus)}
               {localDeckStatus === 'submitted' && ' - Checking deck against Commander rules...'}
               {localDeckStatus === 'rejected' && localDeckReason ? ` - ${localDeckReason}` : ''}
               {localDeckStatus === 'valid' && ' - Deck loaded. Host controls start time; vote to begin when start phase is ready.'}
@@ -542,6 +670,8 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
             </div>
           )}
         </div>
+          </div>
+        </details>
 
         {/* Status */}
         <div style={{
@@ -585,9 +715,9 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
       {mode === 'idle' && (
         <>
           <div style={{ fontSize: 12, color: '#64748b', lineHeight: 1.6 }}>
-            Start a room and share the code with your playgroup, or enter a code to join an existing game.
+            Start with the simple path: Host or Join, choose a deck, ready up, then start the game.
           </div>
-          <div style={{ display: 'flex', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12 }}>
             <button
               data-testid="btn-mode-host"
               data-help-title="Create Room"
@@ -596,7 +726,9 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
               onClick={() => setMode('host')}
               style={modeBtnStyle('#0f2d1a', '#166534', '#4ade80')}
             >
-              Create Room
+              <span style={{ display: 'block', fontSize: 10, color: '#86efac', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 6 }}>Host Game</span>
+              <span style={{ display: 'block', fontSize: 18 }}>Create Room</span>
+              <span style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Your name - 4 players default</span>
             </button>
             <button
               data-testid="btn-mode-join"
@@ -606,7 +738,9 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
               onClick={() => setMode('join')}
               style={modeBtnStyle('#0f1a2d', '#1e3a5f', '#60a5fa')}
             >
-              Join Room
+              <span style={{ display: 'block', fontSize: 10, color: '#93c5fd', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 6 }}>Join Game</span>
+              <span style={{ display: 'block', fontSize: 18 }}>Join Room</span>
+              <span style={{ display: 'block', fontSize: 11, color: '#94a3b8', marginTop: 6 }}>Room code - Player by default</span>
             </button>
           </div>
         </>
@@ -624,7 +758,13 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
             onOpenProfile={() => store.setProfileOpen(true)}
             onApplyProfile={applyActiveProfile}
           />
-          <RolePicker role={role} onChange={setRole} />
+          <div style={{ fontSize: 11, color: '#64748b' }}>Player count defaults to 4. Change seats in the lobby setup above if needed.</div>
+          <details>
+            <summary style={{ color: '#94a3b8', cursor: 'pointer', fontSize: 12, fontWeight: 800 }}>Advanced</summary>
+            <div style={{ marginTop: 8 }}>
+              <RolePicker role={role} onChange={setRole} />
+            </div>
+          </details>
           <div style={{ display: 'flex', gap: 8 }}>
             <ActionButton
               testId="btn-create-room"
@@ -667,7 +807,12 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
               }}
             />
           </div>
-          <RolePicker role={role} onChange={setRole} />
+          <details>
+            <summary style={{ color: '#94a3b8', cursor: 'pointer', fontSize: 12, fontWeight: 800 }}>Advanced</summary>
+            <div style={{ marginTop: 8 }}>
+              <RolePicker role={role} onChange={setRole} />
+            </div>
+          </details>
           <div style={{ display: 'flex', gap: 8 }}>
             <ActionButton
               testId="btn-join-room"
@@ -838,6 +983,75 @@ function ErrorMsg({ msg }: { msg: string }) {
       border: '1px solid #7f1d1d',
     }}>
       {msg}
+    </div>
+  );
+}
+
+function LobbyProgressChecklist({
+  isHost,
+  connected,
+  roomCreated,
+  seatAssigned,
+  occupiedPlayers,
+  allDecksChecked,
+  allPlayersReady,
+  localDeckStatus,
+  localReady,
+  gameStarted,
+}: {
+  isHost: boolean;
+  connected: boolean;
+  roomCreated: boolean;
+  seatAssigned: boolean;
+  occupiedPlayers: number;
+  allDecksChecked: boolean;
+  allPlayersReady: boolean;
+  localDeckStatus: SimpleDeckStatus;
+  localReady: boolean;
+  gameStarted: boolean;
+}) {
+  const items = isHost
+    ? [
+      { label: 'Room created', done: roomCreated },
+      { label: 'At least 2 players', done: occupiedPlayers >= 2 },
+      { label: 'All decks checked', done: allDecksChecked },
+      { label: 'All players ready', done: allPlayersReady },
+      { label: gameStarted ? 'Game started' : 'Start game', done: gameStarted },
+    ]
+    : [
+      { label: 'Connected', done: connected },
+      { label: 'Seat assigned', done: seatAssigned },
+      { label: localDeckStatus === 'none' ? 'Choose a deck' : getFriendlyDeckLabel(localDeckStatus), done: localDeckStatus === 'valid' },
+      { label: 'Ready', done: localReady },
+      { label: gameStarted ? 'Game started' : 'Waiting for host', done: gameStarted },
+    ];
+
+  return (
+    <div
+      data-testid="lobby-progress-checklist"
+      style={{
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))',
+        gap: 6,
+      }}
+    >
+      {items.map(item => (
+        <div
+          key={item.label}
+          style={{
+            border: `1px solid ${item.done ? '#14532d' : '#334155'}`,
+            background: item.done ? '#113a2b' : '#111827',
+            color: item.done ? '#bbf7d0' : '#94a3b8',
+            borderRadius: 7,
+            padding: '7px 8px',
+            fontSize: 11,
+            fontWeight: 800,
+          }}
+        >
+          <span style={{ marginRight: 6 }}>{item.done ? 'Done' : 'Next'}</span>
+          {item.label}
+        </div>
+      ))}
     </div>
   );
 }

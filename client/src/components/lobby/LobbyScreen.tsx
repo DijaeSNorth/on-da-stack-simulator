@@ -212,7 +212,7 @@ export function LobbyScreen() {
 
   function updateMode(mode: GameMode) {
     setGameMode(mode);
-    updateCount(mode === 'table' ? (Math.max(2, playerCount) as PlayerCount) : 1);
+    updateCount(mode === 'table' ? (Math.max(4, playerCount) as PlayerCount) : 1);
   }
 
   function updateCount(n: PlayerCount) {
@@ -479,6 +479,12 @@ export function LobbyScreen() {
   function toggleFavorite(deckId: string) {
     setFavoriteDeckIds(toggleFavoriteDeck(deckId));
     store.loadDecks();
+  }
+
+  function focusDeckSelection() {
+    const deckInput = document.querySelector<HTMLElement>('[data-testid="input-decklist"]');
+    deckInput?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    deckInput?.focus();
   }
 
   return (
@@ -1278,6 +1284,7 @@ export function LobbyScreen() {
               deckId: store.game.players[index]?.deckId ?? player.deckId,
             }))}
             onPrepareRoom={prepareTableRoomState}
+            onChooseDeck={focusDeckSelection}
             onExitRoom={() => setExitOpen(true)}
           />
         </div>
@@ -1368,7 +1375,7 @@ export function LobbyScreen() {
           {!isInTableRoom
               ? 'Create Room to Start'
               : !isTableHost
-                ? 'Waiting for Host to Start'
+                ? 'Ready - waiting for host'
               : startHandshakeActive
                 ? startHandshake?.status === 'committing'
                   ? 'Starting Game...'
