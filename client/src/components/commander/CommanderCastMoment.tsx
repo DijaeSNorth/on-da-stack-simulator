@@ -15,6 +15,7 @@ interface CommanderMoment {
 export function CommanderCastMoment() {
   const game = useGameStore(state => state.game);
   const multiplayer = useGameStore(state => state.multiplayer);
+  const adaptivePerformance = useGameStore(state => state.adaptivePerformance);
   const [moment, setMoment] = useState<CommanderMoment | null>(null);
 
   const isMultiplayer =
@@ -23,6 +24,11 @@ export function CommanderCastMoment() {
   useEffect(() => {
     const action = game.actionLog[game.actionLog.length - 1];
     if (!action || action.data?.commanderCast !== true) return;
+    if (isMultiplayer && adaptivePerformance.disableLiveAnimations) {
+      setMoment(null);
+      return;
+    }
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
 
     const cardId = action.affectedObjects[0];
     const card = cardId ? game.cards[cardId] : undefined;
@@ -40,7 +46,7 @@ export function CommanderCastMoment() {
       current?.actionId === action.id ? null : current
     ), 3800);
     return () => window.clearTimeout(timer);
-  }, [game.actionLog, game.cards]);
+  }, [adaptivePerformance.disableLiveAnimations, game.actionLog, game.cards, isMultiplayer]);
 
   if (!moment) return null;
   const card = moment.cardId ? game.cards[moment.cardId] : undefined;

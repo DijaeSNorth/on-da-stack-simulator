@@ -11,6 +11,7 @@ import { useGameStore } from '../../store/gameStore';
 export function MultiplayerBadge() {
   const store = useGameStore();
   const { multiplayer } = store;
+  const disableLiveAnimations = store.adaptivePerformance.disableLiveAnimations;
 
   const connected = multiplayer.status === 'host' || multiplayer.status === 'joined' || multiplayer.status === 'migrating';
   if (!connected) return null;
@@ -48,7 +49,7 @@ export function MultiplayerBadge() {
         width: 6, height: 6, borderRadius: '50%',
         background: textColor,
         display: 'inline-block',
-        animation: 'mpPulse 2s ease-in-out infinite',
+        animation: disableLiveAnimations ? 'none' : 'mpPulse 2s ease-in-out infinite',
       }} />
 
       {/* Spectator eye or room code */}
