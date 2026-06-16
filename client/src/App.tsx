@@ -18,9 +18,12 @@ import { ReplayTimeline } from './components/replay/ReplayTimeline';
 import { ReplayInfoPanel } from './components/replay/ReplayInfoPanel';
 import { ReplayAnimationOverlay } from './components/replay/ReplayAnimationOverlay';
 import { ReplayLoader } from './components/replay/ReplayLoader';
+import { ReplayCreatorView } from './components/replay/ReplayCreatorView';
+import { ReplayClipsPanel } from './components/replay/ReplayClipsPanel';
 import { NextStepPanel } from './components/navigation/NextStepPanel';
 import { getBreadcrumb, getReplayViewerNextStep } from './components/navigation/navigationFlowModel';
 import { useIsMobile } from './hooks/use-mobile';
+import { startFrameHealthMonitor } from './engine/adaptivePerformance';
 
 const CardSearchPanel = lazy(() =>
   import('./components/panels/CardSearchPanel').then(module => ({ default: module.CardSearchPanel }))
@@ -61,6 +64,9 @@ export default function App() {
   const setPanelSize = useGameStore(s => s.setPanelSize);
   const resetPanelSizes = useGameStore(s => s.resetPanelSizes);
   const toggleRightPanel = useGameStore(s => s.toggleRightPanel);
+  const updateFrameHealth = useGameStore(s => s.updateFrameHealth);
+  const recomputeAdaptivePerformance = useGameStore(s => s.recomputeAdaptivePerformance);
+  const replayClearAnimations = useGameStore(s => s.replayClearAnimations);
   const isMobile = useIsMobile();
   const appliedMobileLayout = useRef(false);
 
@@ -77,6 +83,21 @@ export default function App() {
       if (rightPanelOpen) toggleRightPanel();
     }
   }, [isMobile, rightPanelOpen, toggleRightPanel]);
+
+  useEffect(() => startFrameHealthMonitor(updateFrameHealth), [updateFrameHealth]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const handleVisibility = () => {
+      if (document.visibilityState === 'hidden') {
+        replayClearAnimations();
+      } else {
+        recomputeAdaptivePerformance();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => document.removeEventListener('visibilitychange', handleVisibility);
+  }, [recomputeAdaptivePerformance, replayClearAnimations]);
 
   useEffect(() => {
     if (game.status === 'playing' && ui.screen !== 'game' && ui.screen !== 'replay') {
@@ -122,6 +143,29 @@ export default function App() {
   }
 
   if (ui.screen === 'replay') {
+    if (replay?.viewMode === 'creator') {
+      return (
+        <div
+          data-testid="replay-creator-shell"
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            width: '100vw',
+            height: '100vh',
+            background: '#020617',
+            overflow: 'hidden',
+            fontFamily: '"Inter", "SF Pro Display", system-ui, sans-serif',
+          }}
+        >
+          <ReplayControls />
+          <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
+            <ReplayCreatorView />
+            <ReplayClipsPanel variant="overlay" />
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div style={{
         display: 'flex',
@@ -158,7 +202,7 @@ export default function App() {
                 minHeight: 0,
               }}>
                 <ReplayTimeline />
-                <ReplayInfoPanel />
+                {replay.viewMode === 'review' && <ReplayInfoPanel />}
               </div>
             </div>
           </>

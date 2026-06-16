@@ -64,10 +64,13 @@ import { getBannedReason } from '../data/cardDatabase';
 import {
   createReplay,
   createReplayCheckpointsWithWarnings,
+  createReplayClip,
   createReplayFileFromGame,
   createReplaySession,
   DEFAULT_REPLAY_CHECKPOINT_INTERVAL,
   applyReplayToIndex,
+  exportReplayClipMetadataJson,
+  generateReplayClipSummary,
   jumpReplayToAction,
   jumpReplayToTurn,
   saveReplayToStorage,
@@ -75,8 +78,46 @@ import {
   stepReplayForward,
   validateReplayFile,
 } from '../engine/replayEngine';
+import {
+  getReplayReviewId,
+  loadReplayReview,
+  saveReplayReview,
+} from '../engine/replayReviewStorage';
+import {
+  createWatchPlaybackFromReplay,
+  createLocalWatchPartyState,
+  joinLocalWatchPartyPreviewState,
+  leaveWatchPartyState,
+  LOCAL_WATCH_PARTY_PREVIEW_CODE,
+  normalizeWatchAnimationMode,
+  recordPresenterPlaybackState,
+  setWatchPartyRoleState,
+  setWatchPartySyncModeState,
+  shouldApplyPresenterPlayback,
+  watchSpeedToReplaySpeed,
+} from '../engine/replayWatchParty';
+import {
+  createFirebaseReplayWatchRoom,
+  joinFirebaseReplayWatchRoom,
+  writeReplayWatchPlayback,
+} from '../engine/replayWatchFirebase';
 import { createAnimationsForAction, scaleReplayAnimations } from '../engine/replayAnimationEngine';
-import type { ExportReplayOptions, ReplayAnimationMode, ReplayCheckpoint, ReplayFile, ReplaySession, ReplaySpeed } from '../types/replay';
+import type {
+  ExportReplayOptions,
+  ReplayAnimationMode,
+  ReplayBookmark,
+  ReplayCheckpoint,
+  ReplayClip,
+  ReplayCreatorSettings,
+  ReplayFile,
+  ReplayReviewNote,
+  ReplaySession,
+  ReplaySpeed,
+  ReplayViewMode,
+  ReplayWatchPartyPlayback,
+  ReplayWatchPartyRole,
+  ReplayWatchPartySyncMode,
+} from '../types/replay';
 import { getActiveProfile } from '../engine/profileStorage';
 import { canAccessPrivateCard, canControlPlayer, findCardOwner, isPrivateZone } from '../engine/playerPermissions';
 import {
@@ -88,6 +129,19 @@ import {
   type RoomDeckSummary, type RoomPresence, type StartGameAck, type StartGameCommit,
   type StartGamePrepare, type SyncStatus,
 } from '../engine/multiplayerSync';
+import {
+  computeAdaptivePerformance,
+  createInitialAdaptivePerformance,
+  createInitialFrameHealth,
+  detectAdaptiveUserSettings,
+  type AdaptivePerformanceMode,
+  type AdaptivePerformanceState,
+  type FrameHealth,
+} from '../engine/adaptivePerformance';
+import {
+  createInitialConnectionHealth,
+  type ConnectionHealth,
+} from '../engine/networkHealth';
 import {
   canHostStartFromLobby,
   createSessionId,
@@ -212,6 +266,26 @@ const DEFAULT_MULTIPLAYER: MultiplayerState = {
   configured: false,
   startHandshake: null,
 };
+
+function deriveAdaptivePerformance(
+  networkHealth: ConnectionHealth,
+  frameHealth: FrameHealth,
+  mode: AdaptivePerformanceMode,
+  multiplayerStatus: SyncStatus = 'disconnected',
+): AdaptivePerformanceState {
+  const networkRelevant = multiplayerStatus === 'host' ||
+    multiplayerStatus === 'joined' ||
+    multiplayerStatus === 'migrating' ||
+    multiplayerStatus === 'connecting';
+  const effectiveNetworkHealth = networkRelevant
+    ? networkHealth
+    : createInitialConnectionHealth({ dataChannelOpen: true });
+  return computeAdaptivePerformance(
+    effectiveNetworkHealth,
+    frameHealth,
+    detectAdaptiveUserSettings(mode),
+  );
+}
 
 const PANEL_SIZES_KEY = 'mtg_sim_panel_sizes';
 const UI_SETTINGS_KEY = 'mtg_sim_ui_settings_v1';
@@ -363,15 +437,24 @@ export function buildStartedGame(game: GameState, now = Date.now()): GameState {
   };
 }
 
-function withReplayAnimations(session: ReplaySession, actionIndex: number): ReplaySession {
-  if (!session.animationEnabled || session.animationMode === 'off' || session.speed === 'instant') {
+function withReplayAnimations(
+  session: ReplaySession,
+  actionIndex: number,
+  adaptivePerformance?: AdaptivePerformanceState,
+): ReplaySession {
+  const adaptiveMode: ReplayAnimationMode = adaptivePerformance?.animationQuality === 'off'
+    ? 'off'
+    : adaptivePerformance?.disableReplayDramaticEffects && session.animationMode === 'dramatic'
+      ? 'simple'
+      : session.animationMode;
+  if (!session.animationEnabled || adaptiveMode === 'off' || session.speed === 'instant') {
     return { ...session, currentAnimations: [], animationQueue: [] };
   }
   const action = session.replayFile.actionLog[actionIndex];
   if (!action) return { ...session, currentAnimations: [], animationQueue: [] };
   const before = applyReplayFrame(session.replayFile, actionIndex - 1, session.checkpoints);
   const animations = scaleReplayAnimations(
-    createAnimationsForAction(action, before.currentGameState, session.currentGameState, session.replayFile.privacy, session.animationMode),
+    createAnimationsForAction(action, before.currentGameState, session.currentGameState, session.replayFile.privacy, adaptiveMode),
     session.animationSpeed,
   );
   return { ...session, currentAnimations: animations, animationQueue: animations };
@@ -383,6 +466,14 @@ function applyReplayFrame(
   checkpoints?: ReplayCheckpoint[],
 ): { currentGameState: GameState } {
   return applyReplayToIndex(replayFile, actionIndex, checkpoints);
+}
+
+function replayTurnNumber(replay: ReplaySession, actionIndex: number): number | undefined {
+  return replay.replayFile.actionLog[actionIndex]?.turn ?? replay.currentGameState.turn;
+}
+
+function persistReplayReview(replay: ReplaySession): void {
+  saveReplayReview(getReplayReviewId(replay.replayFile), replay.reviewNotes, replay.bookmarks);
 }
 
 export function getRequiredStartAckPeerIds(
@@ -614,6 +705,27 @@ export function applyHostAuthoritativeGameActionRequest(
   }
 }
 
+function shouldPublishReplayWatchPlayback(replay: ReplaySession): boolean {
+  return Boolean(replay.watchParty.watchRoomCode)
+    && replay.watchParty.watchRoomCode !== LOCAL_WATCH_PARTY_PREVIEW_CODE
+    && (replay.watchParty.role === 'host' || replay.watchParty.role === 'presenter');
+}
+
+function publishReplayWatchPlayback(replay: ReplaySession): void {
+  if (!shouldPublishReplayWatchPlayback(replay) || !replay.watchParty.watchRoomCode) return;
+  void writeReplayWatchPlayback(
+    replay.watchParty.watchRoomCode,
+    createWatchPlaybackFromReplay(replay, Date.now()),
+  ).catch(() => undefined);
+}
+
+function applyActiveClipBoundary(replay: ReplaySession): ReplaySession {
+  if (!replay.activeClipId) return replay;
+  const clip = replay.clips.find(item => item.clipId === replay.activeClipId);
+  if (!clip || replay.currentActionIndex < clip.endActionIndex) return replay;
+  return { ...replay, status: 'paused', activeClipId: undefined };
+}
+
 // ─── Store Interface ──────────────────────────────────────────────────────────
 
 export interface GameStore {
@@ -622,6 +734,9 @@ export interface GameStore {
   replay: ReplaySession | null;
   replayLiveGame: GameState | null;
   multiplayer: MultiplayerState;
+  networkHealth: ConnectionHealth;
+  frameHealth: FrameHealth;
+  adaptivePerformance: AdaptivePerformanceState;
   decks: Deck[];
   soloDeckLab: SoloDeckLabState;
   localPlayerId: string;
@@ -650,6 +765,10 @@ export interface GameStore {
   updateMultiplayerPresence: (fields: Partial<RoomPresence>) => void;
   setMultiplayerReady: (ready: boolean) => void;
   requestMultiplayerGamePatch: (reason?: string) => boolean;
+  updateNetworkHealth: (health: ConnectionHealth) => void;
+  updateFrameHealth: (health: FrameHealth) => void;
+  setPerformanceMode: (mode: AdaptivePerformanceMode) => void;
+  recomputeAdaptivePerformance: () => void;
 
   initGame: (config: GameConfig, players: {
     id: string;
@@ -825,9 +944,35 @@ export interface GameStore {
   replayStepBackward: () => void;
   replayJumpToAction: (actionIndex: number) => void;
   replayJumpToTurn: (turnNumber: number) => void;
+  addReplayNote: (actionIndex: number, note: Omit<Partial<ReplayReviewNote>, 'noteId' | 'replayId' | 'actionIndex' | 'createdAt'> & { body: string }) => void;
+  updateReplayNote: (noteId: string, patch: Partial<Omit<ReplayReviewNote, 'noteId' | 'replayId' | 'createdAt'>>) => void;
+  deleteReplayNote: (noteId: string) => void;
+  addReplayBookmark: (actionIndex: number, bookmark: Omit<Partial<ReplayBookmark>, 'bookmarkId' | 'replayId' | 'actionIndex' | 'createdAt'> & { label: string }) => void;
+  updateReplayBookmark: (bookmarkId: string, patch: Partial<Omit<ReplayBookmark, 'bookmarkId' | 'replayId' | 'createdAt'>>) => void;
+  deleteReplayBookmark: (bookmarkId: string) => void;
+  jumpToReplayBookmark: (bookmarkId: string) => void;
+  markReplayClipStart: () => void;
+  markReplayClipEnd: () => void;
+  saveReplayClip: (clip: { title: string; tags?: string[]; description?: string }) => boolean;
+  playReplayClip: (clipId: string) => void;
+  jumpToReplayClip: (clipId: string) => void;
+  exportReplayClipMetadata: (clipId: string) => string | null;
+  copyReplayClipSummary: (clipId: string) => Promise<boolean>;
   replayPlay: () => void;
   replayPause: () => void;
   replaySetSpeed: (speed: ReplaySpeed) => void;
+  replaySetViewMode: (mode: ReplayViewMode) => void;
+  replaySetCreatorSetting: <K extends keyof ReplayCreatorSettings>(key: K, value: ReplayCreatorSettings[K]) => void;
+  createLocalWatchParty: () => void;
+  joinLocalWatchPartyPreview: () => void;
+  createFirebaseWatchPartyRoom: () => Promise<string | null>;
+  joinFirebaseWatchPartyRoom: (watchRoomCode: string) => Promise<boolean>;
+  leaveWatchParty: () => void;
+  setWatchPartyRole: (role: ReplayWatchPartyRole) => void;
+  setWatchPartySyncMode: (mode: ReplayWatchPartySyncMode) => void;
+  applyPresenterPlaybackState: (playback: ReplayWatchPartyPlayback) => void;
+  followPresenter: () => void;
+  pauseFollowing: () => void;
   replaySetAnimationMode: (mode: ReplayAnimationMode) => void;
   replaySetAnimationSpeed: (speed: number) => void;
   replayPlayCurrentAnimation: () => void;
@@ -1434,6 +1579,9 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   replay: null,
   replayLiveGame: null,
   multiplayer: { ...DEFAULT_MULTIPLAYER, configured: isConfigured() },
+  networkHealth: createInitialConnectionHealth({ dataChannelOpen: true }),
+  frameHealth: createInitialFrameHealth(),
+  adaptivePerformance: createInitialAdaptivePerformance(),
   decks: loadDecksFromStorage(),
   soloDeckLab: {},
   localPlayerId: '',
@@ -1526,7 +1674,16 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       (status: SyncStatus) => {
         if (status === 'disconnected') {
           clearStartGameHandshakeTimer();
-          set({ multiplayer: { ...DEFAULT_MULTIPLAYER, configured: isConfigured() }, localPlayerId: '' });
+          set(s => ({
+            multiplayer: { ...DEFAULT_MULTIPLAYER, configured: isConfigured() },
+            localPlayerId: '',
+            adaptivePerformance: deriveAdaptivePerformance(
+              s.networkHealth,
+              s.frameHealth,
+              s.adaptivePerformance.mode,
+              'disconnected',
+            ),
+          }));
           return;
         }
         set(s => ({
@@ -1535,6 +1692,12 @@ export const useGameStore = create<GameStore>()((set, get) => ({
             status,
             isHost: status === 'host' ? true : status === 'joined' || status === 'migrating' ? false : s.multiplayer.isHost,
           },
+          adaptivePerformance: deriveAdaptivePerformance(
+            s.networkHealth,
+            s.frameHealth,
+            s.adaptivePerformance.mode,
+            status,
+          ),
         }));
       },
       (prepare: StartGamePrepare) => get().handleMultiplayerStartPrepare(prepare),
@@ -1628,6 +1791,7 @@ export const useGameStore = create<GameStore>()((set, get) => ({
         );
         set({ game: { ...state.game, actionLog: [...state.game.actionLog, action], lastUpdatedAt: Date.now() } });
       },
+      (health: ConnectionHealth) => get().updateNetworkHealth(health),
     );
   },
 
@@ -1819,6 +1983,44 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   },
 
   requestMultiplayerGamePatch: (reason = 'lobby-fallback-button') => requestGameStatePatch(reason),
+
+  updateNetworkHealth: (health) => set(s => ({
+    networkHealth: health,
+    adaptivePerformance: deriveAdaptivePerformance(
+      health,
+      s.frameHealth,
+      s.adaptivePerformance.mode,
+      s.multiplayer.status,
+    ),
+  })),
+
+  updateFrameHealth: (health) => set(s => ({
+    frameHealth: health,
+    adaptivePerformance: deriveAdaptivePerformance(
+      s.networkHealth,
+      health,
+      s.adaptivePerformance.mode,
+      s.multiplayer.status,
+    ),
+  })),
+
+  setPerformanceMode: (mode) => set(s => ({
+    adaptivePerformance: deriveAdaptivePerformance(
+      s.networkHealth,
+      s.frameHealth,
+      mode,
+      s.multiplayer.status,
+    ),
+  })),
+
+  recomputeAdaptivePerformance: () => set(s => ({
+    adaptivePerformance: deriveAdaptivePerformance(
+      s.networkHealth,
+      s.frameHealth,
+      s.adaptivePerformance.mode,
+      s.multiplayer.status,
+    ),
+  })),
 
   initGame: (config, players) => {
     const g = createEmptyGameState(config);
@@ -4418,9 +4620,15 @@ export const useGameStore = create<GameStore>()((set, get) => ({
       checkpoints: checkpointResult.checkpoints,
       checkpointInterval,
     };
+    const review = loadReplayReview(getReplayReviewId(validation.replayFile));
     const liveGame = get().ui.screen === 'replay' ? get().replayLiveGame : get().game;
     set({
-      replay: { ...session, warnings: [...session.warnings, ...validation.warnings, ...checkpointResult.warnings] },
+      replay: {
+        ...session,
+        warnings: [...session.warnings, ...validation.warnings, ...checkpointResult.warnings],
+        reviewNotes: review.notes,
+        bookmarks: review.bookmarks,
+      },
       replayLiveGame: liveGame,
       game: session.currentGameState,
       ui: { ...get().ui, screen: 'replay', lobbyOpen: false, replayOpen: false, rightPanelTab: 'log' },
@@ -4446,45 +4654,338 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     const replay = get().replay;
     if (!replay) return;
     const advanced = stepReplayForward(replay);
-    const next = withReplayAnimations(advanced, advanced.currentActionIndex);
+    const next = applyActiveClipBoundary(withReplayAnimations(advanced, advanced.currentActionIndex, get().adaptivePerformance));
+    publishReplayWatchPlayback(next);
     set({ replay: next, game: next.currentGameState });
   },
   replayStepBackward: () => {
     const replay = get().replay;
     if (!replay) return;
-    const next = { ...stepReplayBackward(replay), currentAnimations: [], animationQueue: [] };
+    const next = { ...stepReplayBackward(replay), currentAnimations: [], animationQueue: [], activeClipId: undefined };
+    publishReplayWatchPlayback(next);
     set({ replay: next, game: next.currentGameState });
   },
   replayJumpToAction: (actionIndex) => {
     const replay = get().replay;
     if (!replay) return;
-    const next = { ...jumpReplayToAction(replay, actionIndex), currentAnimations: [], animationQueue: [] };
+    const next = { ...jumpReplayToAction(replay, actionIndex), currentAnimations: [], animationQueue: [], activeClipId: undefined };
+    publishReplayWatchPlayback(next);
     set({ replay: next, game: next.currentGameState });
   },
   replayJumpToTurn: (turnNumber) => {
     const replay = get().replay;
     if (!replay) return;
-    const next = { ...jumpReplayToTurn(replay, turnNumber), currentAnimations: [], animationQueue: [] };
+    const next = { ...jumpReplayToTurn(replay, turnNumber), currentAnimations: [], animationQueue: [], activeClipId: undefined };
+    publishReplayWatchPlayback(next);
     set({ replay: next, game: next.currentGameState });
   },
-  replayPlay: () => set(s => s.replay ? { replay: { ...s.replay, status: 'playing' } } : s),
-  replayPause: () => set(s => s.replay ? { replay: { ...s.replay, status: 'paused' } } : s),
-  replaySetSpeed: (speed) => set(s => s.replay ? { replay: { ...s.replay, speed, currentAnimations: speed === 'instant' ? [] : s.replay.currentAnimations } } : s),
-  replaySetAnimationMode: (mode) => set(s => s.replay ? {
+  addReplayNote: (actionIndex, note) => {
+    const replay = get().replay;
+    if (!replay || !note.body.trim()) return;
+    const safeIndex = Math.max(-1, Math.min(actionIndex, replay.replayFile.actionLog.length - 1));
+    const nextNote: ReplayReviewNote = {
+      noteId: uuid(),
+      replayId: getReplayReviewId(replay.replayFile),
+      actionIndex: safeIndex,
+      turnNumber: replayTurnNumber(replay, safeIndex),
+      createdAt: Date.now(),
+      type: note.type ?? 'general',
+      title: note.title?.trim() || undefined,
+      body: note.body.trim(),
+      tags: note.tags ?? [],
+      authorName: note.authorName,
+    };
+    const next = { ...replay, reviewNotes: [...replay.reviewNotes, nextNote] };
+    persistReplayReview(next);
+    set({ replay: next });
+  },
+  updateReplayNote: (noteId, patch) => {
+    const replay = get().replay;
+    if (!replay) return;
+    const next = {
+      ...replay,
+      reviewNotes: replay.reviewNotes.map(note => note.noteId === noteId
+        ? { ...note, ...patch, updatedAt: Date.now(), tags: patch.tags ?? note.tags }
+        : note),
+    };
+    persistReplayReview(next);
+    set({ replay: next });
+  },
+  deleteReplayNote: (noteId) => {
+    const replay = get().replay;
+    if (!replay) return;
+    const next = { ...replay, reviewNotes: replay.reviewNotes.filter(note => note.noteId !== noteId) };
+    persistReplayReview(next);
+    set({ replay: next });
+  },
+  addReplayBookmark: (actionIndex, bookmark) => {
+    const replay = get().replay;
+    if (!replay || !bookmark.label.trim()) return;
+    const safeIndex = Math.max(-1, Math.min(actionIndex, replay.replayFile.actionLog.length - 1));
+    const nextBookmark: ReplayBookmark = {
+      bookmarkId: uuid(),
+      replayId: getReplayReviewId(replay.replayFile),
+      actionIndex: safeIndex,
+      turnNumber: replayTurnNumber(replay, safeIndex),
+      createdAt: Date.now(),
+      label: bookmark.label.trim(),
+      color: bookmark.color,
+      type: bookmark.type ?? 'custom',
+    };
+    const next = { ...replay, bookmarks: [...replay.bookmarks, nextBookmark] };
+    persistReplayReview(next);
+    set({ replay: next });
+  },
+  updateReplayBookmark: (bookmarkId, patch) => {
+    const replay = get().replay;
+    if (!replay) return;
+    const next = {
+      ...replay,
+      bookmarks: replay.bookmarks.map(bookmark => bookmark.bookmarkId === bookmarkId
+        ? { ...bookmark, ...patch }
+        : bookmark),
+    };
+    persistReplayReview(next);
+    set({ replay: next });
+  },
+  deleteReplayBookmark: (bookmarkId) => {
+    const replay = get().replay;
+    if (!replay) return;
+    const next = { ...replay, bookmarks: replay.bookmarks.filter(bookmark => bookmark.bookmarkId !== bookmarkId) };
+    persistReplayReview(next);
+    set({ replay: next });
+  },
+  jumpToReplayBookmark: (bookmarkId) => {
+    const replay = get().replay;
+    const bookmark = replay?.bookmarks.find(item => item.bookmarkId === bookmarkId);
+    if (!replay || !bookmark) return;
+    const next = { ...jumpReplayToAction(replay, bookmark.actionIndex), currentAnimations: [], animationQueue: [], activeClipId: undefined };
+    publishReplayWatchPlayback(next);
+    set({ replay: next, game: next.currentGameState });
+  },
+  markReplayClipStart: () => {
+    const replay = get().replay;
+    if (!replay) return;
+    const safeIndex = Math.max(0, Math.min(replay.currentActionIndex, replay.replayFile.actionLog.length - 1));
+    set({ replay: { ...replay, clipDraft: { ...replay.clipDraft, startActionIndex: safeIndex } } });
+  },
+  markReplayClipEnd: () => {
+    const replay = get().replay;
+    if (!replay) return;
+    const safeIndex = Math.max(0, Math.min(replay.currentActionIndex, replay.replayFile.actionLog.length - 1));
+    set({ replay: { ...replay, clipDraft: { ...replay.clipDraft, endActionIndex: safeIndex } } });
+  },
+  saveReplayClip: (clipInput) => {
+    const replay = get().replay;
+    if (!replay) return false;
+    const startActionIndex = replay.clipDraft?.startActionIndex;
+    const endActionIndex = replay.clipDraft?.endActionIndex;
+    if (startActionIndex === undefined || endActionIndex === undefined) return false;
+    const result = createReplayClip(replay.replayFile, {
+      title: clipInput.title,
+      startActionIndex,
+      endActionIndex,
+      tags: clipInput.tags,
+      description: clipInput.description,
+      clipId: uuid(),
+    });
+    if (!result.clip) return false;
+    const next = { ...replay, clips: [...replay.clips, result.clip], clipDraft: {} };
+    set({ replay: next });
+    return true;
+  },
+  playReplayClip: (clipId) => {
+    const replay = get().replay;
+    const clip = replay?.clips.find(item => item.clipId === clipId);
+    if (!replay || !clip) return;
+    const jumped = jumpReplayToAction(replay, clip.startActionIndex);
+    const next: ReplaySession = {
+      ...jumped,
+      status: 'playing',
+      activeClipId: clip.clipId,
+      currentAnimations: [],
+      animationQueue: [],
+    };
+    publishReplayWatchPlayback(next);
+    set({ replay: next, game: next.currentGameState });
+  },
+  jumpToReplayClip: (clipId) => {
+    const replay = get().replay;
+    const clip = replay?.clips.find(item => item.clipId === clipId);
+    if (!replay || !clip) return;
+    const next = {
+      ...jumpReplayToAction(replay, clip.startActionIndex),
+      currentAnimations: [],
+      animationQueue: [],
+      activeClipId: undefined,
+    };
+    publishReplayWatchPlayback(next);
+    set({ replay: next, game: next.currentGameState });
+  },
+  exportReplayClipMetadata: (clipId) => {
+    const replay = get().replay;
+    const clip = replay?.clips.find(item => item.clipId === clipId);
+    if (!replay || !clip) return null;
+    return exportReplayClipMetadataJson(replay.replayFile, clip);
+  },
+  copyReplayClipSummary: async (clipId) => {
+    const replay = get().replay;
+    const clip = replay?.clips.find(item => item.clipId === clipId);
+    if (!replay || !clip || typeof navigator === 'undefined' || !navigator.clipboard) return false;
+    await navigator.clipboard.writeText(generateReplayClipSummary(replay.replayFile, clip));
+    return true;
+  },
+  replayPlay: () => {
+    const replay = get().replay;
+    if (!replay) return;
+    const next = { ...replay, status: 'playing' as const };
+    publishReplayWatchPlayback(next);
+    set({ replay: next });
+  },
+  replayPause: () => {
+    const replay = get().replay;
+    if (!replay) return;
+    const next = { ...replay, status: 'paused' as const, activeClipId: undefined };
+    publishReplayWatchPlayback(next);
+    set({ replay: next });
+  },
+  replaySetSpeed: (speed) => {
+    const replay = get().replay;
+    if (!replay) return;
+    const next = { ...replay, speed, currentAnimations: speed === 'instant' ? [] : replay.currentAnimations };
+    publishReplayWatchPlayback(next);
+    set({ replay: next });
+  },
+  replaySetViewMode: (mode) => set(s => s.replay ? { replay: { ...s.replay, viewMode: mode } } : s),
+  replaySetCreatorSetting: (key, value) => set(s => s.replay ? {
     replay: {
       ...s.replay,
-      animationMode: mode,
-      animationEnabled: mode !== 'off',
-      currentAnimations: mode === 'off' ? [] : s.replay.currentAnimations,
-      animationQueue: mode === 'off' ? [] : s.replay.animationQueue,
+      creatorSettings: {
+        ...s.replay.creatorSettings,
+        [key]: value,
+      },
     },
   } : s),
+  createLocalWatchParty: () => set(s => {
+    if (!s.replay) return s;
+    const profile = getActiveProfile();
+    return {
+      replay: {
+        ...s.replay,
+        watchParty: createLocalWatchPartyState(s.replay, profile?.displayName ?? 'Host'),
+      },
+    };
+  }),
+  joinLocalWatchPartyPreview: () => set(s => {
+    if (!s.replay) return s;
+    const profile = getActiveProfile();
+    return {
+      replay: {
+        ...s.replay,
+        watchParty: joinLocalWatchPartyPreviewState(s.replay, profile?.displayName ?? 'Viewer'),
+      },
+    };
+  }),
+  createFirebaseWatchPartyRoom: async () => {
+    const replay = get().replay;
+    if (!replay) return null;
+    const profile = getActiveProfile();
+    const control = await createFirebaseReplayWatchRoom(replay, profile?.displayName ?? 'Host');
+    if (!control) return null;
+    const watchParty = {
+      ...createLocalWatchPartyState(replay, profile?.displayName ?? 'Host', control.createdAt),
+      watchRoomCode: control.watchRoomCode,
+      playback: control.playback,
+    };
+    set({ replay: { ...replay, watchParty } });
+    return control.watchRoomCode;
+  },
+  joinFirebaseWatchPartyRoom: async (watchRoomCode) => {
+    const replay = get().replay;
+    const code = watchRoomCode.trim();
+    if (!replay || !code) return false;
+    const profile = getActiveProfile();
+    const result = await joinFirebaseReplayWatchRoom(code, profile?.displayName ?? 'Viewer');
+    if (!result) return false;
+    const watchParty = {
+      ...joinLocalWatchPartyPreviewState(replay, profile?.displayName ?? 'Viewer', result.viewer.lastSeen),
+      watchRoomCode: result.control.watchRoomCode,
+      playback: result.control.playback,
+      viewers: [result.viewer],
+    };
+    set({ replay: { ...replay, watchParty } });
+    get().applyPresenterPlaybackState(result.control.playback);
+    return true;
+  },
+  leaveWatchParty: () => set(s => s.replay ? {
+    replay: { ...s.replay, watchParty: leaveWatchPartyState() },
+  } : s),
+  setWatchPartyRole: (role) => set(s => s.replay ? {
+    replay: {
+      ...s.replay,
+      watchParty: setWatchPartyRoleState(s.replay.watchParty, role, getActiveProfile()?.displayName ?? 'Local Viewer'),
+    },
+  } : s),
+  setWatchPartySyncMode: (mode) => set(s => s.replay ? {
+    replay: {
+      ...s.replay,
+      watchParty: setWatchPartySyncModeState(s.replay.watchParty, mode),
+    },
+  } : s),
+  applyPresenterPlaybackState: (playback) => {
+    const replay = get().replay;
+    if (!replay) return;
+    const watchParty = recordPresenterPlaybackState(replay.watchParty, playback);
+    if (!shouldApplyPresenterPlayback(watchParty)) {
+      set({ replay: { ...replay, watchParty } });
+      return;
+    }
+    const jumped = jumpReplayToAction(replay, playback.actionIndex);
+    const speed = watchSpeedToReplaySpeed(playback.speed);
+    const animationMode = normalizeWatchAnimationMode(playback.animationMode);
+    const next: ReplaySession = {
+      ...jumped,
+      status: playback.status,
+      speed,
+      animationMode,
+      animationEnabled: animationMode !== 'off',
+      currentAnimations: [],
+      animationQueue: [],
+      watchParty,
+    };
+    set({ replay: next, game: next.currentGameState });
+  },
+  followPresenter: () => set(s => s.replay ? {
+    replay: {
+      ...s.replay,
+      watchParty: setWatchPartySyncModeState(s.replay.watchParty, 'presenter_sync'),
+    },
+  } : s),
+  pauseFollowing: () => set(s => s.replay ? {
+    replay: {
+      ...s.replay,
+      watchParty: setWatchPartySyncModeState(s.replay.watchParty, 'free_scrub'),
+    },
+  } : s),
+  replaySetAnimationMode: (mode) => {
+    const replay = get().replay;
+    if (!replay) return;
+    const next = {
+      ...replay,
+      animationMode: mode,
+      animationEnabled: mode !== 'off',
+      currentAnimations: mode === 'off' ? [] : replay.currentAnimations,
+      animationQueue: mode === 'off' ? [] : replay.animationQueue,
+    };
+    publishReplayWatchPlayback(next);
+    set({ replay: next });
+  },
   replaySetAnimationSpeed: (speed) => set(s => s.replay ? {
     replay: { ...s.replay, animationSpeed: Math.max(0.25, Math.min(4, speed)) },
   } : s),
   replayPlayCurrentAnimation: () => set(s => {
     if (!s.replay || s.replay.currentActionIndex < 0) return s;
-    const replay = withReplayAnimations(s.replay, s.replay.currentActionIndex);
+    const replay = withReplayAnimations(s.replay, s.replay.currentActionIndex, s.adaptivePerformance);
     return { replay };
   }),
   replaySkipAnimation: () => set(s => s.replay ? { replay: { ...s.replay, currentAnimations: [], animationQueue: [] } } : s),

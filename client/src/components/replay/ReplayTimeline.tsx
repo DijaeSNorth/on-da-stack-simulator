@@ -30,7 +30,10 @@ export function ReplayTimeline() {
     })
     : null,
   [filter, query, replay, timelineActions]);
-  const markers = useMemo(() => replay ? getReplayTimelineMarkers(replay.replayFile, replay.checkpoints) : [], [replay]);
+  const markers = useMemo(() => replay ? getReplayTimelineMarkers(replay.replayFile, replay.checkpoints, {
+    notes: replay.reviewNotes,
+    bookmarks: replay.bookmarks,
+  }) : [], [replay]);
 
   if (!replay || !view) return null;
   const actionCount = replay.replayFile.actionLog.length;
@@ -88,8 +91,8 @@ export function ReplayTimeline() {
                 position: 'absolute',
                 left: `${actionCount <= 1 ? 0 : (Math.max(0, marker.actionIndex) / Math.max(1, actionCount - 1)) * 100}%`,
                 top: marker.type === 'checkpoint' ? 4 : 2,
-                width: marker.type === 'turn' ? 4 : marker.type === 'checkpoint' ? 2 : 3,
-                height: marker.type === 'checkpoint' ? 6 : 10,
+                width: marker.type === 'turn' ? 4 : marker.type === 'checkpoint' ? 2 : marker.type === 'bookmark' ? 5 : 3,
+                height: marker.type === 'checkpoint' ? 6 : marker.type === 'note' ? 8 : 10,
                 borderRadius: 2,
                 border: 0,
                 padding: 0,
@@ -103,6 +106,8 @@ export function ReplayTimeline() {
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', color: '#475569', fontSize: 9 }}>
           <span>Markers: {markers.length}</span>
           <span>Checkpoints: {replay.checkpoints?.length ?? 0}</span>
+          <span>Notes: {replay.reviewNotes.length}</span>
+          <span>Bookmarks: {replay.bookmarks.length}</span>
           <span>Warnings: {markers.filter(marker => marker.type === 'warning').length}</span>
           <span>Privacy: {replay.replayFile.privacy.includesPrivateZones ? 'private' : replay.replayFile.privacy.redactedPlayers?.length ? 'redacted' : 'public'}</span>
         </div>
@@ -212,6 +217,8 @@ function markerColor(kind: string): string {
     case 'mechanic': return '#2dd4bf';
     case 'warning': return '#facc15';
     case 'checkpoint': return '#64748b';
+    case 'note': return '#2dd4bf';
+    case 'bookmark': return '#facc15';
     default: return '#64748b';
   }
 }

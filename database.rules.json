@@ -62,6 +62,30 @@
         }
       }
     },
+    "watchRooms": {
+      "$watchRoomCode": {
+        ".read": false,
+        ".write": false,
+        "control": {
+          ".read": "auth != null",
+          ".write": "auth != null && ((!data.exists() && newData.child('hostUid').val() === auth.uid && newData.child('watchRoomCode').val() === $watchRoomCode) || data.child('hostUid').val() === auth.uid)",
+          ".validate": "newData.hasChildren(['watchRoomCode','hostUid','replayId','replayTitle','createdAt','updatedAt','expiresAt','playback']) && !newData.hasChild('replayFile') && !newData.hasChild('initialGameState') && !newData.hasChild('finalGameState') && !newData.hasChild('actionLog') && !newData.hasChild('cards') && !newData.hasChild('definitions')"
+        },
+        "viewers": {
+          ".read": "auth != null",
+          "$viewerId": {
+            ".write": "auth != null && $viewerId === auth.uid && newData.child('viewerId').val() === auth.uid"
+          }
+        },
+        "comments": {
+          ".read": "auth != null && (root.child('watchRooms').child($watchRoomCode).child('viewers').child(auth.uid).exists() || root.child('watchRooms').child($watchRoomCode).child('control').child('hostUid').val() === auth.uid)",
+          "$commentId": {
+            ".write": "auth != null && newData.child('viewerId').val() === auth.uid",
+            ".validate": "newData.hasChildren(['commentId','watchRoomCode','actionIndex','viewerId','displayName','createdAt','body','type']) && newData.child('commentId').val() === $commentId && newData.child('watchRoomCode').val() === $watchRoomCode && newData.child('actionIndex').isNumber() && newData.child('body').isString() && (newData.child('type').val() === 'comment' || newData.child('type').val() === 'question' || newData.child('type').val() === 'reaction') && !newData.hasChild('replayFile') && !newData.hasChild('initialGameState') && !newData.hasChild('finalGameState') && !newData.hasChild('actionLog') && !newData.hasChild('cards') && !newData.hasChild('definitions')"
+          }
+        }
+      }
+    },
     "reports": {
       ".read": false,
       ".indexOn": ["createdAt", "expiresAt", "status", "fingerprint", "clusterId"],

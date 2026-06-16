@@ -2,10 +2,11 @@ import { useEffect } from 'react';
 import type { CSSProperties } from 'react';
 import { replaySpeedToDelay } from '../../engine/replayEngine';
 import { useGameStore } from '../../store/gameStore';
-import type { ReplayAnimationMode, ReplaySpeed } from '../../types/replay';
+import type { ReplayAnimationMode, ReplaySpeed, ReplayViewMode } from '../../types/replay';
 
 const SPEEDS: ReplaySpeed[] = [0.5, 1, 2, 'instant'];
 const ANIMATION_MODES: ReplayAnimationMode[] = ['off', 'simple', 'dramatic'];
+const VIEW_MODES: ReplayViewMode[] = ['normal', 'review', 'creator'];
 
 export function ReplayControls() {
   const replay = useGameStore(s => s.replay);
@@ -15,10 +16,13 @@ export function ReplayControls() {
   const play = useGameStore(s => s.replayPlay);
   const pause = useGameStore(s => s.replayPause);
   const setSpeed = useGameStore(s => s.replaySetSpeed);
+  const setViewMode = useGameStore(s => s.replaySetViewMode);
+  const setCreatorSetting = useGameStore(s => s.replaySetCreatorSetting);
   const setAnimationMode = useGameStore(s => s.replaySetAnimationMode);
   const setAnimationSpeed = useGameStore(s => s.replaySetAnimationSpeed);
   const skipAnimation = useGameStore(s => s.replaySkipAnimation);
   const exitReplay = useGameStore(s => s.exitReplay);
+  const adaptivePerformance = useGameStore(s => s.adaptivePerformance);
 
   useEffect(() => {
     if (!replay || replay.status !== 'playing') return;
@@ -40,6 +44,8 @@ export function ReplayControls() {
   const atStart = replay.currentActionIndex <= -1;
   const atEnd = replay.currentActionIndex >= max;
   const playing = replay.status === 'playing';
+  const animationsReduced = replay.animationMode !== 'off' &&
+    (adaptivePerformance.animationQuality !== 'full' || adaptivePerformance.disableReplayDramaticEffects);
 
   return (
     <div data-testid="replay-controls" style={{
@@ -73,6 +79,15 @@ export function ReplayControls() {
       >
         {SPEEDS.map(speed => <option key={String(speed)} value={String(speed)}>{speed === 'instant' ? 'Instant' : `${speed}x`}</option>)}
       </select>
+      <label style={{ color: '#64748b', fontSize: 10, fontWeight: 800 }}>View</label>
+      <select
+        data-testid="replay-view-mode"
+        value={replay.viewMode}
+        onChange={event => setViewMode(event.target.value as ReplayViewMode)}
+        style={{ background: '#020617', color: '#cbd5e1', border: '1px solid #334155', borderRadius: 5, padding: '4px 6px', fontSize: 10 }}
+      >
+        {VIEW_MODES.map(mode => <option key={mode} value={mode}>{mode[0].toUpperCase() + mode.slice(1)}</option>)}
+      </select>
       <label style={{ color: '#64748b', fontSize: 10, fontWeight: 800 }}>Animations</label>
       <select
         data-testid="replay-animation-mode"
@@ -94,6 +109,33 @@ export function ReplayControls() {
         style={{ width: 54, background: '#020617', color: '#cbd5e1', border: '1px solid #334155', borderRadius: 5, padding: '4px 6px', fontSize: 10 }}
       />
       <button data-testid="replay-skip-animation" onClick={skipAnimation} disabled={replay.currentAnimations.length === 0} style={buttonStyle}>Skip FX</button>
+      {replay.viewMode === 'creator' && (
+        <div data-testid="replay-creator-toggles" style={{ display: 'flex', gap: 5, flexWrap: 'wrap', alignItems: 'center' }}>
+          <CreatorToggle label="Timeline" checked={replay.creatorSettings.showTimeline} onChange={value => setCreatorSetting('showTimeline', value)} />
+          <CreatorToggle label="Caption" checked={replay.creatorSettings.showActionCaption} onChange={value => setCreatorSetting('showActionCaption', value)} />
+          <CreatorToggle label="Players" checked={replay.creatorSettings.showPlayerPanels} onChange={value => setCreatorSetting('showPlayerPanels', value)} />
+          <CreatorToggle label="Life" checked={replay.creatorSettings.showLifeTotals} onChange={value => setCreatorSetting('showLifeTotals', value)} />
+          <CreatorToggle label="Commanders" checked={replay.creatorSettings.showCommanderNames} onChange={value => setCreatorSetting('showCommanderNames', value)} />
+          <CreatorToggle label="Streamer-safe" checked={replay.creatorSettings.streamerSafeMode} onChange={value => setCreatorSetting('streamerSafeMode', value)} />
+        </div>
+      )}
+      {animationsReduced && (
+        <span
+          data-testid="replay-animation-downgrade"
+          title={adaptivePerformance.reason}
+          style={{
+            color: '#fbbf24',
+            fontSize: 10,
+            fontWeight: 800,
+            border: '1px solid #854d0e',
+            background: '#2b1d08',
+            borderRadius: 5,
+            padding: '4px 6px',
+          }}
+        >
+          Animations reduced due to connection/performance
+        </span>
+      )}
       <div style={{ marginLeft: 'auto', color: '#94a3b8', fontSize: 10 }}>
         {replay.currentActionIndex + 1} / {replay.replayFile.actionLog.length}
       </div>
@@ -112,3 +154,28 @@ const buttonStyle: CSSProperties = {
   fontWeight: 800,
   cursor: 'pointer',
 };
+
+function CreatorToggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
+  return (
+    <label style={{
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: 4,
+      border: '1px solid #334155',
+      borderRadius: 999,
+      padding: '3px 7px',
+      background: checked ? 'rgba(20,83,45,0.42)' : 'rgba(15,23,42,0.72)',
+      color: checked ? '#bbf7d0' : '#94a3b8',
+      fontSize: 9,
+      fontWeight: 800,
+    }}>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={event => onChange(event.target.checked)}
+        style={{ margin: 0 }}
+      />
+      {label}
+    </label>
+  );
+}

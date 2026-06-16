@@ -1,4 +1,7 @@
 import { useGameStore } from '../../store/gameStore';
+import { ReplayClipsPanel } from './ReplayClipsPanel';
+import { ReplayReviewPanel } from './ReplayReviewPanel';
+import { ReplayWatchPartyPanel } from './ReplayWatchPartyPanel';
 
 export function ReplayInfoPanel() {
   const replay = useGameStore(s => s.replay);
@@ -34,6 +37,9 @@ export function ReplayInfoPanel() {
         {replay.checkpoints?.length ? ' / Fast scrubbing enabled' : ''}
       </div>
       <div>{file.rulesetVersion || 'unknown ruleset'} / {file.appVersion || 'unknown app'} / {file.buildCommit || 'unknown commit'}</div>
+      <div>Review: {replay.reviewNotes.length} notes / {replay.bookmarks.length} bookmarks / {replay.clips.length} clips</div>
+      <ReplayWatchPartyPanel />
+      <ReplayClipsPanel />
       {replay.warnings.length > 0 && (
         <div data-testid="replay-warnings" style={{ borderTop: '1px solid #3f2f12', paddingTop: 7, color: '#fcd34d' }}>
           {replay.warnings.slice(-5).map(warning => (
@@ -41,6 +47,7 @@ export function ReplayInfoPanel() {
           ))}
         </div>
       )}
+      <ReplayReviewPanel />
     </div>
   );
 }

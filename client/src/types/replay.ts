@@ -4,6 +4,9 @@ export type ReplayMode = 'solo' | 'multiplayer';
 export type ReplayStatus = 'idle' | 'loaded' | 'playing' | 'paused' | 'error';
 export type ReplaySpeed = 0.5 | 1 | 2 | 'instant';
 export type ReplayAnimationMode = 'off' | 'simple' | 'dramatic';
+export type ReplayViewMode = 'normal' | 'review' | 'creator';
+export type ReplayWatchPartyRole = 'none' | 'host' | 'presenter' | 'viewer';
+export type ReplayWatchPartySyncMode = 'presenter_sync' | 'free_scrub';
 
 export type ReplayAnimationType =
   | 'draw_card'
@@ -85,6 +88,109 @@ export interface ReplayCheckpoint {
   gameState: GameState;
 }
 
+export type ReplayReviewNoteType =
+  | 'mistake'
+  | 'good_play'
+  | 'rules_question'
+  | 'deck_issue'
+  | 'combat_decision'
+  | 'mulligan_decision'
+  | 'mana_issue'
+  | 'highlight'
+  | 'content_clip'
+  | 'general';
+
+export interface ReplayReviewNote {
+  noteId: string;
+  replayId: string;
+  actionIndex: number;
+  turnNumber?: number;
+  createdAt: number;
+  updatedAt?: number;
+  authorName?: string;
+  type: ReplayReviewNoteType;
+  title?: string;
+  body: string;
+  tags: string[];
+}
+
+export type ReplayBookmarkType =
+  | 'turning_point'
+  | 'combat'
+  | 'combo'
+  | 'mistake'
+  | 'highlight'
+  | 'rules'
+  | 'custom';
+
+export interface ReplayBookmark {
+  bookmarkId: string;
+  replayId: string;
+  actionIndex: number;
+  turnNumber?: number;
+  createdAt: number;
+  label: string;
+  color?: string;
+  type: ReplayBookmarkType;
+}
+
+export interface ReplayClip {
+  clipId: string;
+  replayId: string;
+  title: string;
+  startActionIndex: number;
+  endActionIndex: number;
+  tags: string[];
+  description?: string;
+  createdAt: number;
+}
+
+export interface ReplayCreatorSettings {
+  showTimeline: boolean;
+  showActionCaption: boolean;
+  showPlayerPanels: boolean;
+  showLifeTotals: boolean;
+  showCommanderNames: boolean;
+  streamerSafeMode: boolean;
+}
+
+export interface ReplayWatchViewer {
+  viewerId: string;
+  displayName: string;
+  role: 'host' | 'presenter' | 'viewer';
+  online: boolean;
+  lastSeen: number;
+}
+
+export interface ReplayWatchPartyPlayback {
+  actionIndex: number;
+  status: 'paused' | 'playing';
+  speed: number;
+  animationMode: ReplayAnimationMode;
+  updatedAt: number;
+  controlledBy?: string;
+}
+
+export interface ReplayWatchComment {
+  commentId: string;
+  watchRoomCode: string;
+  actionIndex: number;
+  viewerId: string;
+  displayName: string;
+  createdAt: number;
+  expiresAt?: number;
+  body: string;
+  type: 'comment' | 'question' | 'reaction';
+}
+
+export interface ReplayWatchPartyState {
+  watchRoomCode?: string;
+  role: ReplayWatchPartyRole;
+  syncMode: ReplayWatchPartySyncMode;
+  playback: ReplayWatchPartyPlayback;
+  viewers: ReplayWatchViewer[];
+}
+
 export interface ReplaySession {
   replayFile: ReplayFile;
   currentActionIndex: number;
@@ -99,6 +205,17 @@ export interface ReplaySession {
   currentAnimations: ReplayAnimation[];
   animationSpeed: number;
   animationQueue?: ReplayAnimation[];
+  reviewNotes: ReplayReviewNote[];
+  bookmarks: ReplayBookmark[];
+  clips: ReplayClip[];
+  clipDraft?: {
+    startActionIndex?: number;
+    endActionIndex?: number;
+  };
+  activeClipId?: string;
+  viewMode: ReplayViewMode;
+  creatorSettings: ReplayCreatorSettings;
+  watchParty: ReplayWatchPartyState;
 }
 
 export type ReplayTimelineMarkerKind =
@@ -111,7 +228,9 @@ export type ReplayTimelineMarkerKind =
   | 'mechanic'
   | 'manual'
   | 'warning'
-  | 'checkpoint';
+  | 'checkpoint'
+  | 'note'
+  | 'bookmark';
 
 export interface ReplayTimelineMarker {
   id: string;
