@@ -1,4 +1,5 @@
 import type { ActionRecord, CardState, GameState, Phase, Player } from '../types/game';
+import { DEFAULT_REPLAY_WATCH_PARTY_STATE } from './replayWatchParty';
 import type {
   ExportReplayOptions,
   ReplayCheckpoint as ReplayStateCheckpoint,
@@ -9,12 +10,38 @@ import type {
   ReplaySpeed,
   ReplayTimelineMarker,
   ReplayTimelineMarkerKind,
+  ReplayBookmark,
+  ReplayClip,
+  ReplayReviewNote,
 } from '../types/replay';
 
 export const SUPPORTED_REPLAY_VERSION = '2.0.0';
 export const DEFAULT_REPLAY_CHECKPOINT_INTERVAL = 25;
+export const DEFAULT_REPLAY_CREATOR_SETTINGS = {
+  showTimeline: true,
+  showActionCaption: true,
+  showPlayerPanels: true,
+  showLifeTotals: true,
+  showCommanderNames: true,
+  streamerSafeMode: true,
+};
 const REPLAY_STORAGE_KEY = 'mtg-replays-v1';
 const MAX_STORED_REPLAYS = 10;
+
+export interface ReplayClipInput {
+  title: string;
+  startActionIndex: number;
+  endActionIndex: number;
+  tags?: string[];
+  description?: string;
+  createdAt?: number;
+  clipId?: string;
+}
+
+export interface ReplayClipValidationResult {
+  ok: boolean;
+  errors: string[];
+}
 
 export interface ReplayCheckpoint {
   actionIndex: number;
@@ -383,6 +410,94 @@ export function applyReplayToIndex(
   return { currentGameState: state, warnings };
 }
 
+export function getReplayClipReplayId(replayFile: ReplayFile): string {
+  return `${replayFile.gameId}:${replayFile.exportedAt}`;
+}
+
+export function validateReplayClipRange(
+  replayFile: ReplayFile,
+  startActionIndex: number,
+  endActionIndex: number,
+  title = 'clip',
+): ReplayClipValidationResult {
+  const errors: string[] = [];
+  const maxIndex = replayFile.actionLog.length - 1;
+  if (!title.trim()) errors.push('Clip title is required.');
+  if (!Number.isInteger(startActionIndex) || !Number.isInteger(endActionIndex)) {
+    errors.push('Clip action indexes must be whole numbers.');
+  }
+  if (startActionIndex > endActionIndex) {
+    errors.push('Clip startActionIndex must be before or equal to endActionIndex.');
+  }
+  if (startActionIndex < 0 || endActionIndex < 0 || startActionIndex > maxIndex || endActionIndex > maxIndex) {
+    errors.push('Clip action indexes must be within the replay action log.');
+  }
+  if (replayFile.actionLog.length === 0) {
+    errors.push('Cannot create a clip from an empty action log.');
+  }
+  return { ok: errors.length === 0, errors };
+}
+
+export function createReplayClip(
+  replayFile: ReplayFile,
+  input: ReplayClipInput,
+): { clip?: ReplayClip; errors: string[] } {
+  const title = input.title.trim();
+  const validation = validateReplayClipRange(replayFile, input.startActionIndex, input.endActionIndex, title);
+  if (!validation.ok) return { errors: validation.errors };
+  return {
+    clip: {
+      clipId: input.clipId ?? `clip-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      replayId: getReplayClipReplayId(replayFile),
+      title,
+      startActionIndex: input.startActionIndex,
+      endActionIndex: input.endActionIndex,
+      tags: input.tags?.map(tag => tag.trim()).filter(Boolean) ?? [],
+      description: input.description?.trim() || undefined,
+      createdAt: input.createdAt ?? Date.now(),
+    },
+    errors: [],
+  };
+}
+
+export function getReplayClipDuration(replayFile: ReplayFile, clip: ReplayClip): { actionCount: number; turnCount: number } {
+  const actions = replayFile.actionLog.slice(clip.startActionIndex, clip.endActionIndex + 1);
+  return {
+    actionCount: Math.max(0, clip.endActionIndex - clip.startActionIndex + 1),
+    turnCount: new Set(actions.map(action => action.turn)).size,
+  };
+}
+
+export function exportReplayClipMetadataJson(replayFile: ReplayFile, clip: ReplayClip): string {
+  const duration = getReplayClipDuration(replayFile, clip);
+  return JSON.stringify({
+    replayId: clip.replayId,
+    gameId: replayFile.gameId,
+    gameName: replayFile.gameName,
+    privacy: replayFile.privacy.includesPrivateZones ? 'private' : replayFile.privacy.redactedPlayers?.length ? 'redacted' : 'public',
+    clip: {
+      ...clip,
+      actionCount: duration.actionCount,
+      turnCount: duration.turnCount,
+    },
+  }, null, 2);
+}
+
+export function generateReplayClipSummary(replayFile: ReplayFile, clip: ReplayClip): string {
+  const duration = getReplayClipDuration(replayFile, clip);
+  const privacy = replayFile.privacy.includesPrivateZones ? 'Private' : replayFile.privacy.redactedPlayers?.length ? 'Redacted' : 'Public';
+  return [
+    `# ${clip.title}`,
+    '',
+    `Replay: ${replayFile.gameName || replayFile.gameId}`,
+    `Privacy: ${privacy}`,
+    `Actions: ${clip.startActionIndex + 1}-${clip.endActionIndex + 1} (${duration.actionCount})`,
+    `Turns covered: ${duration.turnCount}`,
+    clip.tags.length ? `Tags: ${clip.tags.join(', ')}` : '',
+    clip.description ? `Description: ${clip.description}` : '',
+  ].filter(Boolean).join('\n');
+}
+
 export function createReplaySession(replayFile: ReplayFile): ReplaySession {
   const { currentGameState, warnings } = applyReplayToIndex(replayFile, -1);
   return {
@@ -399,6 +514,17 @@ export function createReplaySession(replayFile: ReplayFile): ReplaySession {
     currentAnimations: [],
     animationSpeed: 1,
     animationQueue: [],
+    reviewNotes: [],
+    bookmarks: [],
+    clips: [],
+    clipDraft: {},
+    viewMode: 'review',
+    creatorSettings: { ...DEFAULT_REPLAY_CREATOR_SETTINGS },
+    watchParty: {
+      ...DEFAULT_REPLAY_WATCH_PARTY_STATE,
+      playback: { ...DEFAULT_REPLAY_WATCH_PARTY_STATE.playback },
+      viewers: [],
+    },
   };
 }
 
@@ -467,6 +593,7 @@ function safeReplayMarkerLabel(replayFile: ReplayFile, action: ActionRecord, typ
 export function getReplayTimelineMarkers(
   replayFile: ReplayFile,
   checkpoints?: ReplayStateCheckpoint[],
+  review?: { notes?: ReplayReviewNote[]; bookmarks?: ReplayBookmark[] },
 ): ReplayTimelineMarker[] {
   const markers: ReplayTimelineMarker[] = [];
   let lastTurn: number | null = null;
@@ -503,6 +630,26 @@ export function getReplayTimelineMarkers(
       severity: 'info',
     });
   }
+  for (const note of review?.notes ?? []) {
+    markers.push({
+      id: `note-${note.noteId}`,
+      actionIndex: note.actionIndex,
+      turnNumber: note.turnNumber,
+      type: 'note',
+      label: note.title || `${note.type.replace(/_/g, ' ')} note`,
+      severity: note.type === 'mistake' || note.type === 'rules_question' ? 'warning' : 'info',
+    });
+  }
+  for (const bookmark of review?.bookmarks ?? []) {
+    markers.push({
+      id: `bookmark-${bookmark.bookmarkId}`,
+      actionIndex: bookmark.actionIndex,
+      turnNumber: bookmark.turnNumber,
+      type: 'bookmark',
+      label: bookmark.label,
+      severity: bookmark.type === 'mistake' || bookmark.type === 'rules' ? 'warning' : 'important',
+    });
+  }
   return markers.sort((a, b) => a.actionIndex - b.actionIndex || markerSort(a.type) - markerSort(b.type));
 }
 
@@ -510,7 +657,9 @@ function markerSort(type: ReplayTimelineMarkerKind): number {
   if (type === 'checkpoint') return 0;
   if (type === 'turn') return 1;
   if (type === 'warning') return 2;
-  return 3;
+  if (type === 'bookmark') return 3;
+  if (type === 'note') return 4;
+  return 5;
 }
 
 function summarizePlayers(game: GameState): ReplayPlayerSummary[] {

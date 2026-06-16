@@ -69,6 +69,25 @@ import {
   type StartGamePreparePayload,
   type SubmittedDeckPublicSummary,
 } from './multiplayerProtocol';
+import {
+  BACKPRESSURE_LIMITS,
+  createStringChunks,
+  planChunkBurst,
+  shouldDropNonessentialSend,
+  shouldPauseChunkSend,
+} from './backpressureQueue';
+import {
+  createInitialConnectionHealth,
+  markConnectionChunkTimeout,
+  markConnectionMissedPong,
+  markConnectionPing,
+  markConnectionSendFailure,
+  selectWorstConnectionHealth,
+  updateConnectionBuffer,
+  updateConnectionChannel,
+  updateConnectionFromPong,
+  type ConnectionHealth,
+} from './networkHealth';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -210,8 +229,9 @@ const CONNECT_TIMEOUT_MS = 12000;
 // Heartbeat interval to keep DataChannels alive through NAT (ms)
 const HEARTBEAT_MS = 20000;
 const HOST_MIGRATION_DELAY_MS = 1800;
-const DATA_CHANNEL_LOW_WATER_BYTES = 64 * 1024;
-const DATA_CHANNEL_HIGH_WATER_BYTES = 256 * 1024;
+const DATA_CHANNEL_LOW_WATER_BYTES = BACKPRESSURE_LIMITS.bufferedAmountLowThreshold;
+const DATA_CHANNEL_HIGH_WATER_BYTES = BACKPRESSURE_LIMITS.highBufferedAmount;
+const CHUNK_PUMP_RETRY_MS = 100;
 const FIREBASE_POLL_MS = 1800;
 const FIREBASE_POLL_MS_MAX = 12000;
 const FIREBASE_FETCH_TIMEOUT_MS = 6000;
@@ -262,10 +282,24 @@ const _connections: Map<string, DataConnection> = new Map();
 let _hostConn: DataConnection | null = null;
 let _latestGame: GameState | null = null;
 const _pendingStateMessages: Map<string, SyncMessage> = new Map();
-const _incomingPatchChunks: Map<string, { receivedAt: number; total: number; chunks: string[] }> = new Map();
+const _incomingPatchChunks: Map<string, { receivedAt: number; total: number; chunks: string[]; resendRequested: boolean }> = new Map();
 const _bufferDrainHandlers: Map<string, () => void> = new Map();
 const _connectionHealthHandlers: Map<string, () => void> = new Map();
+const _connectionHealthByPeer: Map<string, ConnectionHealth> = new Map();
+const _pendingPingSentAtByPeer: Map<string, number> = new Map();
 const _firebaseSeenMessages: Map<string, number> = new Map();
+
+interface OutgoingPatchQueue {
+  chunkId: string;
+  gameId: string;
+  seq: number;
+  chunks: string[];
+  nextIndex: number;
+  allSent: boolean;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+const _outgoingPatchQueuesByPeer: Map<string, OutgoingPatchQueue[]> = new Map();
 
 // Presence table — host owns the authoritative copy; joiners mirror it
 const _peers: Map<string, RoomPresence> = new Map();
@@ -283,6 +317,7 @@ let _onStartCommit: ((commit: StartGameCommit) => void) | null = null;
 let _onLobbyUpdate: ((lobby: LobbyState) => void) | null = null;
 let _onDeckSubmitted: ((submission: DeckSubmission, presence: RoomPresence) => void | Promise<void>) | null = null;
 let _onGameActionRequest: ((request: GameActionRequestPayload, presence: RoomPresence) => void) | null = null;
+let _onConnectionHealthUpdate: ((health: ConnectionHealth) => void) | null = null;
 
 function debugMultiplayer(event: string, data?: Record<string, unknown>): void {
   const debugEnabled = import.meta.env?.DEV === true ||
@@ -320,6 +355,20 @@ interface GameStatePatchChunkPayload {
   data: string;
 }
 
+function isEssentialSyncMessage(type: SyncMessage['type']): boolean {
+  return type === 'PING' ||
+    type === 'PONG' ||
+    type === 'LEAVE_ROOM' ||
+    type === 'KICKED' ||
+    type === 'HOST_MIGRATION' ||
+    type === 'GAME_STATE_PATCH_REQUEST' ||
+    type === 'GAME_STATE_PATCH' ||
+    type === 'GAME_STATE_PATCH_CHUNK' ||
+    type === 'START_GAME_PREPARE' ||
+    type === 'START_GAME_ACK' ||
+    type === 'START_GAME_COMMIT';
+}
+
 interface FirebaseRoomRelay {
   hostId: string;
   createdAt: number;
@@ -335,6 +384,11 @@ interface FirebaseRoomRelay {
 
 function setStatus(s: SyncStatus) {
   _status = s;
+  if (s === 'disconnected') {
+    clearConnectionHealth();
+  } else {
+    emitConnectionHealthUpdate();
+  }
   _onStatusChange?.(s);
 }
 
@@ -401,6 +455,85 @@ function getConnectionDebugInfo(conn: DataConnection): {
   };
 }
 
+function connectionHealthFallback(): ConnectionHealth {
+  return createInitialConnectionHealth({
+    dataChannelOpen: _status === 'host' || _status === 'joined' || _status === 'migrating',
+    firebaseRecoveryAvailable: isFirebaseFallbackConfigured(),
+  });
+}
+
+function emitConnectionHealthUpdate(): void {
+  _onConnectionHealthUpdate?.(
+    selectWorstConnectionHealth([..._connectionHealthByPeer.values()], connectionHealthFallback()),
+  );
+}
+
+function updatePeerConnectionHealth(
+  peerId: string,
+  updater: (health: ConnectionHealth) => ConnectionHealth,
+): void {
+  const previous = _connectionHealthByPeer.get(peerId) ?? createInitialConnectionHealth({
+    firebaseRecoveryAvailable: isFirebaseFallbackConfigured(),
+  });
+  _connectionHealthByPeer.set(peerId, updater(previous));
+  emitConnectionHealthUpdate();
+}
+
+function updateConnectionBufferHealth(conn: DataConnection): void {
+  const dataChannel = getDataChannel(conn);
+  updatePeerConnectionHealth(conn.peer, health => updateConnectionBuffer(
+    health,
+    dataChannel?.bufferedAmount ?? 0,
+    Boolean(conn.open && dataChannel?.readyState === 'open'),
+  ));
+}
+
+function updateConnectionOpenHealth(conn: DataConnection): void {
+  const dataChannel = getDataChannel(conn);
+  updatePeerConnectionHealth(conn.peer, health => updateConnectionChannel(
+    updateConnectionBuffer(health, dataChannel?.bufferedAmount ?? 0, true),
+    true,
+  ));
+}
+
+function updateConnectionClosedHealth(peerId: string): void {
+  updatePeerConnectionHealth(peerId, health => updateConnectionChannel(health, false));
+  _pendingPingSentAtByPeer.delete(peerId);
+}
+
+function recordPingSent(conn: DataConnection, sentAt: number): void {
+  const previousPingAt = _pendingPingSentAtByPeer.get(conn.peer);
+  if (previousPingAt && sentAt - previousPingAt >= HEARTBEAT_MS * 0.75) {
+    updatePeerConnectionHealth(conn.peer, markConnectionMissedPong);
+  }
+  _pendingPingSentAtByPeer.set(conn.peer, sentAt);
+  updatePeerConnectionHealth(conn.peer, health => markConnectionPing(health, sentAt));
+  updateConnectionBufferHealth(conn);
+}
+
+function recordPongReceived(conn: DataConnection, sentAt: number): number {
+  const rttMs = Math.max(0, Date.now() - sentAt);
+  _pendingPingSentAtByPeer.delete(conn.peer);
+  updatePeerConnectionHealth(conn.peer, health => updateConnectionFromPong(health, rttMs));
+  updateConnectionBufferHealth(conn);
+  return rttMs;
+}
+
+function recordSendFailure(conn: DataConnection): void {
+  updatePeerConnectionHealth(conn.peer, markConnectionSendFailure);
+  updateConnectionBufferHealth(conn);
+}
+
+function recordChunkTimeout(peerId: string, resendRequested: boolean): void {
+  updatePeerConnectionHealth(peerId, health => markConnectionChunkTimeout(health, { resendRequested }));
+}
+
+function clearConnectionHealth(): void {
+  _connectionHealthByPeer.clear();
+  _pendingPingSentAtByPeer.clear();
+  emitConnectionHealthUpdate();
+}
+
 function logConnectionState(event: string, conn: DataConnection, extra: Record<string, unknown> = {}): void {
   debugMultiplayer(event, {
     peerId: conn.peer,
@@ -409,8 +542,18 @@ function logConnectionState(event: string, conn: DataConnection, extra: Record<s
   });
 }
 
+function cancelOutgoingPatchQueues(peerId: string): void {
+  const queues = _outgoingPatchQueuesByPeer.get(peerId) ?? [];
+  for (const queue of queues) {
+    if (queue.timer) clearTimeout(queue.timer);
+  }
+  _outgoingPatchQueuesByPeer.delete(peerId);
+}
+
 function cleanupConnection(conn: DataConnection): void {
   _pendingStateMessages.delete(conn.peer);
+  cancelOutgoingPatchQueues(conn.peer);
+  updateConnectionClosedHealth(conn.peer);
   const dataChannel = getDataChannel(conn);
   const bufferDrain = _bufferDrainHandlers.get(conn.peer);
   if (dataChannel && bufferDrain) {
@@ -434,8 +577,10 @@ function flushPendingStateMessage(conn: DataConnection): void {
   _pendingStateMessages.delete(conn.peer);
   try {
     conn.send(pending);
+    updateConnectionBufferHealth(conn);
   } catch {
     _pendingStateMessages.set(conn.peer, pending);
+    recordSendFailure(conn);
   }
 }
 
@@ -443,7 +588,10 @@ function watchBufferedStateDrain(conn: DataConnection): void {
   const dataChannel = getDataChannel(conn);
   if (!dataChannel || _bufferDrainHandlers.has(conn.peer)) return;
   dataChannel.bufferedAmountLowThreshold = DATA_CHANNEL_LOW_WATER_BYTES;
-  const handler = () => flushPendingStateMessage(conn);
+  const handler = () => {
+    flushPendingStateMessage(conn);
+    pumpChunkQueuesForPeer(conn);
+  };
   dataChannel.addEventListener?.('bufferedamountlow', handler);
   _bufferDrainHandlers.set(conn.peer, handler);
 }
@@ -463,11 +611,28 @@ function envelopeMessage(msg: SyncMessage, peerOverride?: string): MultiplayerMe
 }
 
 function sendMessage(conn: DataConnection, msg: SyncMessage, options: { coalesceState?: boolean } = {}): boolean {
-  if (!conn.open) return false;
+  if (!conn.open) {
+    updateConnectionClosedHealth(conn.peer);
+    return false;
+  }
   const dataChannel = getDataChannel(conn);
-  if (dataChannel && dataChannel.readyState !== 'open') return false;
+  if (dataChannel && dataChannel.readyState !== 'open') {
+    updateConnectionClosedHealth(conn.peer);
+    return false;
+  }
   const envelope = envelopeMessage(msg);
   if (!envelope) return false;
+  if (dataChannel) {
+    updateConnectionBufferHealth(conn);
+    if (shouldDropNonessentialSend(dataChannel.bufferedAmount) && !isEssentialSyncMessage(msg.type)) {
+      debugMultiplayer('skipped nonessential send under critical backpressure', {
+        peerId: conn.peer,
+        type: msg.type,
+        bufferedAmount: dataChannel.bufferedAmount,
+      });
+      return false;
+    }
+  }
 
   if (options.coalesceState && dataChannel && dataChannel.bufferedAmount > DATA_CHANNEL_HIGH_WATER_BYTES) {
     _pendingStateMessages.set(conn.peer, msg);
@@ -477,8 +642,10 @@ function sendMessage(conn: DataConnection, msg: SyncMessage, options: { coalesce
 
   try {
     conn.send(envelope);
+    updateConnectionBufferHealth(conn);
     return true;
   } catch {
+    recordSendFailure(conn);
     if (options.coalesceState) {
       _pendingStateMessages.set(conn.peer, msg);
       watchBufferedStateDrain(conn);
@@ -552,8 +719,10 @@ function cleanupAllConnections(): void {
   if (_hostConn) cleanupConnection(_hostConn);
   _connections.clear();
   _pendingStateMessages.clear();
+  _outgoingPatchQueuesByPeer.clear();
   _bufferDrainHandlers.clear();
   _connectionHealthHandlers.clear();
+  _pendingPingSentAtByPeer.clear();
 }
 
 function stopFirebaseRecoveryLayer(): void {
@@ -1616,6 +1785,7 @@ export function initMultiplayer(
   onLobbyUpdate?: (lobby: LobbyState) => void,
   onDeckSubmitted?: (submission: DeckSubmission, presence: RoomPresence) => void | Promise<void>,
   onGameActionRequest?: (request: GameActionRequestPayload, presence: RoomPresence) => void,
+  onConnectionHealthUpdate?: (health: ConnectionHealth) => void,
 ): void {
   _onGameUpdate = onGameUpdate;
   _onPresenceUpdate = onPresenceUpdate;
@@ -1626,6 +1796,8 @@ export function initMultiplayer(
   _onLobbyUpdate = onLobbyUpdate ?? null;
   _onDeckSubmitted = onDeckSubmitted ?? null;
   _onGameActionRequest = onGameActionRequest ?? null;
+  _onConnectionHealthUpdate = onConnectionHealthUpdate ?? null;
+  emitConnectionHealthUpdate();
 }
 
 // ─── Accessors ────────────────────────────────────────────────────────────────
@@ -1636,6 +1808,9 @@ export function getPlayerId(): string | null { return _playerId; }
 export function getSessionId(): string | null { return _sessionId; }
 export function getIsHost(): boolean         { return _isHost; }
 export function getTransportMode(): 'peerjs' | 'firebase' { return _transportMode; }
+export function getConnectionHealth(): ConnectionHealth {
+  return selectWorstConnectionHealth([..._connectionHealthByPeer.values()], connectionHealthFallback());
+}
 export function getFirebaseRelayHealth(): FirebaseRelayHealth {
   return {
     configured: isFirebaseFallbackConfigured(),
@@ -1754,6 +1929,10 @@ export function requestGameStatePatch(reason = 'manual-resync'): boolean {
           ? 'reconnect'
           : 'missed-peerjs-patch';
   requestFirebaseRecoveryResync(firebaseReason);
+  return sendGameStatePatchRequestMessage(reason);
+}
+
+function sendGameStatePatchRequestMessage(reason: string): boolean {
   const msg: SyncMessage = {
     type: 'GAME_STATE_PATCH_REQUEST',
     payload: { reason, sentAt: Date.now() },
@@ -1817,6 +1996,7 @@ function attachHostConnectionHandlers(peer: Peer): void {
     watchPeerConnection(conn, () => markPeerOffline(conn));
 
     conn.on('open', () => {
+      updateConnectionOpenHealth(conn);
       const lobby = refreshLobbyState();
       if (lobby) sendMessage(conn, { type: 'LOBBY_STATE', payload: lobby });
       if (_latestGame?.status === 'playing') {
@@ -1887,7 +2067,8 @@ function attachHostConnectionHandlers(peer: Peer): void {
       if (msg.type === 'PONG') {
         const payload = msg.payload as { sentAt?: number } | undefined;
         if (typeof payload?.sentAt === 'number') {
-          updatePeerQuality(conn.peer, Date.now() - payload.sentAt);
+          const rttMs = recordPongReceived(conn, payload.sentAt);
+          updatePeerQuality(conn.peer, rttMs);
           broadcastPresence();
         }
       }
@@ -2135,7 +2316,8 @@ function handleJoinerMessage(conn: DataConnection, raw: unknown): void {
   if (msg.type === 'PONG') {
     const payload = msg.payload as { sentAt?: number } | undefined;
     if (typeof payload?.sentAt === 'number' && _peerId) {
-      updatePeerQuality(_peerId, Date.now() - payload.sentAt);
+      const rttMs = recordPongReceived(conn, payload.sentAt);
+      updatePeerQuality(_peerId, rttMs);
       updatePresence({ connectionQuality: _peers.get(_peerId)?.connectionQuality });
     }
   }
@@ -2176,8 +2358,8 @@ export async function createRoom(
     isHostPeer: true,
     isSpectator: hostPresence.isSpectator,
     online: true,
-      lastSeen: Date.now(),
-    });
+    lastSeen: Date.now(),
+  });
 
   return new Promise((resolve, reject) => {
     // Host peer ID = room code so joiners can connect directly
@@ -2220,6 +2402,7 @@ export async function createRoom(
       watchPeerConnection(conn, () => markPeerOffline(conn));
 
       conn.on('open', () => {
+        updateConnectionOpenHealth(conn);
         logConnectionState('host conn open', conn);
         const lobby = refreshLobbyState();
         if (lobby) sendMessage(conn, { type: 'LOBBY_STATE', payload: lobby });
@@ -2297,7 +2480,8 @@ export async function createRoom(
         if (msg.type === 'PONG') {
           const payload = msg.payload as { sentAt?: number } | undefined;
           if (typeof payload?.sentAt === 'number') {
-            updatePeerQuality(conn.peer, Date.now() - payload.sentAt);
+            const rttMs = recordPongReceived(conn, payload.sentAt);
+            updatePeerQuality(conn.peer, rttMs);
             broadcastPresence();
           }
         }
@@ -2366,6 +2550,7 @@ export async function joinRoom(
       watchPeerConnection(conn, () => startHostMigration('host-disconnected'));
 
       conn.on('open', () => {
+        updateConnectionOpenHealth(conn);
         logConnectionState('joiner conn open', conn);
         clearTimeout(timeout);
         // Send our presence to the host
@@ -2507,7 +2692,8 @@ export async function joinRoom(
         if (msg.type === 'PONG') {
           const payload = msg.payload as { sentAt?: number } | undefined;
           if (typeof payload?.sentAt === 'number' && _peerId) {
-            updatePeerQuality(_peerId, Date.now() - payload.sentAt);
+            const rttMs = recordPongReceived(conn, payload.sentAt);
+            updatePeerQuality(_peerId, rttMs);
             updatePresence({ connectionQuality: _peers.get(_peerId)?.connectionQuality });
           }
         }
@@ -2590,33 +2776,116 @@ export function sendStartGamePrepare(prepare: StartGamePrepare): void {
   }
 }
 
-const GAME_STATE_PATCH_CHUNK_SIZE = 12_000;
+const GAME_STATE_PATCH_CHUNK_SIZE = BACKPRESSURE_LIMITS.chunkBytes;
+
+function scheduleChunkPump(conn: DataConnection, queue: OutgoingPatchQueue): void {
+  if (queue.timer) return;
+  watchBufferedStateDrain(conn);
+  queue.timer = setTimeout(() => {
+    queue.timer = null;
+    pumpChunkQueuesForPeer(conn);
+  }, CHUNK_PUMP_RETRY_MS);
+}
+
+function pumpChunkQueuesForPeer(conn: DataConnection): boolean {
+  const queues = _outgoingPatchQueuesByPeer.get(conn.peer);
+  const queue = queues?.[0];
+  if (!queues || !queue) return true;
+
+  if (!conn.open) {
+    queue.allSent = false;
+    queues.shift();
+    if (queues.length === 0) _outgoingPatchQueuesByPeer.delete(conn.peer);
+    return false;
+  }
+
+  const dataChannel = getDataChannel(conn);
+  if (dataChannel && dataChannel.readyState !== 'open') {
+    scheduleChunkPump(conn, queue);
+    return false;
+  }
+
+  updateConnectionBufferHealth(conn);
+  const bufferedAmount = dataChannel?.bufferedAmount ?? 0;
+  const plan = planChunkBurst(queue.chunks.length, queue.nextIndex, bufferedAmount);
+  if (plan.shouldPause) {
+    debugMultiplayer('paused GAME_STATE_PATCH chunk burst for backpressure', {
+      peerId: conn.peer,
+      chunkId: queue.chunkId,
+      nextIndex: queue.nextIndex,
+      total: queue.chunks.length,
+      bufferedAmount,
+      level: plan.level,
+    });
+    scheduleChunkPump(conn, queue);
+    return false;
+  }
+
+  for (let index = plan.startIndex; index < plan.endIndexExclusive; index++) {
+    if (dataChannel && shouldPauseChunkSend(dataChannel.bufferedAmount)) {
+      scheduleChunkPump(conn, queue);
+      return false;
+    }
+    const sent = sendMessage(conn, {
+      type: 'GAME_STATE_PATCH_CHUNK',
+      payload: { chunkId: queue.chunkId, index, total: queue.chunks.length, data: queue.chunks[index] },
+    });
+    queue.allSent = queue.allSent && sent;
+    if (!sent) {
+      scheduleChunkPump(conn, queue);
+      return false;
+    }
+    queue.nextIndex = index + 1;
+  }
+
+  if (queue.nextIndex < queue.chunks.length) {
+    scheduleChunkPump(conn, queue);
+    return false;
+  }
+
+  if (queue.timer) {
+    clearTimeout(queue.timer);
+    queue.timer = null;
+  }
+  queues.shift();
+  if (queues.length === 0) _outgoingPatchQueuesByPeer.delete(conn.peer);
+  debugMultiplayer('host sent GAME_STATE_PATCH chunks', {
+    peerId: conn.peer,
+    gameId: queue.gameId,
+    seq: queue.seq,
+    total: queue.chunks.length,
+    allSent: queue.allSent,
+  });
+  if (queues.length > 0) {
+    setTimeout(() => pumpChunkQueuesForPeer(conn), 0);
+  }
+  return queue.allSent;
+}
 
 function sendChunkedGameStatePatch(conn: DataConnection, payload: GameStatePatchPayload): boolean {
   const serialized = JSON.stringify(payload);
   const chunkId = `${payload.publicGameState.id}-${payload.seq}-${Date.now()}`;
-  const total = Math.max(1, Math.ceil(serialized.length / GAME_STATE_PATCH_CHUNK_SIZE));
-  let allSent = true;
-  for (let index = 0; index < total; index++) {
-    const data = serialized.slice(
-      index * GAME_STATE_PATCH_CHUNK_SIZE,
-      (index + 1) * GAME_STATE_PATCH_CHUNK_SIZE,
-    );
-    const sent = sendMessage(conn, {
-      type: 'GAME_STATE_PATCH_CHUNK',
-      payload: { chunkId, index, total, data },
-    });
-    allSent = allSent && sent;
-  }
-  debugMultiplayer('host sent GAME_STATE_PATCH chunks', {
+  const chunks = createStringChunks(serialized, GAME_STATE_PATCH_CHUNK_SIZE);
+  const queue: OutgoingPatchQueue = {
+    chunkId,
+    gameId: payload.publicGameState.id,
+    seq: payload.seq,
+    chunks,
+    nextIndex: 0,
+    allSent: true,
+    timer: null,
+  };
+  const queues = _outgoingPatchQueuesByPeer.get(conn.peer) ?? [];
+  queues.push(queue);
+  _outgoingPatchQueuesByPeer.set(conn.peer, queues);
+  debugMultiplayer('host queued GAME_STATE_PATCH chunks', {
     peerId: conn.peer,
     gameId: payload.publicGameState.id,
     seq: payload.seq,
-    total,
+    total: chunks.length,
     bytes: serialized.length,
-    allSent,
   });
-  return allSent;
+  return queues[0] === queue ? pumpChunkQueuesForPeer(conn) : false;
 }
 
 function receiveGameStatePatchChunk(payload: GameStatePatchChunkPayload): GameStatePatchPayload | null {
@@ -2634,8 +2903,16 @@ function receiveGameStatePatchChunk(payload: GameStatePatchChunkPayload): GameSt
   const now = Date.now();
   for (const [chunkId, entry] of _incomingPatchChunks) {
     if (now - entry.receivedAt > 60_000) {
-      _incomingPatchChunks.delete(chunkId);
-      requestFirebaseRecoveryResync('chunk-timeout');
+      const sourcePeerId = _hostConn?.peer ?? 'host';
+      if (!entry.resendRequested) {
+        _incomingPatchChunks.set(chunkId, { ...entry, receivedAt: now, resendRequested: true });
+        recordChunkTimeout(sourcePeerId, true);
+        sendGameStatePatchRequestMessage('chunk-timeout');
+      } else {
+        _incomingPatchChunks.delete(chunkId);
+        recordChunkTimeout(sourcePeerId, false);
+        requestFirebaseRecoveryResync('chunk-timeout');
+      }
     }
   }
 
@@ -2643,9 +2920,11 @@ function receiveGameStatePatchChunk(payload: GameStatePatchChunkPayload): GameSt
     receivedAt: now,
     total: payload.total,
     chunks: Array.from({ length: payload.total }, () => ''),
+    resendRequested: false,
   };
   if (entry.total !== payload.total) return null;
   entry.chunks[payload.index] = payload.data;
+  entry.receivedAt = now;
   _incomingPatchChunks.set(payload.chunkId, entry);
 
   if (entry.chunks.some(chunk => chunk === '')) return null;
@@ -3002,13 +3281,16 @@ export function leaveRoom(notifyHost = true): void {
 function _startHeartbeat() {
   _stopHeartbeat();
   _heartbeatTimer = setInterval(() => {
-    const ping: SyncMessage = { type: 'PING', payload: { sentAt: Date.now() } };
+    const sentAt = Date.now();
+    const ping: SyncMessage = { type: 'PING', payload: { sentAt } };
     if (_isHost) {
       for (const conn of _connections.values()) {
-        sendMessage(conn, ping);
+        if (sendMessage(conn, ping)) recordPingSent(conn, sentAt);
       }
     } else {
-      if (_hostConn?.open) sendMessage(_hostConn, ping);
+      if (_hostConn?.open) {
+        if (sendMessage(_hostConn, ping)) recordPingSent(_hostConn, sentAt);
+      }
       else startHostMigration('host-disconnected');
     }
   }, HEARTBEAT_MS);

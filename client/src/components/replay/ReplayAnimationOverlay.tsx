@@ -5,8 +5,14 @@ import type { ReplayAnimation } from '../../types/replay';
 export function ReplayAnimationOverlay() {
   const replay = useGameStore(s => s.replay);
   const clearAnimations = useGameStore(s => s.replayClearAnimations);
+  const adaptivePerformance = useGameStore(s => s.adaptivePerformance);
   const animations = replay?.currentAnimations ?? [];
-  const mode = replay?.animationMode ?? 'off';
+  const selectedMode = replay?.animationMode ?? 'off';
+  const mode = adaptivePerformance.animationQuality === 'off'
+    ? 'off'
+    : adaptivePerformance.disableReplayDramaticEffects && selectedMode === 'dramatic'
+      ? 'simple'
+      : selectedMode;
 
   useEffect(() => {
     if (!animations.length || mode === 'off') return;
