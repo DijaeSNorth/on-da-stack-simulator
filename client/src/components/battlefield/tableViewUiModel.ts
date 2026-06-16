@@ -2,7 +2,48 @@ import type { CardState, GameState, Player } from '../../types/game';
 import { canBattlefieldCardBlock } from './battlefieldUiModel';
 import { isArtifact, isCreature, isEnchantment, isLand, isPlaneswalker } from '../../engine/gameEngine';
 
-export type TableViewMode = 'table' | 'focused' | 'combat' | 'compact';
+export type TableViewMode = 'table' | 'focused' | 'player_focused' | 'combat' | 'compact' | 'free_layout';
+export type LocalBoardSize = 'normal' | 'large' | 'full';
+export type LocalBoardPosition = 'bottom' | 'center' | 'left' | 'right';
+
+export interface BoardFrameRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface BoardLayoutPreferences {
+  mode: TableViewMode;
+  focusedOpponentId?: string;
+  localBoardSize: LocalBoardSize;
+  localBoardPosition: LocalBoardPosition;
+  compactOpponents: boolean;
+  editLayoutMode: boolean;
+  collapsedSectionsByPlayer: Record<string, string[]>;
+  freeLayoutPositions: Record<string, BoardFrameRect>;
+}
+
+export interface BoardInteractionLink {
+  id: string;
+  kind: 'attack' | 'block' | 'target' | 'damage';
+  fromPlayerId?: string;
+  toPlayerId?: string;
+  sourceInstanceId?: string;
+  targetInstanceId?: string;
+  label: string;
+}
+
+export const DEFAULT_BOARD_LAYOUT_PREFERENCES: BoardLayoutPreferences = {
+  mode: 'player_focused',
+  focusedOpponentId: undefined,
+  localBoardSize: 'large',
+  localBoardPosition: 'bottom',
+  compactOpponents: true,
+  editLayoutMode: false,
+  collapsedSectionsByPlayer: {},
+  freeLayoutPositions: {},
+};
 
 export interface PlayerBoardSummary {
   playerId: string;
@@ -43,9 +84,11 @@ export function getPlayerBoardSummary(game: GameState, player: Player): PlayerBo
 export function getTableViewModeLabel(mode: TableViewMode): string {
   switch (mode) {
     case 'table': return 'Table View';
+    case 'player_focused': return 'Player-Focused Board View';
     case 'focused': return 'Focused Player View';
     case 'combat': return 'Combat Focus View';
     case 'compact': return 'Compact Board Grid';
+    case 'free_layout': return 'Free Board Layout';
   }
 }
 
@@ -75,6 +118,110 @@ export function chooseFocusedPlayerId(game: GameState, requestedId: string | nul
   if (requestedId && game.players.some(player => player.id === requestedId)) return requestedId;
   if (localPlayerId && game.players.some(player => player.id === localPlayerId)) return localPlayerId;
   return game.players[0]?.id;
+}
+
+export function chooseFocusedOpponentId(game: GameState, requestedId: string | null | undefined, localPlayerId: string | null | undefined): string | undefined {
+  const opponents = game.players.filter(player => player.id !== localPlayerId);
+  if (requestedId && opponents.some(player => player.id === requestedId)) return requestedId;
+  const defendingIds = getCombatDefendingPlayerIds(game);
+  const combatDefender = opponents.find(player => defendingIds.has(player.id));
+  if (combatDefender) return combatDefender.id;
+  const activeOpponent = opponents.find(player => player.id === game.activePlayerId);
+  if (activeOpponent) return activeOpponent.id;
+  return opponents[0]?.id;
+}
+
+export function normalizeTableViewMode(value: unknown): TableViewMode {
+  return value === 'table' || value === 'focused' || value === 'player_focused' || value === 'combat' || value === 'compact' || value === 'free_layout'
+    ? value
+    : 'player_focused';
+}
+
+export function normalizeBoardLayoutPreferences(value: Partial<BoardLayoutPreferences> | null | undefined): BoardLayoutPreferences {
+  const localBoardSize = value?.localBoardSize === 'normal' || value?.localBoardSize === 'large' || value?.localBoardSize === 'full'
+    ? value.localBoardSize
+    : DEFAULT_BOARD_LAYOUT_PREFERENCES.localBoardSize;
+  const localBoardPosition = value?.localBoardPosition === 'bottom' || value?.localBoardPosition === 'center' || value?.localBoardPosition === 'left' || value?.localBoardPosition === 'right'
+    ? value.localBoardPosition
+    : DEFAULT_BOARD_LAYOUT_PREFERENCES.localBoardPosition;
+  return {
+    ...DEFAULT_BOARD_LAYOUT_PREFERENCES,
+    ...value,
+    mode: normalizeTableViewMode(value?.mode),
+    focusedOpponentId: typeof value?.focusedOpponentId === 'string' ? value.focusedOpponentId : undefined,
+    localBoardSize,
+    localBoardPosition,
+    compactOpponents: value?.compactOpponents ?? DEFAULT_BOARD_LAYOUT_PREFERENCES.compactOpponents,
+    editLayoutMode: value?.editLayoutMode ?? DEFAULT_BOARD_LAYOUT_PREFERENCES.editLayoutMode,
+    collapsedSectionsByPlayer: value?.collapsedSectionsByPlayer && typeof value.collapsedSectionsByPlayer === 'object' ? value.collapsedSectionsByPlayer : {},
+    freeLayoutPositions: value?.freeLayoutPositions && typeof value.freeLayoutPositions === 'object' ? value.freeLayoutPositions : {},
+  };
+}
+
+export function getPlayerBoardLayoutRole(
+  playerId: string,
+  localPlayerId: string | null | undefined,
+  focusedOpponentId: string | null | undefined,
+  mode: TableViewMode,
+  game: GameState,
+): 'local_primary' | 'focused_opponent' | 'combat_relevant' | 'compact_opponent' | 'standard' {
+  const isLocal = playerId === localPlayerId;
+  if (mode === 'player_focused') {
+    if (isLocal) return 'local_primary';
+    if (playerId === focusedOpponentId) return 'focused_opponent';
+    if (isPlayerCombatRelevant(game, playerId)) return 'combat_relevant';
+    return 'compact_opponent';
+  }
+  if (mode === 'combat') {
+    if (isPlayerCombatRelevant(game, playerId)) return isLocal ? 'local_primary' : 'combat_relevant';
+    return 'compact_opponent';
+  }
+  if (mode === 'focused') {
+    if (playerId === focusedOpponentId || isLocal) return isLocal ? 'local_primary' : 'focused_opponent';
+    return 'compact_opponent';
+  }
+  return isLocal ? 'local_primary' : 'standard';
+}
+
+export function isDragCombatEnabledForBoardLayout(preferences: BoardLayoutPreferences): boolean {
+  return !preferences.editLayoutMode;
+}
+
+export function buildBoardInteractionLinks(game: GameState): BoardInteractionLink[] {
+  const links: BoardInteractionLink[] = [];
+  for (const attacker of game.combat.attackers ?? []) {
+    const source = game.cards[attacker.instanceId];
+    const targetPlayerId = attacker.attackTarget?.type === 'player'
+      ? attacker.attackTarget.playerId
+      : attacker.attackTarget?.type === 'planeswalker'
+        ? attacker.attackTarget.controllerId
+        : attacker.attackTarget?.type === 'battle'
+          ? attacker.attackTarget.protectorId
+          : attacker.targetPlayerId;
+    links.push({
+      id: `attack-${attacker.instanceId}-${targetPlayerId}`,
+      kind: 'attack',
+      fromPlayerId: source?.controllerId,
+      toPlayerId: targetPlayerId,
+      sourceInstanceId: attacker.instanceId,
+      targetInstanceId: attacker.attackTarget?.type === 'planeswalker' || attacker.attackTarget?.type === 'battle' ? attacker.attackTarget.permanentId : undefined,
+      label: `${source?.definition.name ?? 'Attacker'} attacks`,
+    });
+  }
+  for (const blocker of game.combat.blockers ?? []) {
+    const source = game.cards[blocker.instanceId];
+    const target = game.cards[blocker.blockedAttacker];
+    links.push({
+      id: `block-${blocker.instanceId}-${blocker.blockedAttacker}`,
+      kind: 'block',
+      fromPlayerId: source?.controllerId,
+      toPlayerId: target?.controllerId,
+      sourceInstanceId: blocker.instanceId,
+      targetInstanceId: blocker.blockedAttacker,
+      label: `${source?.definition.name ?? 'Blocker'} blocks ${target?.definition.name ?? 'attacker'}`,
+    });
+  }
+  return links;
 }
 
 function getPlayerBattlefieldCards(game: GameState, player: Player): CardState[] {

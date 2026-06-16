@@ -6,10 +6,15 @@ import { TriggerQueuePanel } from '../triggers/TriggerQueuePanel';
 import { CardImage } from '../cards/CardImage';
 import type { CardState, GameState, Player, StackObject } from '../../types/game';
 import {
+  buildBoardInteractionLinks,
   chooseFocusedPlayerId,
+  chooseFocusedOpponentId,
   getPlayerBoardSummary,
+  getPlayerBoardLayoutRole,
   getTableViewModeLabel,
+  isDragCombatEnabledForBoardLayout,
   isPlayerCombatRelevant,
+  type BoardLayoutPreferences,
   type TableViewMode,
 } from './tableViewUiModel';
 
@@ -36,14 +41,15 @@ function getElementCenter(element: HTMLElement, rootRect: DOMRect): { x: number;
   };
 }
 
-function CombatArrowOverlay() {
+function BoardInteractionOverlay() {
   const game = useGameStore(s => s.game);
   const overlayRef = useRef<SVGSVGElement | null>(null);
   const [arrows, setArrows] = useState<CombatArrow[]>([]);
   const signature = useMemo(() => {
     const attackers = game.combat.attackers.map(a => `${a.instanceId}:${a.targetPlayerId}`).join('|');
     const blockers = game.combat.blockers.map(b => `${b.instanceId}:${b.blockedAttacker}`).join('|');
-    return `${game.phase}:${game.combat.active}:${attackers}:${blockers}`;
+    const links = buildBoardInteractionLinks(game).map(link => link.id).join('|');
+    return `${game.phase}:${game.combat.active}:${attackers}:${blockers}:${links}`;
   }, [game.combat.active, game.combat.attackers, game.combat.blockers, game.phase]);
 
   useEffect(() => {
@@ -120,6 +126,7 @@ function CombatArrowOverlay() {
     <svg
       ref={overlayRef}
       data-testid="combat-arrow-overlay"
+      data-board-interaction-overlay="true"
       style={{
         position: 'absolute',
         inset: 0,
@@ -714,9 +721,13 @@ function CommanderTableInner() {
   const localPlayerId = store.localPlayerId;
   const hasSidePlayers = leftPlayers.length > 0 || rightPlayers.length > 0;
   const tableViewMode = ui.tableViewMode;
-  const focusedPlayerId = chooseFocusedPlayerId(game, ui.focusedPlayerId, localPlayerId);
+  const boardPreferences = ui.boardLayoutPreferences;
+  const focusedOpponentId = chooseFocusedOpponentId(game, boardPreferences.focusedOpponentId ?? ui.focusedPlayerId, localPlayerId);
+  const focusedPlayerId = chooseFocusedPlayerId(game, ui.focusedPlayerId ?? focusedOpponentId, localPlayerId);
   const showCompactGrid = tableViewMode === 'compact';
   const showCombatFocus = tableViewMode === 'combat' && (game.combat.active || game.combat.attackers.length > 0);
+  const playerFocused = tableViewMode === 'player_focused' || tableViewMode === 'focused';
+  const dragCombatEnabled = isDragCombatEnabledForBoardLayout(boardPreferences);
 
   const sectionStyle = (side: 'top' | 'bottom' | 'left' | 'right'): React.CSSProperties => {
     const base: React.CSSProperties = { display: 'flex', gap: 2, flex: 1, overflow: 'hidden', minHeight: 0, minWidth: 0 };
@@ -740,24 +751,30 @@ function CommanderTableInner() {
 
   function wrapPlayerSlot(player: Player, isLocal: boolean, compact: boolean) {
     const isDropTarget = drag.dropTarget?.id === player.id && drag.dropTarget?.type === 'player';
-    const isDraggingAttack = drag.dragState?.mode === 'attack';
-    const isFocused = tableViewMode === 'focused' && player.id === focusedPlayerId;
+    const isDraggingAttack = dragCombatEnabled && drag.dragState?.mode === 'attack';
+    const role = getPlayerBoardLayoutRole(player.id, localPlayerId, focusedOpponentId, tableViewMode, game);
+    const isFocused = playerFocused && (player.id === focusedPlayerId || role === 'focused_opponent' || role === 'local_primary');
     const combatRelevant = showCombatFocus && isPlayerCombatRelevant(game, player.id);
-    const collapsedByFocus = tableViewMode === 'focused' && !isFocused;
+    const collapsedByFocus = playerFocused && role === 'compact_opponent';
     const collapsedByCombat = showCombatFocus && !combatRelevant;
     const effectiveCompact = compact || collapsedByFocus || collapsedByCombat;
     // Opponent zones glow green when a valid attack drag is in progress
     const showDropGlow = isDraggingAttack && !isLocal;
 
     // Player zone is a drop target for attack drags
-    const dropHandlers = !isLocal ? drag.playerDropHandlers(player.id) : {};
+    const dropHandlers = !isLocal && dragCombatEnabled ? drag.playerDropHandlers(player.id) : {};
+    const flexByRole = role === 'local_primary'
+      ? boardPreferences.localBoardSize === 'full' ? 3.2 : boardPreferences.localBoardSize === 'large' ? 2.35 : 1.75
+      : role === 'focused_opponent' || combatRelevant ? 1.55
+        : collapsedByFocus || collapsedByCombat ? 0.42
+          : 1;
 
     return (
       <div
         key={player.id}
         data-player-slot={player.id}
         style={{
-          flex: isFocused ? 2.2 : combatRelevant ? 1.6 : collapsedByFocus || collapsedByCombat ? 0.48 : 1,
+          flex: flexByRole,
           background: isActive(player)
             ? `linear-gradient(180deg, ${player.color}15, transparent)`
             : 'rgba(255,255,255,0.02)',
@@ -794,6 +811,8 @@ function CommanderTableInner() {
           isLocal={isLocal}
           isActive={isActive(player)}
           compact={effectiveCompact}
+          boardLabel={isLocal ? 'Your Board' : role === 'focused_opponent' ? 'Focused Opponent' : undefined}
+          editLayoutMode={isLocal && boardPreferences.editLayoutMode}
         />
 
         {/* Drop overlay label */}
@@ -852,11 +871,17 @@ function CommanderTableInner() {
         combatActive={game.combat.active || game.combat.attackers.length > 0}
         label={getTableViewModeLabel(tableViewMode)}
         onModeChange={(mode) => store.setTableViewMode(mode)}
+        preferences={boardPreferences}
+        players={players}
+        localPlayerId={localPlayerId}
+        focusedOpponentId={focusedOpponentId}
+        onPreferencesChange={(preferences) => store.updateBoardLayoutPreferences(preferences)}
+        onResetLayout={() => store.resetBoardLayoutPreferences()}
       />
 
       <CombatSummaryBar />
       <CombatDeclarationDock />
-      <CombatArrowOverlay />
+      <BoardInteractionOverlay />
 
       <BattlefieldStackShowcase />
 
@@ -947,7 +972,11 @@ function CommanderTableInner() {
       }} />
 
       {/* Bottom - local player */}
-      <div style={{ ...sectionStyle('bottom'), maxHeight: '42%', flexShrink: 0 }}>
+      <div style={{
+        ...sectionStyle('bottom'),
+        maxHeight: boardPreferences.localBoardSize === 'full' ? '68%' : boardPreferences.localBoardSize === 'large' ? '52%' : '42%',
+        flexShrink: 0,
+      }}>
         {bottomPlayers.map(p => wrapPlayerSlot(p, p.id === localPlayerId, false))}
       </div>
         </>
@@ -964,19 +993,32 @@ function TableViewToolbar({
   combatActive,
   label,
   onModeChange,
+  preferences,
+  players,
+  localPlayerId,
+  focusedOpponentId,
+  onPreferencesChange,
+  onResetLayout,
 }: {
   mode: TableViewMode;
   playerCount: number;
   combatActive: boolean;
   label: string;
   onModeChange: (mode: TableViewMode) => void;
+  preferences: BoardLayoutPreferences;
+  players: Player[];
+  localPlayerId: string | null | undefined;
+  focusedOpponentId?: string;
+  onPreferencesChange: (preferences: Partial<BoardLayoutPreferences>) => void;
+  onResetLayout: () => void;
 }) {
   const modes: Array<{ mode: TableViewMode; label: string; disabled?: boolean }> = [
-    { mode: 'table', label: 'Table' },
-    { mode: 'focused', label: 'Focus' },
+    { mode: 'table', label: 'All Boards' },
+    { mode: 'player_focused', label: 'My Board' },
     { mode: 'combat', label: 'Combat', disabled: !combatActive },
-    { mode: 'compact', label: 'Grid', disabled: playerCount < 3 },
+    { mode: 'compact', label: 'Compact', disabled: playerCount < 3 },
   ];
+  const opponents = players.filter(player => player.id !== localPlayerId);
   return (
     <div
       data-testid="table-view-toolbar"
@@ -989,7 +1031,7 @@ function TableViewToolbar({
         display: 'flex',
         gap: 4,
         padding: 4,
-        borderRadius: 999,
+        borderRadius: 14,
         border: '1px solid rgba(71,85,105,0.55)',
         background: 'rgba(15,23,42,0.78)',
         boxShadow: '0 10px 28px rgba(0,0,0,0.28)',
@@ -1016,9 +1058,72 @@ function TableViewToolbar({
           {item.label}
         </button>
       ))}
+      {opponents.length > 0 && (
+        <select
+          aria-label="Focus opponent board"
+          value={focusedOpponentId ?? ''}
+          onChange={event => {
+            onPreferencesChange({ focusedOpponentId: event.target.value || undefined, mode: 'player_focused' });
+            onModeChange('player_focused');
+          }}
+          style={toolbarSelectStyle}
+        >
+          {opponents.map(player => <option key={player.id} value={player.id}>{player.name}</option>)}
+        </select>
+      )}
+      <select
+        aria-label="My board size"
+        value={preferences.localBoardSize}
+        onChange={event => onPreferencesChange({ localBoardSize: event.target.value as BoardLayoutPreferences['localBoardSize'] })}
+        style={toolbarSelectStyle}
+      >
+        <option value="normal">Normal</option>
+        <option value="large">Large</option>
+        <option value="full">Full</option>
+      </select>
+      <button
+        type="button"
+        data-testid="edit-board-layout-toggle"
+        onClick={() => onPreferencesChange({ editLayoutMode: !preferences.editLayoutMode })}
+        style={{
+          border: `1px solid ${preferences.editLayoutMode ? '#f59e0b' : 'rgba(100,116,139,0.45)'}`,
+          background: preferences.editLayoutMode ? 'rgba(146,64,14,0.38)' : 'rgba(15,23,42,0.62)',
+          color: preferences.editLayoutMode ? '#fde68a' : '#94a3b8',
+          borderRadius: 999,
+          padding: '3px 8px',
+          fontSize: 9,
+          fontWeight: 900,
+          cursor: 'pointer',
+        }}
+      >
+        {preferences.editLayoutMode ? 'Done Editing' : 'Edit Layout'}
+      </button>
+      <button type="button" onClick={onResetLayout} style={toolbarResetStyle}>Reset</button>
     </div>
   );
 }
+
+const toolbarSelectStyle: React.CSSProperties = {
+  border: '1px solid rgba(100,116,139,0.45)',
+  background: 'rgba(15,23,42,0.72)',
+  color: '#cbd5e1',
+  borderRadius: 999,
+  padding: '3px 8px',
+  fontSize: 9,
+  fontWeight: 900,
+  maxWidth: 132,
+};
+
+const toolbarResetStyle: React.CSSProperties = {
+  border: '1px solid rgba(100,116,139,0.45)',
+  background: 'rgba(15,23,42,0.62)',
+  color: '#94a3b8',
+  borderRadius: 999,
+  padding: '3px 8px',
+  fontSize: 9,
+  fontWeight: 900,
+  cursor: 'pointer',
+};
 
 function PlayerBoardSummaryCard({
   player,
