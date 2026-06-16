@@ -610,7 +610,12 @@ export function redactGameStateForPublicReplay(state: GameState): GameState {
       maybeboard: [],
     };
   });
-  return { ...cloneGameState(state), players, cards };
+  const visibleDefinitionIds = new Set(Object.values(cards).map(card => card.definitionId));
+  const definitions = Object.fromEntries(
+    Object.entries(state.definitions).filter(([id]) => visibleDefinitionIds.has(id)),
+  );
+  const actionLog = state.actionLog.map(action => redactAction(action, state));
+  return { ...cloneGameState(state), players, cards, definitions, actionLog };
 }
 
 export function createReplayFileFromGame(

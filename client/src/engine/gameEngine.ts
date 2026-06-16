@@ -610,6 +610,18 @@ export function clearExpiredPowerToughnessOverrides(
   return clearPowerToughnessOverride(state, ids);
 }
 
+export function clearMarkedDamage(state: GameState): GameState {
+  let changed = false;
+  const cards = { ...state.cards };
+  for (const [id, card] of Object.entries(state.cards)) {
+    if ((card.markedForDamage ?? 0) > 0) {
+      cards[id] = { ...card, markedForDamage: 0 };
+      changed = true;
+    }
+  }
+  return changed ? { ...state, cards, lastUpdatedAt: Date.now() } : state;
+}
+
 function isSpacecraftCard(card: CardState | undefined): boolean {
   return isSpacecraft(card);
 }
@@ -1690,7 +1702,7 @@ export function setPhase(state: GameState, phase: Phase): GameState {
 }
 
 export function nextTurn(state: GameState): GameState {
-  const baseState = clearCombatAssignments(state);
+  const baseState = clearMarkedDamage(clearExpiredPowerToughnessOverrides(clearCombatAssignments(state), 'endOfTurn'));
   const playerCount = state.players.length;
   const currentActiveIdx = state.players.findIndex(p => p.id === state.activePlayerId);
   const nextActiveIdx = (currentActiveIdx + 1) % playerCount;

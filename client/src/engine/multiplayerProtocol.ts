@@ -408,6 +408,7 @@ export function createPublicGameState(game: GameState): PublicGameState {
   const publicCards = Object.fromEntries(
     Object.entries(game.cards).filter(([id]) => !hiddenCardIds.has(id)),
   );
+  const visibleDefinitionIds = new Set(Object.values(publicCards).map(card => card.definitionId));
   return {
     id: game.id,
     status: game.status,
@@ -417,7 +418,9 @@ export function createPublicGameState(game: GameState): PublicGameState {
     priorityPlayerId: game.priorityPlayerId,
     players: game.players.map(player => publicPlayerState(player)),
     cards: publicCards,
-    definitions: game.definitions,
+    definitions: Object.fromEntries(
+      Object.entries(game.definitions).filter(([id]) => visibleDefinitionIds.has(id)),
+    ),
     stack: game.stack,
     triggerQueue: game.triggerQueue,
     actionLog: game.actionLog,
@@ -456,7 +459,11 @@ export function sanitizeGameStateForPlayer(game: GameState, viewerPlayerId: stri
   const cards = Object.fromEntries(
     Object.entries(game.cards).filter(([id]) => !hiddenIds.has(id)),
   );
-  return { ...game, players, cards };
+  const visibleDefinitionIds = new Set(Object.values(cards).map(card => card.definitionId));
+  const definitions = Object.fromEntries(
+    Object.entries(game.definitions).filter(([id]) => visibleDefinitionIds.has(id)),
+  );
+  return { ...game, players, cards, definitions };
 }
 
 function publicPlayerState(player: Player): PublicPlayerState {

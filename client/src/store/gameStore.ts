@@ -28,7 +28,7 @@ import {
   getEffectivePowerToughness,
   setPowerToughnessOverride as setPowerToughnessOverrideInEngine,
   clearPowerToughnessOverride as clearPowerToughnessOverrideInEngine,
-  clearExpiredPowerToughnessOverrides,
+  clearExpiredPowerToughnessOverrides, clearMarkedDamage,
   getStationEligibleCreatures as getStationEligibleCreaturesFromEngine,
   stationSpacecraft as stationSpacecraftInEngine,
   stationSpacecraftManual as stationSpacecraftManualInEngine,
@@ -98,6 +98,11 @@ import {
   type GameActionRequestPayload,
   type LobbyState,
 } from '../engine/multiplayerProtocol';
+import {
+  canMoveCommanderToCommandZone,
+  getCommanderCastDisabledReason,
+  getCommanderTax,
+} from '../engine/commanderCasting';
 
 // ─── UI State ─────────────────────────────────────────────────────────────────
 
@@ -210,6 +215,18 @@ const DEFAULT_MULTIPLAYER: MultiplayerState = {
 
 const PANEL_SIZES_KEY = 'mtg_sim_panel_sizes';
 const UI_SETTINGS_KEY = 'mtg_sim_ui_settings_v1';
+const COMBAT_PHASES_FOR_CLEANUP = new Set<Phase>([
+  'beginningOfCombat',
+  'declareAttackers',
+  'declareBlockers',
+  'combatDamage',
+  'endOfCombat',
+]);
+
+function leavesCombatPhase(from: Phase, to: Phase): boolean {
+  return COMBAT_PHASES_FOR_CLEANUP.has(from) && !COMBAT_PHASES_FOR_CLEANUP.has(to);
+}
+
 const DEFAULT_PANEL_SIZES: UIState['panelSizes'] = {
   left: 220,
   right: 280,
@@ -525,6 +542,10 @@ export function applyHostAuthoritativeGameActionRequest(
         return store.markCastForWarp(asString(params.cardId) ?? '', asString(params.warpCost));
       case 'castExiledWithPermission':
         return store.castExiledWithPermission(actor.id, asString(params.instanceId) ?? '');
+      case 'castCommanderFromCommandZone':
+        return store.castCommanderFromCommandZone(actor.id, asString(params.commanderInstanceId) ?? '');
+      case 'moveCommanderToCommandZone':
+        return store.moveCommanderToCommandZone(actor.id, asString(params.commanderInstanceId) ?? '', asString(params.fromZone) as CardState['zone'] | undefined);
       case 'payWaterbendCost':
         return store.payWaterbendCost(actor.id, asNumber(params.amount) ?? 0, asStringArray(params.permanentIds), asString(params.sourceId));
       case 'applyEarthbend':
@@ -659,6 +680,8 @@ export interface GameStore {
   resetGame: () => void;
 
   castCard: (castingPlayerId: string, cardInstanceId: string, targets?: { ids?: string[]; labels?: string[] }) => void;
+  castCommanderFromCommandZone: (playerId: string, commanderInstanceId: string, options?: { manualWarning?: string }) => boolean;
+  moveCommanderToCommandZone: (playerId: string, commanderInstanceId: string, fromZone?: CardState['zone']) => boolean;
   playLand: (playerId: string, cardInstanceId: string, faceIndex?: number) => void;
   moveCardToZone: (instanceId: string, toZone: CardState['zone'], toController?: string) => void;
   tapCard: (instanceId: string) => void;
@@ -2380,7 +2403,9 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     }
 
     const action = createAction(g, castingPlayerId, 'CAST_SPELL',
-      `${cardDef.name} cast by ${castingPlayer?.name || castingPlayerId}`,
+      isCommanderBeingCast
+        ? `${castingPlayer?.name || castingPlayerId} cast ${cardDef.name} from the command zone. Commander tax is +${commanderTax ?? 0}.`
+        : `${cardDef.name} cast by ${castingPlayer?.name || castingPlayerId}`,
       [cardInstanceId],
       addReviewData(castData, flags),
       flags);
@@ -2428,6 +2453,74 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     };
 
     set({ game: g, ui: withAssistantMessages(get().ui, g, flags) });
+  },
+
+  castCommanderFromCommandZone: (playerId, commanderInstanceId) => {
+    const state = get();
+    if (shouldRouteToHostAuthoritativeAction(state)) {
+      if (!canLocalControlPlayer(state, playerId)) return false;
+      const card = state.game.cards[commanderInstanceId];
+      if (!card || card.ownerId !== playerId || card.zone !== 'command') return false;
+      return routeHostAuthoritativeAction('castCommanderFromCommandZone', { playerId, commanderInstanceId });
+    }
+
+    if (!canLocalControlPlayer(state, playerId)) {
+      warnBlockedPrivateZoneAction('castCommanderFromCommandZone', { targetPlayerId: playerId, zone: 'command' });
+      return false;
+    }
+    const card = state.game.cards[commanderInstanceId];
+    if (!card) return false;
+    if (!canLocalControlCard(state, card)) return false;
+    const reason = getCommanderCastDisabledReason(state.game, playerId, commanderInstanceId, { judgeMode: state.ui.judgeMode });
+    if (reason) {
+      const action = createAction(state.game, playerId, 'FLAG', reason, [commanderInstanceId], {
+        commanderAction: 'cast',
+        commanderId: commanderInstanceId,
+      });
+      set({ game: { ...state.game, actionLog: [...state.game.actionLog, action] } });
+      return false;
+    }
+    const before = get().game;
+    get().castCard(playerId, commanderInstanceId);
+    return get().game !== before;
+  },
+
+  moveCommanderToCommandZone: (playerId, commanderInstanceId, fromZone) => {
+    const state = get();
+    if (shouldRouteToHostAuthoritativeAction(state)) {
+      if (!canLocalControlPlayer(state, playerId)) return false;
+      const card = state.game.cards[commanderInstanceId];
+      if (!card || card.ownerId !== playerId) return false;
+      return routeHostAuthoritativeAction('moveCommanderToCommandZone', { playerId, commanderInstanceId, fromZone });
+    }
+
+    if (!canLocalControlPlayer(state, playerId)) {
+      warnBlockedPrivateZoneAction('moveCommanderToCommandZone', { targetPlayerId: playerId, zone: fromZone ?? 'command' });
+      return false;
+    }
+    let g = state.game;
+    const card = g.cards[commanderInstanceId];
+    if (!card) return false;
+    if (!canLocalPerformPrivateCardAction(state, 'moveCommanderToCommandZone', card)) return false;
+    if (!canMoveCommanderToCommandZone(g, playerId, commanderInstanceId, fromZone) && !state.ui.judgeMode) return false;
+    const previousTax = getCommanderTax(g, playerId, commanderInstanceId);
+    g = moveCard(g, commanderInstanceId, 'command', playerId);
+    const player = g.players.find(p => p.id === playerId);
+    const action = createAction(
+      g,
+      playerId,
+      'MOVE_CARD',
+      `${player?.name || playerId} moved ${card.definition.name} to the command zone.`,
+      [commanderInstanceId],
+      {
+        commanderAction: 'move-to-command',
+        commanderId: commanderInstanceId,
+        fromZone: card.zone,
+        commanderTaxUnchanged: previousTax,
+      },
+    );
+    set({ game: { ...g, actionLog: [...g.actionLog, action], lastUpdatedAt: Date.now() } });
+    return true;
   },
 
   playLand: (playerId, cardInstanceId, faceIndex) => {
@@ -3495,8 +3588,12 @@ export const useGameStore = create<GameStore>()((set, get) => ({
     }
     const prev = g.phase;
     g = nextPhase(g);
+    if (leavesCombatPhase(prev, g.phase)) {
+      g = clearExpiredPowerToughnessOverrides(g, 'endOfCombat');
+    }
     if (g.phase === 'cleanup') {
       g = clearExpiredPowerToughnessOverrides(g, 'endOfTurn');
+      g = clearMarkedDamage(g);
     }
     const phaseFlags = filterAssistantFlags(reviewFlags, get().ui);
     const action = createAction(
@@ -3520,9 +3617,14 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   goToPhase: (phase) => {
     if (get().ui.screen === 'replay') return;
     let g = get().game;
+    const prev = g.phase;
     g = setPhase(g, phase);
+    if (leavesCombatPhase(prev, phase)) {
+      g = clearExpiredPowerToughnessOverrides(g, 'endOfCombat');
+    }
     if (phase === 'cleanup') {
       g = clearExpiredPowerToughnessOverrides(g, 'endOfTurn');
+      g = clearMarkedDamage(g);
     }
     const action = createAction(g, g.activePlayerId, 'CHANGE_PHASE', `Jump to: ${phase}`);
     set({ game: { ...g, actionLog: [...g.actionLog, action] }, ui: { ...get().ui, combatMode: g.combat.active } });
@@ -3531,7 +3633,11 @@ export const useGameStore = create<GameStore>()((set, get) => ({
   advanceTurn: () => {
     if (get().ui.screen === 'replay') return;
     let g = get().game;
+    if (COMBAT_PHASES_FOR_CLEANUP.has(g.phase)) {
+      g = clearExpiredPowerToughnessOverrides(g, 'endOfCombat');
+    }
     g = clearExpiredPowerToughnessOverrides(g, 'endOfTurn');
+    g = clearMarkedDamage(g);
     g = nextTurn(g);
     const active = g.players.find(p => p.id === g.activePlayerId);
     const action = createAction(g, g.activePlayerId, 'CHANGE_PHASE', `Turn ${g.turn} — ${active?.name || '?'}`);
