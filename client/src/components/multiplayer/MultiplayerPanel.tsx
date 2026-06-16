@@ -17,6 +17,7 @@ import { getTableDeckStatus } from '../../engine/lobbyReadiness';
 import { PlayerAvatar } from '../profile/PlayerAvatar';
 import type { PlayerAvatarImage } from '../../types/game';
 import { ReportButton } from '../report/ReportButton';
+import { ConnectionHealthPanel, connectionHealthStatusLabel } from './ConnectionHealthPanel';
 import {
   MULTIPLAYER_ADVANCED_LABEL,
   getReadyDisabledReason,
@@ -92,6 +93,7 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
   const isMigrating = multiplayer.status === 'migrating';
   const transportMode = getTransportMode();
   const relayHealth = transportMode === 'firebase' ? getFirebaseRelayHealth() : null;
+  const healthStatusLabel = connected ? connectionHealthStatusLabel(store.networkHealth) : null;
   const relayModeLabel = transportMode === 'firebase'
     ? `Firebase relay (room ${relayHealth?.roomCode ?? '—'})`
     : 'PeerJS/WebRTC';
@@ -107,7 +109,7 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
         ? 'Recovery available'
         : 'Connected - recovery available'
       : connected
-        ? 'Connected'
+        ? healthStatusLabel ?? 'Connected'
         : busy
           ? 'Syncing'
           : 'Disconnected';
@@ -325,6 +327,9 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
             </div>
             <div style={{ fontSize: 10, marginTop: 4, color: '#64748b' }}>
               {connectionStatusLabel}
+              {store.adaptivePerformance.animationQuality !== 'full'
+                ? ` - animations ${store.adaptivePerformance.animationQuality}`
+                : ''}
             </div>
           </div>
           {isHost && (
@@ -525,6 +530,11 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
             <div style={{ fontSize: 10, color: '#64748b', lineHeight: 1.5 }}>
               Transport: {relayModeLabel}{relayStatusLabel ? ` - ${relayStatusLabel}` : ''}
             </div>
+            <ConnectionHealthPanel
+              health={store.networkHealth}
+              frameHealth={store.frameHealth}
+              adaptivePerformance={store.adaptivePerformance}
+            />
 
         {/* Player / spectator role */}
         <div style={{
