@@ -11,6 +11,7 @@ import { BrandMark } from './branding/BrandMark';
 import { PlayerAvatar } from './profile/PlayerAvatar';
 import { ExitGameModal } from './exit/ExitGameModal';
 import { ReportButton } from './report/ReportButton';
+import { TOP_LEVEL_NAV_ITEMS } from './navigation/navigationFlowModel';
 
 export function TopBar() {
   const store = useGameStore();
@@ -37,6 +38,17 @@ export function TopBar() {
   const activePlayer = game.players.find(p => p.id === game.activePlayerId);
   const priorityPlayer = game.players.find(p => p.id === game.priorityPlayerId);
   const pendingTriggers = game.triggerQueue.filter(t => !t.acknowledged).length;
+  const handleTopNav = (mode: (typeof TOP_LEVEL_NAV_ITEMS)[number]['id']) => {
+    if (mode === 'replayViewer') {
+      store.setReplayOpen(true);
+      return;
+    }
+    if (mode === 'settings') {
+      store.setUiSettingsOpen(true);
+      return;
+    }
+    store.setLobbyOpen(true);
+  };
 
   return (
     <>
@@ -61,6 +73,22 @@ export function TopBar() {
           ON-DA-STACK
         </span>
       </div>
+
+      <div style={{ width: 1, height: 20, background: '#26323a' }} />
+
+      <nav aria-label="Top-level navigation" style={{ display: 'flex', gap: 4, flexShrink: 0 }}>
+        {TOP_LEVEL_NAV_ITEMS.map(item => (
+          <button
+            key={item.id}
+            type="button"
+            data-testid={`top-nav-${item.id}`}
+            onClick={() => handleTopNav(item.id)}
+            style={topBtnStyle('none', '#94a3b8')}
+          >
+            {item.label}
+          </button>
+        ))}
+      </nav>
 
       <div style={{ width: 1, height: 20, background: '#26323a' }} />
 
@@ -221,7 +249,7 @@ export function TopBar() {
         >🔍</button>
         <button
           data-testid="btn-replay"
-          data-help-title="Replay Review"
+          data-help-title="Replay Viewer"
           data-help-body="Opens replay tools so you can save and play back game logs, review sequencing, and spot missed triggers after a game."
           data-help-placement="bottom"
           aria-label="Open replay panel"
@@ -238,12 +266,12 @@ export function TopBar() {
         {game.config.playerCount === 1 && (
           <button
             data-testid="btn-deck-lab"
-            data-help-title="Solo Deck Lab"
+            data-help-title="Deck Lab"
             data-help-body="Opens the side-by-side solo deck builder. Add cards, edit custom logic, save slots, import/export, then load the deck into practice."
             data-help-placement="bottom"
             aria-label={ui.deckBuilderOpen ? 'Hide deck lab' : 'Show deck lab'}
             onClick={() => store.setDeckBuilderOpen(!ui.deckBuilderOpen)}
-            title="Solo Deck Lab"
+            title="Deck Lab"
             style={topBtnStyle(ui.deckBuilderOpen ? '#123642' : 'none', ui.deckBuilderOpen ? '#67e8f9' : '#64748b')}
           >Deck Lab</button>
         )}
@@ -271,7 +299,7 @@ export function TopBar() {
         <button
           data-testid="btn-open-lobby"
           data-help-title="Lobby And New Game"
-          data-help-body="Returns to setup. Pick Solo Lab or Commander Table, manage profiles, choose player count, import decks, and start a new session."
+          data-help-body="Returns to setup. Pick Deck Lab or Play Online, manage profiles, choose player count, import decks, and start a new session."
           data-help-placement="bottom"
           aria-label="Open lobby for a new game"
           onClick={() => store.setLobbyOpen(true)}

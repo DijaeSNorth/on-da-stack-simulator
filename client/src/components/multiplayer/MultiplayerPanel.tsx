@@ -17,6 +17,11 @@ import { getTableDeckStatus } from '../../engine/lobbyReadiness';
 import { PlayerAvatar } from '../profile/PlayerAvatar';
 import type { PlayerAvatarImage } from '../../types/game';
 import { ReportButton } from '../report/ReportButton';
+import {
+  MULTIPLAYER_ADVANCED_LABEL,
+  getReadyDisabledReason,
+  type MultiplayerDeckStatus,
+} from '../navigation/navigationFlowModel';
 
 const DEFAULT_COLORS = ['#3b82f6', '#ef4444', '#22c55e', '#f59e0b', '#8b5cf6', '#ec4899'];
 
@@ -185,6 +190,10 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
   const localDeckReason = authoritativeDeckSummary?.errors?.join(' ') || localPeer?.deck?.errors?.join(' ') || '';
   const localReady = Boolean(localPeer?.ready);
   const canToggleReady = !isSpectator && localDeckStatus === 'valid';
+  const readyDisabledReason = getReadyDisabledReason({
+    isSpectator,
+    deckStatus: localDeckStatus as MultiplayerDeckStatus,
+  });
   const startHandshake = multiplayer.startHandshake;
   const startVoteRequired = startHandshake?.status === 'preparing' || startHandshake?.status === 'waiting';
 
@@ -494,15 +503,23 @@ export function MultiplayerPanel({ seatCount: configuredSeatCount, seats: config
             {localPrimaryCtaLabel}
           </button>
         )}
+        {readyDisabledReason && !localReady ? (
+          <div
+            data-testid="ready-disabled-reason"
+            style={{ color: '#94a3b8', fontSize: 11, border: '1px solid #26323a', borderRadius: 7, padding: 8 }}
+          >
+            {readyDisabledReason}
+          </div>
+        ) : null}
 
         <details style={{
           background: '#0f1720',
           border: '1px solid #26323a',
           borderRadius: 8,
           padding: 12,
-        }}>
+        }} data-testid="multiplayer-advanced-details">
           <summary style={{ color: '#94a3b8', cursor: 'pointer', fontSize: 12, fontWeight: 800 }}>
-            Advanced multiplayer options
+            {MULTIPLAYER_ADVANCED_LABEL}
           </summary>
           <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 12 }}>
             <div style={{ fontSize: 10, color: '#64748b', lineHeight: 1.5 }}>
