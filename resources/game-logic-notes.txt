@@ -51,3 +51,13 @@
 - castExiledWithPermission is a mutating host-authoritative action. Host replay uses the acting seat from presence and the store guard allows only the exile permission owner unless judgeMode is enabled.
 - Regression coverage added for multiplayer host replay: non-owner rejected, owner succeeds, judge override succeeds, permission clears on successful cast, and action log keeps the source mechanic ID.
 - No new local/manual-only TODOs were added; the audited actions remain either host-routed mutators or pure non-mutating helpers.
+
+2026-07-23 - Rules engine foundation pass
+- Added a typed rules event bus for turns, phases, zone changes, spell casts/resolution, permanent movement, combat declarations, combat damage preview/confirmation, damage, counters, mana, costs, mechanic use, state cleanup, and manual adjustments.
+- Added a code-owned automation registry that executes only known app handlers and safely downgrades unknown handler IDs to manual prompts.
+- Added priority/APNAP helpers for priority windows, pass cycles, stack-resolution reopening, and triggered-ability ordering.
+- Added a casting pipeline scaffold that validates card identity, cast location, timing review, targets, total cost, mana confirmation, stack placement, and priority handoff without changing current cast behavior.
+- Added a continuous-effects foundation with MTG-style layer ordering for control, type, color, abilities, P/T set, P/T modification, counters, and P/T switch effects.
+- Added a replacement/prevention foundation for zone-destination replacement, commander command-zone replacement, damage prevention/modification, and damage redirection with manual choice guardrails for competing effects.
+- Added combat damage assignment helpers for lethal damage, trample overflow, deathtouch lethal assignment, blocker order, indestructible/protection warnings, and manual assignment warnings.
+- Added an action-log to rules-event bridge so existing cast, move, counter, attack, mana, mechanic, commander damage, and manual-adjustment logs can feed the typed event architecture without changing current gameplay mutation paths.
