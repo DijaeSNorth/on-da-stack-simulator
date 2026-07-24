@@ -42,7 +42,7 @@ jobs:
           echo "VITE_FIREBASE_APP_ID=${{ vars.VITE_FIREBASE_APP_ID || secrets.VITE_FIREBASE_APP_ID || '1:570911169329:web:3a5283469dbc6a9b562e10' }}" >> "$GITHUB_ENV"
 
       - name: Build for GitHub Pages
-        run: npx vite build --config vite.ghpages.config.ts
+        run: npm run build:pages
 
       - name: Setup Pages
         uses: actions/configure-pages@v4

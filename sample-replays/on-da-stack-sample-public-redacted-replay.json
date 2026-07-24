@@ -1,0 +1,318 @@
+{
+  "replayVersion": "2.0.0",
+  "exportedAt": 1784822400000,
+  "gameId": "sample-public-redacted-replay",
+  "gameName": "Sample Public Redacted Replay",
+  "rulesetVersion": "local-2026-06-13",
+  "mode": "multiplayer",
+  "players": [
+    {
+      "playerId": "p1",
+      "displayName": "Aang",
+      "seatIndex": 0,
+      "commanderNames": []
+    },
+    {
+      "playerId": "p2",
+      "displayName": "Zuko",
+      "seatIndex": 1,
+      "commanderNames": []
+    }
+  ],
+  "initialGameState": {
+    "id": "3a282363-b466-45ac-9b2c-094fd9a7b65c",
+    "rulesetVersion": "local-2026-06-13",
+    "config": {
+      "playerCount": 4,
+      "format": "commander",
+      "startingLife": 40,
+      "useCommanderDamage": true,
+      "useInfect": true,
+      "startingHandSize": 7,
+      "maxMulligans": 6,
+      "commanderTaxEnabled": true,
+      "houseRules": [],
+      "timerEnabled": false
+    },
+    "players": [
+      {
+        "id": "p1",
+        "name": "Aang",
+        "color": "#38bdf8",
+        "seatIndex": 0,
+        "life": 40,
+        "mulliganCount": 0,
+        "manaPool": {
+          "W": 0,
+          "U": 0,
+          "B": 0,
+          "R": 0,
+          "G": 0,
+          "C": 0,
+          "generic": 0
+        },
+        "combatMana": {
+          "W": 0,
+          "U": 0,
+          "B": 0,
+          "R": 0,
+          "G": 0,
+          "C": 0,
+          "generic": 0
+        },
+        "commanderDamage": {},
+        "poisonCounters": 0,
+        "energyCounters": 0,
+        "experienceCounters": 0,
+        "commanderCastCount": {},
+        "commanders": [],
+        "isReady": false,
+        "isActive": true,
+        "hasPriority": true,
+        "hand": [],
+        "library": [],
+        "graveyard": [],
+        "exile": [],
+        "sideboard": [],
+        "maybeboard": [],
+        "commandZone": [],
+        "battlefield": [],
+        "connected": true,
+        "isSpectator": false,
+        "settings": {
+          "assistantMode": "ON",
+          "assistantVerbosity": "normal",
+          "showTriggerReminders": true,
+          "showStackExplanations": true,
+          "coachingLevel": "intermediate",
+          "isJudgeMode": false
+        }
+      },
+      {
+        "id": "p2",
+        "name": "Zuko",
+        "color": "#f97316",
+        "seatIndex": 1,
+        "life": 40,
+        "mulliganCount": 0,
+        "manaPool": {
+          "W": 0,
+          "U": 0,
+          "B": 0,
+          "R": 0,
+          "G": 0,
+          "C": 0,
+          "generic": 0
+        },
+        "combatMana": {
+          "W": 0,
+          "U": 0,
+          "B": 0,
+          "R": 0,
+          "G": 0,
+          "C": 0,
+          "generic": 0
+        },
+        "commanderDamage": {},
+        "poisonCounters": 0,
+        "energyCounters": 0,
+        "experienceCounters": 0,
+        "commanderCastCount": {},
+        "commanders": [],
+        "isReady": false,
+        "isActive": false,
+        "hasPriority": false,
+        "hand": [],
+        "library": [],
+        "graveyard": [],
+        "exile": [],
+        "sideboard": [],
+        "maybeboard": [],
+        "commandZone": [],
+        "battlefield": [],
+        "connected": true,
+        "isSpectator": false,
+        "settings": {
+          "assistantMode": "ON",
+          "assistantVerbosity": "normal",
+          "showTriggerReminders": true,
+          "showStackExplanations": true,
+          "coachingLevel": "intermediate",
+          "isJudgeMode": false
+        }
+      }
+    ],
+    "cards": {},
+    "definitions": {},
+    "turn": 1,
+    "activePlayerId": "p1",
+    "priorityPlayerId": "p1",
+    "phase": "main1",
+    "stack": [],
+    "triggerQueue": [],
+    "actionLog": [],
+    "assistantFlags": [],
+    "combat": {
+      "active": false,
+      "attackingPlayerId": "",
+      "attackers": [],
+      "blockers": [],
+      "attackAssignments": [],
+      "blockAssignments": [],
+      "combatPhase": "none",
+      "hasMyriad": false,
+      "myriadCopies": []
+    },
+    "houseRules": [],
+    "turnTrackers": {
+      "spellsWarpedThisTurn": [],
+      "cardsAirbendedThisTurn": [],
+      "waterbendEventsThisTurn": [],
+      "earthbentThisTurn": [],
+      "sneakCastsThisTurn": [],
+      "stationEventsThisTurn": []
+    },
+    "snapshots": {},
+    "undoPointer": 0,
+    "createdAt": 1784856153593,
+    "lastUpdatedAt": 1784856153593,
+    "status": "lobby"
+  },
+  "actionLog": [
+    {
+      "id": "sample-1",
+      "turn": 1,
+      "phase": "main1",
+      "playerId": "p1",
+      "actionType": "CHANGE_LIFE",
+      "timestamp": 1784822401000,
+      "description": "Aang opens with a public setup play.",
+      "affectedObjects": [],
+      "data": {
+        "playerId": "p2",
+        "delta": -2
+      },
+      "flags": [],
+      "undone": false
+    },
+    {
+      "id": "sample-2",
+      "turn": 1,
+      "phase": "combat",
+      "playerId": "p1",
+      "actionType": "DECLARE_ATTACKER",
+      "timestamp": 1784822402000,
+      "description": "Aang attacks Zuko with a public creature.",
+      "affectedObjects": [],
+      "data": {},
+      "flags": [],
+      "undone": false
+    },
+    {
+      "id": "sample-3",
+      "turn": 1,
+      "phase": "combatDamage",
+      "playerId": "p1",
+      "actionType": "CHANGE_LIFE",
+      "timestamp": 1784822403000,
+      "description": "Combat damage resolves against Zuko.",
+      "affectedObjects": [],
+      "data": {
+        "playerId": "p2",
+        "delta": -3
+      },
+      "flags": [],
+      "undone": false
+    },
+    {
+      "id": "sample-4",
+      "turn": 2,
+      "phase": "draw",
+      "playerId": "p2",
+      "actionType": "DRAW_CARD",
+      "timestamp": 1784822404000,
+      "description": "Zuko draws a card.",
+      "affectedObjects": [],
+      "data": {
+        "playerId": "p2",
+        "count": 1,
+        "private": true
+      },
+      "flags": [],
+      "undone": false
+    },
+    {
+      "id": "sample-5",
+      "turn": 2,
+      "phase": "main1",
+      "playerId": "p2",
+      "actionType": "CAST_SPELL",
+      "timestamp": 1784822405000,
+      "description": "Zuko casts a public spell.",
+      "affectedObjects": [],
+      "data": {
+        "cardName": "Public Spell"
+      },
+      "flags": [],
+      "undone": false
+    },
+    {
+      "id": "sample-6",
+      "turn": 2,
+      "phase": "main1",
+      "playerId": "p2",
+      "actionType": "FIREBENDING",
+      "timestamp": 1784822406000,
+      "description": "Zuko uses a public Firebending mechanic.",
+      "affectedObjects": [],
+      "data": {
+        "mechanic": "firebending"
+      },
+      "flags": [],
+      "undone": false
+    },
+    {
+      "id": "sample-7",
+      "turn": 3,
+      "phase": "main1",
+      "playerId": "p1",
+      "actionType": "FLAG",
+      "timestamp": 1784822407000,
+      "description": "Judge note: confirm public trigger ordering.",
+      "affectedObjects": [],
+      "data": {
+        "reviewType": "judge-review"
+      },
+      "flags": [
+        {
+          "label": "Judge Review",
+          "text": "Public trigger timing question."
+        }
+      ],
+      "undone": false
+    },
+    {
+      "id": "sample-8",
+      "turn": 3,
+      "phase": "end",
+      "playerId": "p1",
+      "actionType": "CHANGE_LIFE",
+      "timestamp": 1784822408000,
+      "description": "Aang gains life from a public effect.",
+      "affectedObjects": [],
+      "data": {
+        "playerId": "p1",
+        "delta": 2
+      },
+      "flags": [],
+      "undone": false
+    }
+  ],
+  "privacy": {
+    "includesPrivateZones": false,
+    "redactedPlayers": [
+      "p1",
+      "p2"
+    ]
+  }
+}
