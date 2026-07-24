@@ -14,6 +14,8 @@ interface CommanderCastButtonProps {
   judgeMode?: boolean;
   onCast: () => void;
   compact?: boolean;
+  minimal?: boolean;
+  showDisabledReason?: boolean;
 }
 
 export function CommanderCastButton({
@@ -24,6 +26,8 @@ export function CommanderCastButton({
   judgeMode,
   onCast,
   compact,
+  minimal,
+  showDisabledReason = true,
 }: CommanderCastButtonProps) {
   const tax = getCommanderTax(game, playerId, commander.instanceId);
   const castCount = getCommanderCastCount(game, playerId, commander.instanceId);
@@ -52,16 +56,18 @@ export function CommanderCastButton({
         fontWeight: 900,
         cursor: disabled ? 'not-allowed' : 'pointer',
         display: 'grid',
-        gap: 2,
+        gap: minimal ? 0 : 2,
         textAlign: 'left',
-        minWidth: compact ? 92 : 130,
+        minWidth: minimal ? 72 : compact ? 92 : 130,
       }}
     >
-      <span>Cast Commander</span>
-      <span style={{ color: disabled ? '#475569' : '#fed7aa', fontSize: compact ? 7 : 9 }}>
-        {totalCost} | tax +{tax} | cast {castCount}x
-      </span>
-      {disabledReason ? (
+      <span>{minimal ? 'Cast' : 'Cast Commander'}</span>
+      {!minimal ? (
+        <span style={{ color: disabled ? '#475569' : '#fed7aa', fontSize: compact ? 7 : 9 }}>
+          {totalCost} | tax +{tax} | cast {castCount}x
+        </span>
+      ) : null}
+      {disabledReason && showDisabledReason ? (
         <span style={{ color: '#94a3b8', fontSize: compact ? 7 : 9, fontWeight: 700 }}>{disabledReason}</span>
       ) : null}
     </button>

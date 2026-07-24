@@ -1037,8 +1037,8 @@ export function PlayerBattlefield({ player, isLocal, isActive, compact, boardLab
         )}
       </div>
 
-      {!compact && player.commanders.length > 0 && (
-        <CommanderQuickCastPanel playerId={player.id} compact showSuggestions={isLocal} />
+      {player.commanders.length > 0 && (
+        <CommanderQuickCastPanel playerId={player.id} compact={compact} showSuggestions={Boolean(isLocal && !compact)} />
       )}
 
       {!compact && (
